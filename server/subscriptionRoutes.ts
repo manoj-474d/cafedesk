@@ -23,13 +23,33 @@ import {
   validateUserPasswordStrength,
   verifyPassword,
 } from './auth.ts';
+import {
+  createSupabaseAuthUserFromLocalSignup,
+  deleteSupabaseUser,
+  getSupabaseProfileById,
+  isSupabaseAdminConfigured,
+  isSupabaseAuthVerifyConfigured,
+  listAllSupabaseProfiles,
+  listSupabaseUserLoginEvents,
+  markSupabaseEmailVerified,
+  notifyUserDirectoryChange,
+  recordSupabaseLoginEvent,
+  startSupabaseProfilesRealtimeListener,
+  updateSupabaseAccountStatus,
+  upsertSupabaseProfile,
+  userDirectoryEvents,
+  verifySupabaseAccessToken,
+  type UserDirectoryBroadcastEvent,
+} from './supabaseAdmin.ts';
 import type {
+  AdminUserDirectoryUser,
   CafeLibrarySnapshot,
   PaymentRecord,
   PlanTier,
   SavedCafeRecord,
   SubscriptionHistoryItem,
   UserCollection,
+  UserLoginEvent,
   UserProfile,
 } from '../src/types/subscription.ts';
 
@@ -122,14 +142,73 @@ function getUserLibraryPayload(userId: number): {
 function formatUserProfile(row: Record<string, unknown>): UserProfile {
   return {
     id: Number(row.id),
+    supabase_id: row.supabase_id ? String(row.supabase_id) : null,
     name: String(row.name),
     email: String(row.email),
+    phone: String(row.phone || ''),
+    avatar_url: String(row.avatar_url || ''),
     auth_provider: row.auth_provider === 'google' ? 'google' : 'email',
     email_verified: Boolean(row.email_verified),
     status: row.status === 'suspended' ? 'suspended' : 'active',
     last_login_at: row.last_login_at ? Number(row.last_login_at) : null,
     created_at: Number(row.created_at),
   };
+}
+
+function cleanPhone(raw: unknown): string {
+  return String(raw ?? '')
+    .replace(/[^\d+\-\s()]/g, '')
+    .trim()
+    .slice(0, 24);
+}
+
+function recordLocalLoginEvent(
+  userId: number,
+  supabaseId: string,
+  eventType: string,
+  provider: 'email' | 'google',
+  req: Request
+): void {
+  try {
+    getDb()
+      .prepare(
+        `INSERT INTO user_login_events (user_id, supabase_id, event_type, provider, ip_address, user_agent, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        userId,
+        supabaseId || '',
+        eventType,
+        provider,
+        getClientIp(req),
+        String(req.headers['user-agent'] ?? '').slice(0, 200),
+        Date.now()
+      );
+  } catch {
+    // Non-blocking audit insert
+  }
+  if (supabaseId) {
+    void recordSupabaseLoginEvent({
+      supabaseUserId: supabaseId,
+      provider,
+      eventType,
+      ipAddress: getClientIp(req),
+      userAgent: String(req.headers['user-agent'] ?? ''),
+    });
+  }
+}
+
+function csvSafeCell(val: unknown): string {
+  const s = String(val ?? '').replace(/\r?\n/g, ' ');
+  const safe = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+  return `"${safe.replace(/"/g, '""')}"`;
+}
+
+function getIstStartOfTodayMs(now = Date.now()): number {
+  const istOffsetMs = 5.5 * 60 * 60 * 1000;
+  const istDate = new Date(now + istOffsetMs);
+  istDate.setUTCHours(0, 0, 0, 0);
+  return istDate.getTime() - istOffsetMs;
 }
 
 function buildAuthPayload(userId: number, csrfToken: string) {
@@ -157,6 +236,8 @@ function makeReceiptNumber(): string {
 }
 
 export function registerSubscriptionRoutes(app: Express): void {
+  // Start Supabase Realtime listener for public.profiles when configured
+  startSupabaseProfilesRealtimeListener();
   // ============================================================================
   // 1. CUSTOMER AUTHENTICATION & PROFILE
   // ============================================================================
@@ -179,7 +260,167 @@ export function registerSubscriptionRoutes(app: Express): void {
     res.json(buildAuthPayload(resolved.id, resolved.csrfToken));
   });
 
-  app.post('/api/auth/signup', (req: Request, res: Response) => {
+  // Exchange a verified Supabase Auth JWT for a linked Cafe Desk session cookie + Free plan
+  app.post('/api/auth/supabase-exchange', async (req: Request, res: Response) => {
+    if (!isSupabaseAuthVerifyConfigured()) {
+      res.status(503).json({
+        error: 'Supabase authentication is not configured on this environment.',
+      });
+      return;
+    }
+
+    const authHeader = String(req.headers.authorization || '');
+    const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    const accessToken = cleanStr(req.body?.accessToken || bearerToken, 8192);
+    if (!accessToken) {
+      res.status(400).json({ error: 'Supabase access token is required.' });
+      return;
+    }
+
+    const sbUser = await verifySupabaseAccessToken(accessToken);
+    if (!sbUser || !sbUser.email) {
+      res.status(401).json({ error: 'Invalid or expired Supabase authentication session.' });
+      return;
+    }
+
+    const email = sbUser.email.toLowerCase();
+    const sbMeta = (sbUser.user_metadata || {}) as Record<string, unknown>;
+    const sbAppMeta = (sbUser.app_metadata || {}) as Record<string, unknown>;
+    const requestedName = cleanStr(req.body?.fullName, 80);
+    const requestedPhone = cleanPhone(req.body?.phone);
+    const eventHint = cleanStr(req.body?.eventType, 40) || 'login';
+
+    const displayName =
+      requestedName ||
+      cleanStr(sbMeta.full_name || sbMeta.name || email.split('@')[0], 80) ||
+      'Cafe Desk Member';
+    const phone = requestedPhone || cleanPhone(sbMeta.phone || sbUser.phone || '');
+    const avatarUrl = cleanStr(sbMeta.avatar_url || sbMeta.picture || '', 400);
+    const provider: 'email' | 'google' = sbAppMeta.provider === 'google' ? 'google' : 'email';
+    const emailVerified = Boolean(sbUser.email_confirmed_at);
+
+    // Check if banned or suspended in Supabase profiles
+    const sbBannedUntil = (sbUser as unknown as { banned_until?: string | null }).banned_until;
+    if (sbBannedUntil && new Date(sbBannedUntil).getTime() > Date.now()) {
+      res.status(403).json({
+        error: 'Your account has been suspended by an administrator. Please contact support.',
+      });
+      return;
+    }
+
+    const existingSbProfile = await getSupabaseProfileById(sbUser.id);
+    if (existingSbProfile?.account_status === 'suspended') {
+      res.status(403).json({
+        error: 'Your account has been suspended by an administrator. Please contact support.',
+      });
+      return;
+    }
+
+    const db = getDb();
+    const now = Date.now();
+    let row = db
+      .prepare('SELECT * FROM users WHERE supabase_id = ? OR email = ?')
+      .get(sbUser.id, email) as Record<string, unknown> | undefined;
+
+    let userId: number;
+    let isNew = false;
+
+    if (!row) {
+      isNew = true;
+      const randomSecret = hashPassword(crypto.randomBytes(24).toString('hex'));
+      const createdAtMs = sbUser.created_at ? new Date(sbUser.created_at).getTime() || now : now;
+      const inserted = db
+        .prepare(
+          `INSERT INTO users
+           (supabase_id, name, email, phone, avatar_url, password_hash, auth_provider, email_verified, status, last_login_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`
+        )
+        .run(
+          sbUser.id,
+          displayName,
+          email,
+          phone,
+          avatarUrl,
+          randomSecret,
+          provider,
+          emailVerified ? 1 : 0,
+          now,
+          createdAtMs,
+          now
+        );
+      userId = Number(inserted.lastInsertRowid);
+
+      db.prepare(
+        `INSERT INTO user_subscriptions (user_id, plan_id, subscribed_price_inr, status, started_at, expires_at, auto_renew, updated_at)
+         VALUES (?, 'free', 0, 'active', ?, NULL, 0, ?)`
+      ).run(userId, now, now);
+
+      db.prepare(
+        `INSERT INTO subscription_history (user_id, action, from_plan, to_plan, note, created_at)
+         VALUES (?, 'registered', '', 'free', 'Automatically assigned Free Explorer plan via Supabase Auth', ?)`
+      ).run(userId, now);
+    } else {
+      if (row.status === 'suspended') {
+        res.status(403).json({
+          error: 'Your account has been suspended by an administrator. Please contact support.',
+        });
+        return;
+      }
+      userId = Number(row.id);
+      const nextName =
+        requestedName || String(row.name || '').trim() || displayName;
+      const nextPhone = phone || String(row.phone || '');
+      const nextAvatar = avatarUrl || String(row.avatar_url || '');
+      const nextVerified = Boolean(row.email_verified) || emailVerified ? 1 : 0;
+
+      db.prepare(
+        `UPDATE users
+         SET supabase_id = ?, name = ?, phone = ?, avatar_url = ?, auth_provider = ?, email_verified = ?, last_login_at = ?, updated_at = ?
+         WHERE id = ?`
+      ).run(
+        sbUser.id,
+        nextName,
+        nextPhone,
+        nextAvatar,
+        row.auth_provider === 'google' || provider === 'google' ? 'google' : 'email',
+        nextVerified,
+        now,
+        now,
+        userId
+      );
+    }
+
+    const updatedUserRow = db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as Record<
+      string,
+      unknown
+    >;
+
+    await upsertSupabaseProfile({
+      id: sbUser.id,
+      fullName: String(updatedUserRow.name),
+      email,
+      phone: String(updatedUserRow.phone || ''),
+      avatarUrl: String(updatedUserRow.avatar_url || ''),
+      authProvider: updatedUserRow.auth_provider === 'google' ? 'google' : 'email',
+      emailVerified: Boolean(updatedUserRow.email_verified),
+      accountStatus: updatedUserRow.status === 'suspended' ? 'suspended' : 'active',
+      lastLoginIso: new Date(now).toISOString(),
+    });
+
+    recordLocalLoginEvent(userId, sbUser.id, isNew ? 'signup' : eventHint, provider, req);
+    notifyUserDirectoryChange({
+      type: isNew ? 'user_created' : 'user_login',
+      userId,
+      supabaseId: sbUser.id,
+      email,
+    });
+
+    const { rawToken, csrfToken } = createUserSession(userId, req);
+    setUserSessionCookie(req, res, rawToken);
+    res.json(buildAuthPayload(userId, csrfToken));
+  });
+
+  app.post('/api/auth/signup', async (req: Request, res: Response) => {
     const ip = getClientIp(req);
     const limit = checkRateLimit(`user-signup:${ip}`, 12, 15 * 60 * 1000);
     if (!limit.allowed) {
@@ -191,7 +432,10 @@ export function registerSubscriptionRoutes(app: Express): void {
 
     const name = cleanStr(req.body?.name, 80);
     const email = cleanStr(req.body?.email, 160).toLowerCase();
+    const phone = cleanPhone(req.body?.phone);
     const password = String(req.body?.password ?? '');
+    const confirmPassword =
+      req.body?.confirmPassword !== undefined ? String(req.body.confirmPassword) : undefined;
 
     if (!name || name.length < 2) {
       res.status(400).json({ error: 'Please enter your full name.' });
@@ -201,9 +445,17 @@ export function registerSubscriptionRoutes(app: Express): void {
       res.status(400).json({ error: 'Please enter a valid email address.' });
       return;
     }
+    if (phone && phone.replace(/\D/g, '').length < 7) {
+      res.status(400).json({ error: 'Please enter a valid phone number or leave it blank.' });
+      return;
+    }
     const pwErr = validateUserPasswordStrength(password);
     if (pwErr) {
       res.status(400).json({ error: pwErr });
+      return;
+    }
+    if (confirmPassword !== undefined && password !== confirmPassword) {
+      res.status(400).json({ error: 'Password and confirm password do not match.' });
       return;
     }
 
@@ -221,13 +473,24 @@ export function registerSubscriptionRoutes(app: Express): void {
     const verifyExpires = now + 30 * 60 * 1000;
     const pwHash = hashPassword(password);
 
+    let supabaseId = '';
+    if (isSupabaseAdminConfigured()) {
+      const sbUser = await createSupabaseAuthUserFromLocalSignup({
+        email,
+        password,
+        fullName: name,
+        phone,
+      });
+      if (sbUser) supabaseId = sbUser.id;
+    }
+
     const insertRes = db
       .prepare(
         `INSERT INTO users
-         (name, email, password_hash, auth_provider, email_verified, verify_token_hash, verify_token_expires_at, status, last_login_at, created_at, updated_at)
-         VALUES (?, ?, ?, 'email', 0, ?, ?, 'active', ?, ?, ?)`
+         (supabase_id, name, email, phone, password_hash, auth_provider, email_verified, verify_token_hash, verify_token_expires_at, status, last_login_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'email', 0, ?, ?, 'active', ?, ?, ?)`
       )
-      .run(name, email, pwHash, verifyHash, verifyExpires, now, now, now);
+      .run(supabaseId || null, name, email, phone, pwHash, verifyHash, verifyExpires, now, now, now);
 
     const userId = Number(insertRes.lastInsertRowid);
 
@@ -241,6 +504,14 @@ export function registerSubscriptionRoutes(app: Express): void {
       `INSERT INTO subscription_history (user_id, action, from_plan, to_plan, note, created_at)
        VALUES (?, 'registered', '', 'free', 'Automatically assigned Free Explorer plan on signup', ?)`
     ).run(userId, now);
+
+    recordLocalLoginEvent(userId, supabaseId, 'signup', 'email', req);
+    notifyUserDirectoryChange({
+      type: 'user_created',
+      userId,
+      supabaseId: supabaseId || undefined,
+      email,
+    });
 
     const { rawToken, csrfToken } = createUserSession(userId, req);
     setUserSessionCookie(req, res, rawToken);
@@ -289,7 +560,27 @@ export function registerSubscriptionRoutes(app: Express): void {
 
     clearRateLimit(limitKey);
     const userId = Number(row.id);
-    db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(Date.now(), userId);
+    const now = Date.now();
+    const supabaseId = row.supabase_id ? String(row.supabase_id) : '';
+    db.prepare('UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?').run(now, now, userId);
+
+    if (supabaseId) {
+      void upsertSupabaseProfile({
+        id: supabaseId,
+        fullName: String(row.name),
+        email: String(row.email),
+        lastLoginIso: new Date(now).toISOString(),
+      });
+    }
+
+    recordLocalLoginEvent(userId, supabaseId, 'login', 'email', req);
+    notifyUserDirectoryChange({
+      type: 'user_login',
+      userId,
+      supabaseId: supabaseId || undefined,
+      email: String(row.email),
+    });
+
     const { rawToken, csrfToken } = createUserSession(userId, req);
     setUserSessionCookie(req, res, rawToken);
     res.json(buildAuthPayload(userId, csrfToken));
@@ -368,6 +659,14 @@ export function registerSubscriptionRoutes(app: Express): void {
         );
       }
 
+      const supabaseId = userRow?.supabase_id ? String(userRow.supabase_id) : '';
+      recordLocalLoginEvent(userId, supabaseId, userRow ? 'login' : 'signup', 'google', req);
+      notifyUserDirectoryChange({
+        type: userRow ? 'user_login' : 'user_created',
+        userId,
+        email,
+      });
+
       const { rawToken, csrfToken } = createUserSession(userId, req);
       setUserSessionCookie(req, res, rawToken);
       res.json(buildAuthPayload(userId, csrfToken));
@@ -431,6 +730,18 @@ export function registerSubscriptionRoutes(app: Express): void {
     db.prepare(
       'UPDATE users SET email_verified = 1, verify_token_hash = NULL, verify_token_expires_at = NULL, updated_at = ? WHERE id = ?'
     ).run(now, req.user!.id);
+
+    const verifiedUser = db
+      .prepare('SELECT supabase_id, email FROM users WHERE id = ?')
+      .get(req.user!.id) as { supabase_id?: string | null; email: string } | undefined;
+    if (verifiedUser?.supabase_id) {
+      void markSupabaseEmailVerified(String(verifiedUser.supabase_id));
+    }
+    notifyUserDirectoryChange({
+      type: 'user_updated',
+      userId: req.user!.id,
+      email: verifiedUser?.email,
+    });
 
     res.json({
       ok: true,
@@ -525,8 +836,17 @@ export function registerSubscriptionRoutes(app: Express): void {
 
   app.put('/api/auth/profile', requireUserAuth, (req: Request, res: Response) => {
     const name = cleanStr(req.body?.name, 80);
+    const hasPhoneInput = req.body?.phone !== undefined;
+    const nextPhone = hasPhoneInput ? cleanPhone(req.body.phone) : undefined;
+    const hasAvatarInput = req.body?.avatar_url !== undefined;
+    const nextAvatar = hasAvatarInput ? cleanStr(req.body.avatar_url, 400) : undefined;
     const currentPassword = String(req.body?.currentPassword ?? '');
     const newPassword = String(req.body?.newPassword ?? '');
+
+    if (nextPhone && nextPhone.replace(/\D/g, '').length < 7) {
+      res.status(400).json({ error: 'Please enter a valid phone number or leave it blank.' });
+      return;
+    }
 
     const db = getDb();
     const row = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user!.id) as Record<
@@ -549,12 +869,30 @@ export function registerSubscriptionRoutes(app: Express): void {
     }
 
     const finalName = name && name.length >= 2 ? name : String(row.name);
-    db.prepare('UPDATE users SET name = ?, password_hash = ?, updated_at = ? WHERE id = ?').run(
-      finalName,
-      updatedHash,
-      Date.now(),
-      req.user!.id
-    );
+    const finalPhone = nextPhone !== undefined ? nextPhone : String(row.phone || '');
+    const finalAvatar = nextAvatar !== undefined ? nextAvatar : String(row.avatar_url || '');
+    const now = Date.now();
+
+    db.prepare(
+      'UPDATE users SET name = ?, phone = ?, avatar_url = ?, password_hash = ?, updated_at = ? WHERE id = ?'
+    ).run(finalName, finalPhone, finalAvatar, updatedHash, now, req.user!.id);
+
+    const supabaseId = row.supabase_id ? String(row.supabase_id) : '';
+    if (supabaseId) {
+      void upsertSupabaseProfile({
+        id: supabaseId,
+        fullName: finalName,
+        email: String(row.email),
+        phone: finalPhone,
+        avatarUrl: finalAvatar,
+      });
+    }
+    notifyUserDirectoryChange({
+      type: 'user_updated',
+      userId: req.user!.id,
+      supabaseId: supabaseId || undefined,
+      email: String(row.email),
+    });
 
     res.json(buildAuthPayload(req.user!.id, req.user!.csrfToken));
   });
@@ -1053,7 +1391,7 @@ export function registerSubscriptionRoutes(app: Express): void {
 
     const userRows = db
       .prepare(
-        'SELECT id, name, email, auth_provider, email_verified, status, last_login_at, created_at FROM users ORDER BY created_at DESC'
+        'SELECT id, supabase_id, name, email, phone, avatar_url, auth_provider, email_verified, status, last_login_at, created_at FROM users ORDER BY created_at DESC'
       )
       .all() as Array<Record<string, unknown>>;
 
@@ -1435,7 +1773,7 @@ export function registerSubscriptionRoutes(app: Express): void {
       const db = getDb();
       const userRow = db
         .prepare(
-          'SELECT id, name, email, auth_provider, email_verified, status, last_login_at, created_at FROM users WHERE id = ?'
+          'SELECT id, supabase_id, name, email, phone, avatar_url, auth_provider, email_verified, status, last_login_at, created_at FROM users WHERE id = ?'
         )
         .get(userId) as Record<string, unknown> | undefined;
 
@@ -1560,6 +1898,21 @@ export function registerSubscriptionRoutes(app: Express): void {
         }),
       ].sort((a, b) => b.created_at - a.created_at);
 
+      const localEventRows = db
+        .prepare(
+          'SELECT id, event_type, provider, ip_address, user_agent, created_at FROM user_login_events WHERE user_id = ? ORDER BY created_at DESC LIMIT 40'
+        )
+        .all(userId) as Array<Record<string, unknown>>;
+
+      const loginEvents: UserLoginEvent[] = localEventRows.map((ev) => ({
+        id: Number(ev.id),
+        event_type: String(ev.event_type || 'login'),
+        provider: String(ev.provider || 'email'),
+        ip_address: String(ev.ip_address || ''),
+        user_agent: String(ev.user_agent || ''),
+        created_at: Number(ev.created_at),
+      }));
+
       res.json({
         user: formatUserProfile(userRow),
         subscription,
@@ -1569,6 +1922,7 @@ export function registerSubscriptionRoutes(app: Express): void {
         collections: library.collections,
         bookings,
         feedback,
+        loginEvents,
       });
     }
   );
@@ -1641,12 +1995,14 @@ export function registerSubscriptionRoutes(app: Express): void {
     '/api/admin/subscriptions/users/:userId/status',
     requireAdminAuth,
     requireFullAdmin,
-    (req: Request, res: Response) => {
+    async (req: Request, res: Response) => {
       const userId = Number(req.params.userId);
       const status = req.body?.status === 'suspended' ? 'suspended' : 'active';
       const db = getDb();
-      const userRow = db.prepare('SELECT email, status FROM users WHERE id = ?').get(userId) as
-        | { email: string; status: string }
+      const userRow = db
+        .prepare('SELECT email, status, supabase_id FROM users WHERE id = ?')
+        .get(userId) as
+        | { email: string; status: string; supabase_id?: string | null }
         | undefined;
       if (!userRow) {
         res.status(404).json({ error: 'User not found.' });
@@ -1662,6 +2018,10 @@ export function registerSubscriptionRoutes(app: Express): void {
         db.prepare('DELETE FROM user_sessions WHERE user_id = ?').run(userId);
       }
 
+      if (userRow.supabase_id) {
+        await updateSupabaseAccountStatus(String(userRow.supabase_id), status);
+      }
+
       recordActivity(
         req.admin!.username,
         `Set user status to ${status}`,
@@ -1669,6 +2029,12 @@ export function registerSubscriptionRoutes(app: Express): void {
         userRow.status,
         status
       );
+      notifyUserDirectoryChange({
+        type: 'user_status',
+        userId,
+        supabaseId: userRow.supabase_id ? String(userRow.supabase_id) : undefined,
+        email: userRow.email,
+      });
       res.json({ ok: true });
     }
   );
@@ -1677,19 +2043,25 @@ export function registerSubscriptionRoutes(app: Express): void {
     '/api/admin/subscriptions/users/:userId',
     requireAdminAuth,
     requireFullAdmin,
-    (req: Request, res: Response) => {
+    async (req: Request, res: Response) => {
       const userId = Number(req.params.userId);
       if (!Number.isInteger(userId)) {
         res.status(400).json({ error: 'Invalid user ID.' });
         return;
       }
       const db = getDb();
-      const userRow = db.prepare('SELECT name, email FROM users WHERE id = ?').get(userId) as
-        | { name: string; email: string }
+      const userRow = db
+        .prepare('SELECT name, email, supabase_id FROM users WHERE id = ?')
+        .get(userId) as
+        | { name: string; email: string; supabase_id?: string | null }
         | undefined;
       if (!userRow) {
         res.status(404).json({ error: 'User not found.' });
         return;
+      }
+
+      if (userRow.supabase_id) {
+        await deleteSupabaseUser(String(userRow.supabase_id));
       }
 
       db.prepare('DELETE FROM users WHERE id = ?').run(userId);
@@ -1700,9 +2072,437 @@ export function registerSubscriptionRoutes(app: Express): void {
         `${userRow.name} (${userRow.email})`,
         'Deleted'
       );
+      notifyUserDirectoryChange({
+        type: 'user_deleted',
+        userId,
+        email: userRow.email,
+      });
       res.json({ ok: true });
     }
   );
+
+  // ============================================================================
+  // 4B. ADMIN CUSTOMER DIRECTORY (SUPABASE + LOCAL UNIFIED VIEW, EXPORT & LIVE SSE)
+  // ============================================================================
+
+  async function buildAdminUserDirectoryData() {
+    const db = getDb();
+    const now = Date.now();
+    const plans = listPlansFromDb(true);
+
+    // Sync any newly created Supabase profiles that aren't in SQLite yet
+    if (isSupabaseAdminConfigured()) {
+      const sbProfiles = await listAllSupabaseProfiles();
+      for (const sp of sbProfiles) {
+        const existingLocal = db
+          .prepare('SELECT id, name, phone, avatar_url, email_verified, status, last_login_at FROM users WHERE supabase_id = ? OR email = ?')
+          .get(sp.id, sp.email.toLowerCase()) as Record<string, unknown> | undefined;
+
+        const sbCreatedMs = sp.created_at ? new Date(sp.created_at).getTime() || now : now;
+        const sbLastLoginMs = sp.last_login_at ? new Date(sp.last_login_at).getTime() || null : null;
+
+        if (!existingLocal) {
+          const randHash = hashPassword(crypto.randomBytes(24).toString('hex'));
+          const ins = db
+            .prepare(
+              `INSERT INTO users
+               (supabase_id, name, email, phone, avatar_url, password_hash, auth_provider, email_verified, status, last_login_at, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            )
+            .run(
+              sp.id,
+              sp.full_name || sp.email.split('@')[0],
+              sp.email.toLowerCase(),
+              sp.phone || '',
+              sp.avatar_url || '',
+              randHash,
+              sp.auth_provider === 'google' ? 'google' : 'email',
+              sp.email_verified ? 1 : 0,
+              sp.account_status === 'suspended' ? 'suspended' : 'active',
+              sbLastLoginMs,
+              sbCreatedMs,
+              now
+            );
+          const newId = Number(ins.lastInsertRowid);
+          db.prepare(
+            `INSERT INTO user_subscriptions (user_id, plan_id, subscribed_price_inr, status, started_at, expires_at, auto_renew, updated_at)
+             VALUES (?, 'free', 0, 'active', ?, NULL, 0, ?)`
+          ).run(newId, sbCreatedMs, now);
+        } else {
+          const mergedLastLogin = Math.max(
+            Number(existingLocal.last_login_at || 0),
+            sbLastLoginMs || 0
+          );
+          db.prepare(
+            `UPDATE users
+             SET supabase_id = ?,
+                 name = CASE WHEN ? != '' THEN ? ELSE name END,
+                 phone = CASE WHEN ? != '' THEN ? ELSE phone END,
+                 avatar_url = CASE WHEN ? != '' THEN ? ELSE avatar_url END,
+                 email_verified = CASE WHEN ? = 1 THEN 1 ELSE email_verified END,
+                 last_login_at = CASE WHEN ? > 0 THEN ? ELSE last_login_at END
+             WHERE id = ?`
+          ).run(
+            sp.id,
+            sp.full_name,
+            sp.full_name,
+            sp.phone,
+            sp.phone,
+            sp.avatar_url,
+            sp.avatar_url,
+            sp.email_verified ? 1 : 0,
+            mergedLastLogin,
+            mergedLastLogin || null,
+            Number(existingLocal.id)
+          );
+        }
+      }
+    }
+
+    const userRows = db
+      .prepare(
+        `SELECT id, supabase_id, name, email, phone, avatar_url, auth_provider, email_verified, status, last_login_at, created_at
+         FROM users
+         ORDER BY created_at DESC`
+      )
+      .all() as Array<Record<string, unknown>>;
+
+    const users: AdminUserDirectoryUser[] = userRows.map((u) => {
+      const uid = Number(u.id);
+      const uEmail = String(u.email || '').trim().toLowerCase();
+      const sub = getUserEffectiveSubscription(uid);
+      const payStats = db
+        .prepare(
+          "SELECT COALESCE(SUM(CASE WHEN status = 'paid' THEN amount_inr ELSE 0 END), 0) as spent FROM payments WHERE user_id = ?"
+        )
+        .get(uid) as { spent: number };
+      const lastPay = db
+        .prepare('SELECT status, created_at FROM payments WHERE user_id = ? ORDER BY created_at DESC LIMIT 1')
+        .get(uid) as { status: string; created_at: number } | undefined;
+      const bookingStats = db
+        .prepare(
+          "SELECT COUNT(*) as cnt FROM bookings WHERE user_id = ? OR (? != '' AND LOWER(customer_email) = ?)"
+        )
+        .get(uid, uEmail, uEmail) as { cnt: number };
+
+      return {
+        ...formatUserProfile(u),
+        subscription: sub,
+        total_spent_inr: Number(payStats?.spent ?? 0),
+        bookings_count: Number(bookingStats?.cnt ?? 0),
+        last_payment_at: lastPay ? Number(lastPay.created_at) : null,
+        last_payment_status: lastPay ? String(lastPay.status) : 'none',
+      };
+    });
+
+    const todayStartMs = getIstStartOfTodayMs(now);
+    const weekStartMs = now - 7 * 24 * 60 * 60 * 1000;
+    const monthStartMs = now - 30 * 24 * 60 * 60 * 1000;
+
+    const newToday = users.filter((u) => u.created_at >= todayStartMs).length;
+    const newThisWeek = users.filter((u) => u.created_at >= weekStartMs).length;
+    const newThisMonth = users.filter((u) => u.created_at >= monthStartMs).length;
+    const verifiedUsers = users.filter((u) => u.email_verified).length;
+    const suspendedUsers = users.filter((u) => u.status === 'suspended').length;
+
+    return {
+      supabaseConfigured: isSupabaseAdminConfigured(),
+      analytics: {
+        totalUsers: users.length,
+        newToday,
+        newThisWeek,
+        newThisMonth,
+        verifiedUsers,
+        unverifiedUsers: users.length - verifiedUsers,
+        activeUsers: users.length - suspendedUsers,
+        suspendedUsers,
+      },
+      recentRegistrations: users.slice(0, 6),
+      users,
+      plans,
+    };
+  }
+
+  app.get('/api/admin/users/directory', requireAdminAuth, async (_req: Request, res: Response) => {
+    try {
+      const payload = await buildAdminUserDirectoryData();
+      res.json(payload);
+    } catch (err) {
+      console.error('Failed to build user directory:', err);
+      res.status(500).json({ error: 'Failed to load user directory.' });
+    }
+  });
+
+  app.get('/api/admin/users/directory/export.csv', requireAdminAuth, async (req: Request, res: Response) => {
+    try {
+      const payload = await buildAdminUserDirectoryData();
+      const searchQ = cleanStr(req.query.search, 120).toLowerCase();
+      const statusQ = cleanStr(req.query.status, 20);
+      const verifiedQ = cleanStr(req.query.verified, 20);
+      const planQ = cleanStr(req.query.plan, 40);
+      const rangeQ = cleanStr(req.query.range, 20);
+      const now = Date.now();
+      const todayStart = getIstStartOfTodayMs(now);
+
+      const rows = payload.users.filter((u) => {
+        if (statusQ && statusQ !== 'all' && u.status !== statusQ) return false;
+        if (verifiedQ === 'verified' && !u.email_verified) return false;
+        if (verifiedQ === 'unverified' && u.email_verified) return false;
+        if (planQ && planQ !== 'all' && u.subscription.plan_id !== planQ) return false;
+        if (rangeQ === 'today' && u.created_at < todayStart) return false;
+        if (rangeQ === 'week' && u.created_at < now - 7 * 24 * 60 * 60 * 1000) return false;
+        if (rangeQ === 'month' && u.created_at < now - 30 * 24 * 60 * 60 * 1000) return false;
+        if (searchQ) {
+          const haystack = `${u.id} ${u.supabase_id || ''} ${u.name} ${u.email} ${u.phone || ''} ${u.auth_provider}`.toLowerCase();
+          if (!haystack.includes(searchQ)) return false;
+        }
+        return true;
+      });
+
+      const header = [
+        'User ID',
+        'Supabase UUID',
+        'Full Name',
+        'Email',
+        'Phone Number',
+        'Registration Date',
+        'Last Login Date',
+        'Email Verified',
+        'Auth Method',
+        'Account Status',
+        'Subscription Plan',
+        'Bookings Count',
+        'Total Spent (INR)',
+      ].join(',');
+
+      const lines = rows.map((u) =>
+        [
+          csvSafeCell(`#${u.id}`),
+          csvSafeCell(u.supabase_id || ''),
+          csvSafeCell(u.name),
+          csvSafeCell(u.email),
+          csvSafeCell(u.phone || ''),
+          csvSafeCell(new Date(u.created_at).toISOString()),
+          csvSafeCell(u.last_login_at ? new Date(u.last_login_at).toISOString() : 'Never'),
+          csvSafeCell(u.email_verified ? 'Verified' : 'Unverified'),
+          csvSafeCell(u.auth_provider === 'google' ? 'Google' : 'Email'),
+          csvSafeCell(u.status === 'suspended' ? 'Disabled' : 'Active'),
+          csvSafeCell(u.subscription.plan_name),
+          csvSafeCell(u.bookings_count),
+          csvSafeCell(u.total_spent_inr),
+        ].join(',')
+      );
+
+      const csvBody = [header, ...lines].join('\r\n');
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="cafedesk-users-${new Date().toISOString().slice(0, 10)}.csv"`
+      );
+      res.send(csvBody);
+    } catch (err) {
+      console.error('CSV export error:', err);
+      res.status(500).json({ error: 'Failed to export users CSV.' });
+    }
+  });
+
+  app.get(
+    '/api/admin/users/directory/:id/details',
+    requireAdminAuth,
+    async (req: Request, res: Response) => {
+      const rawId = cleanStr(req.params.id, 80);
+      const numericId = Number(rawId);
+      const db = getDb();
+      const userRow = (Number.isInteger(numericId) && numericId > 0
+        ? db
+            .prepare(
+              'SELECT id, supabase_id, name, email, phone, avatar_url, auth_provider, email_verified, status, last_login_at, created_at FROM users WHERE id = ?'
+            )
+            .get(numericId)
+        : db
+            .prepare(
+              'SELECT id, supabase_id, name, email, phone, avatar_url, auth_provider, email_verified, status, last_login_at, created_at FROM users WHERE supabase_id = ?'
+            )
+            .get(rawId)) as Record<string, unknown> | undefined;
+
+      if (!userRow) {
+        res.status(404).json({ error: 'User not found.' });
+        return;
+      }
+
+      const userId = Number(userRow.id);
+      const supabaseId = userRow.supabase_id ? String(userRow.supabase_id) : '';
+      const userEmail = String(userRow.email || '').trim().toLowerCase();
+      const subscription = getUserEffectiveSubscription(userId);
+      const library = getUserLibraryPayload(userId);
+
+      const paymentRows = db
+        .prepare(
+          `SELECT p.*, sp.name as plan_name
+           FROM payments p
+           LEFT JOIN subscription_plans sp ON sp.id = p.plan_id
+           WHERE p.user_id = ?
+           ORDER BY p.created_at DESC`
+        )
+        .all(userId) as Array<Record<string, unknown>>;
+
+      const payments: PaymentRecord[] = paymentRows.map((p) => ({
+        id: Number(p.id),
+        receipt_number: String(p.receipt_number),
+        user_id: Number(p.user_id),
+        plan_id: String(p.plan_id) as PlanTier,
+        plan_name: String(p.plan_name || p.plan_id),
+        amount_inr: Number(p.amount_inr),
+        currency: String(p.currency),
+        method: String(p.method) as PaymentRecord['method'],
+        provider: String(p.provider) as PaymentRecord['provider'],
+        provider_order_id: String(p.provider_order_id),
+        provider_payment_id: String(p.provider_payment_id),
+        status: String(p.status) as PaymentRecord['status'],
+        failure_reason: String(p.failure_reason || ''),
+        refunded_at: p.refunded_at ? Number(p.refunded_at) : null,
+        created_at: Number(p.created_at),
+      }));
+
+      const historyRows = db
+        .prepare('SELECT * FROM subscription_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 50')
+        .all(userId) as Array<Record<string, unknown>>;
+
+      const history: SubscriptionHistoryItem[] = historyRows.map((h) => ({
+        id: Number(h.id),
+        user_id: Number(h.user_id),
+        action: String(h.action),
+        from_plan: String(h.from_plan),
+        to_plan: String(h.to_plan),
+        note: String(h.note),
+        created_at: Number(h.created_at),
+      }));
+
+      const bookingRows = db
+        .prepare(
+          `SELECT * FROM bookings
+           WHERE user_id = ? OR (? != '' AND LOWER(customer_email) = ?)
+           ORDER BY created_at DESC LIMIT 50`
+        )
+        .all(userId, userEmail, userEmail) as Array<Record<string, unknown>>;
+
+      const bookings = bookingRows.map((b) => ({
+        id: Number(b.id),
+        booking_ref: String(b.booking_ref),
+        user_id: b.user_id !== null && b.user_id !== undefined ? Number(b.user_id) : null,
+        customer_name: String(b.customer_name),
+        customer_email: String(b.customer_email || ''),
+        customer_phone: String(b.customer_phone || ''),
+        cafe_id: String(b.cafe_id),
+        cafe_name: String(b.cafe_name),
+        workspace_type: String(b.workspace_type || 'Laptop Desk'),
+        booking_date: String(b.booking_date),
+        time_slot: String(b.time_slot),
+        guests_count: Number(b.guests_count ?? 1),
+        amount_inr: Number(b.amount_inr ?? 0),
+        payment_status: String(b.payment_status || 'pay_at_cafe'),
+        status: String(b.status || 'pending'),
+        notes: String(b.notes || ''),
+        created_at: Number(b.created_at),
+        updated_at: Number(b.updated_at),
+      }));
+
+      const suggestionRows = userEmail
+        ? (db
+            .prepare(
+              'SELECT * FROM feature_suggestions WHERE LOWER(email) = ? ORDER BY created_at DESC LIMIT 30'
+            )
+            .all(userEmail) as Array<Record<string, unknown>>)
+        : [];
+      const submissionRows = userEmail
+        ? (db
+            .prepare(
+              'SELECT * FROM submissions WHERE LOWER(contact_info) = ? ORDER BY created_at DESC LIMIT 30'
+            )
+            .all(userEmail) as Array<Record<string, unknown>>)
+        : [];
+
+      const feedback = [
+        ...suggestionRows.map((s) => ({
+          id: Number(s.id),
+          source: 'suggestion' as const,
+          category: String(s.category || 'Suggestion'),
+          title: String(s.title),
+          details: String(s.details || ''),
+          status: String(s.status || 'new'),
+          admin_notes: String(s.admin_notes || ''),
+          created_at: Number(s.created_at),
+        })),
+        ...submissionRows.map((sub) => {
+          const payload = safeJson<Record<string, unknown>>(sub.payload_json, {});
+          return {
+            id: Number(sub.id),
+            source: 'submission' as const,
+            category: String(sub.type || 'enquiry'),
+            title: String(sub.cafe_name || sub.type || 'Enquiry'),
+            details: String(payload.notes || ''),
+            status: String(sub.status || 'new'),
+            admin_notes: '',
+            created_at: Number(sub.created_at),
+          };
+        }),
+      ].sort((a, b) => b.created_at - a.created_at);
+
+      const localEventRows = db
+        .prepare(
+          'SELECT id, event_type, provider, ip_address, user_agent, created_at FROM user_login_events WHERE user_id = ? ORDER BY created_at DESC LIMIT 40'
+        )
+        .all(userId) as Array<Record<string, unknown>>;
+
+      const localEvents: UserLoginEvent[] = localEventRows.map((ev) => ({
+        id: Number(ev.id),
+        event_type: String(ev.event_type || 'login'),
+        provider: String(ev.provider || 'email'),
+        ip_address: String(ev.ip_address || ''),
+        user_agent: String(ev.user_agent || ''),
+        created_at: Number(ev.created_at),
+      }));
+
+      const sbEvents = supabaseId ? await listSupabaseUserLoginEvents(supabaseId) : [];
+      const mergedEvents = localEvents.length > 0 ? localEvents : sbEvents;
+
+      res.json({
+        user: formatUserProfile(userRow),
+        subscription,
+        payments,
+        history,
+        savedCafes: library.savedCafes,
+        collections: library.collections,
+        bookings,
+        feedback,
+        loginEvents: mergedEvents,
+      });
+    }
+  );
+
+  app.get('/api/admin/users/stream', requireAdminAuth, (req: Request, res: Response) => {
+    startSupabaseProfilesRealtimeListener();
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+
+    res.write(`event: ready\ndata: ${JSON.stringify({ ok: true, supabaseConfigured: isSupabaseAdminConfigured() })}\n\n`);
+
+    const onChange = (event: UserDirectoryBroadcastEvent) => {
+      res.write(`event: directory_change\ndata: ${JSON.stringify(event)}\n\n`);
+    };
+
+    userDirectoryEvents.on('change', onChange);
+    const keepAlive = setInterval(() => {
+      res.write(': ping\n\n');
+    }, 25000);
+
+    req.on('close', () => {
+      clearInterval(keepAlive);
+      userDirectoryEvents.off('change', onChange);
+    });
+  });
 
   app.post(
     '/api/admin/subscriptions/payments/:paymentId/refund',

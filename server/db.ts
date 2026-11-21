@@ -633,6 +633,17 @@ export function getDb(): DatabaseSync {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS user_login_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      supabase_id TEXT NOT NULL DEFAULT '',
+      event_type TEXT NOT NULL DEFAULT 'login',
+      provider TEXT NOT NULL DEFAULT 'email',
+      ip_address TEXT NOT NULL DEFAULT '',
+      user_agent TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL
+    );
   `);
 
   // Non-destructive column migrations for pre-existing database files
@@ -642,6 +653,10 @@ export function getDb(): DatabaseSync {
   ensureColumn(db, 'admins', 'failed_attempts', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'admins', 'locked_until', 'INTEGER');
   ensureColumn(db, 'users', 'last_login_at', 'INTEGER');
+  ensureColumn(db, 'users', 'supabase_id', 'TEXT');
+  ensureColumn(db, 'users', 'phone', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'users', 'avatar_url', "TEXT NOT NULL DEFAULT ''");
+  db.exec('CREATE INDEX IF NOT EXISTS idx_users_supabase_id ON users(supabase_id)');
   ensureColumn(db, 'activity_logs', 'previous_value', "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'activity_logs', 'new_value', "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'menu_items', 'discount_price_inr', 'INTEGER');

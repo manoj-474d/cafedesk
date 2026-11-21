@@ -7,16 +7,31 @@ import {
   KeyRound,
   Loader2,
   Mail,
+  Phone,
+  RefreshCw,
   ShieldCheck,
   UserPlus,
 } from 'lucide-react';
 import { useAuth, type AuthResponsePayload } from '../context/AuthContext';
 import { useCms } from '../context/CmsContext';
+import { isSupabaseConfigured, supabase, syncOwnSupabaseProfile } from '../lib/supabase';
 import { useDocumentMeta } from '../utils/cafeHelpers';
 
 type AuthMode = 'login' | 'signup' | 'forgot' | 'reset';
 
 const GOOGLE_CLIENT_ID = (import.meta.env.VITE_GOOGLE_CLIENT_ID || '').trim();
+const PENDING_NEXT_KEY = 'cafedesk_pending_auth_next';
+
+function validateEmailFormat(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+}
+
+function validatePasswordClient(pw: string): string | null {
+  if (pw.length < 8) return 'Password must be at least 8 characters long.';
+  if (!/[A-Za-z]/.test(pw)) return 'Password must include at least one letter.';
+  if (!/[0-9]/.test(pw)) return 'Password must include at least one number.';
+  return null;
+}
 
 export function AuthPage() {
   const navigate = useNavigate();
@@ -26,7 +41,7 @@ export function AuthPage() {
 
   const initialMode = (searchParams.get('mode') as AuthMode) || 'login';
   const upgradeTarget = searchParams.get('upgrade');
-  const rawNext = searchParams.get('next') || '';
+  const rawNext = searchParams.get('next') || sessionStorage.getItem(PENDING_NEXT_KEY) || '';
   const nextPath = rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/account';
   const isCafeRedirect = nextPath.startsWith('/locations/') || nextPath.startsWith('/cafe/');
 
@@ -36,15 +51,20 @@ export function AuthPage() {
       : 'login'
   );
   const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [resetCode, setResetCode] = useState('');
   const [devResetHint, setDevResetHint] = useState('');
   const [verifyCode, setVerifyCode] = useState('');
   const [devVerifyHint, setDevVerifyHint] = useState('');
   const [needsVerificationPrompt, setNeedsVerificationPrompt] = useState(false);
+  const [supabaseVerifyPending, setSupabaseVerifyPending] = useState(false);
+  const [supabaseRecoveryActive, setSupabaseRecoveryActive] = useState(false);
 
   const [submitting, setSubmitting] = useState(false);
+  const [resendingEmail, setResendingEmail] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const googleBtnRef = useRef<HTMLDivElement>(null);
@@ -57,9 +77,37 @@ export function AuthPage() {
     { allowIndexing: false }
   );
 
-  // If already logged in and not in verification prompt step, redirect cleanly
+  // Detect Supabase PASSWORD_RECOVERY event or URL hash/query recovery params
   useEffect(() => {
-    if (authenticated && !needsVerificationPrompt) {
+    const hash = window.location.hash || '';
+    const isRecoveryParam =
+      searchParams.get('type') === 'recovery' ||
+      hash.includes('type=recovery') ||
+      searchParams.get('mode') === 'reset';
+
+    if (isRecoveryParam && isSupabaseConfigured) {
+      setSupabaseRecoveryActive(true);
+      setMode('reset');
+      setNotice('Choose a new strong password for your Cafe Desk account.');
+    }
+
+    if (!isSupabaseConfigured || !supabase) return;
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        setSupabaseRecoveryActive(true);
+        setMode('reset');
+        setNotice('Choose a new strong password for your Cafe Desk account.');
+      }
+    });
+    return () => subscription.unsubscribe();
+  }, [searchParams]);
+
+  // If already logged in and not in verification prompt or recovery step, redirect cleanly
+  useEffect(() => {
+    if (authenticated && !needsVerificationPrompt && !supabaseRecoveryActive) {
+      sessionStorage.removeItem(PENDING_NEXT_KEY);
       if (upgradeTarget === 'plus' || upgradeTarget === 'premium') {
         openCheckout(upgradeTarget);
         navigate('/pricing', { replace: true });
@@ -67,11 +115,24 @@ export function AuthPage() {
         navigate(nextPath, { replace: true });
       }
     }
-  }, [authenticated, needsVerificationPrompt, upgradeTarget, nextPath, navigate, openCheckout]);
+  }, [
+    authenticated,
+    needsVerificationPrompt,
+    supabaseRecoveryActive,
+    upgradeTarget,
+    nextPath,
+    navigate,
+    openCheckout,
+  ]);
 
-  // Optional Google Identity Services button when VITE_GOOGLE_CLIENT_ID is configured
+  // Optional Google Identity Services button when VITE_GOOGLE_CLIENT_ID is configured (and Supabase is not used)
   useEffect(() => {
-    if (!GOOGLE_CLIENT_ID || !googleBtnRef.current || (mode !== 'login' && mode !== 'signup')) {
+    if (
+      !GOOGLE_CLIENT_ID ||
+      isSupabaseConfigured ||
+      !googleBtnRef.current ||
+      (mode !== 'login' && mode !== 'signup')
+    ) {
       return;
     }
 
@@ -136,6 +197,7 @@ export function AuthPage() {
   }, [mode, applyAuthPayload]);
 
   const finishAuthNavigation = () => {
+    sessionStorage.removeItem(PENDING_NEXT_KEY);
     if (upgradeTarget === 'plus' || upgradeTarget === 'premium') {
       openCheckout(upgradeTarget);
       navigate('/pricing', { replace: true });
@@ -144,19 +206,262 @@ export function AuthPage() {
     }
   };
 
+  const exchangeSupabaseAccessToken = async (
+    accessToken: string,
+    extra?: { fullName?: string; phone?: string; eventType?: string }
+  ): Promise<boolean> => {
+    const res = await fetch('/api/auth/supabase-exchange', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      credentials: 'include',
+      body: JSON.stringify({ accessToken, ...(extra || {}) }),
+    });
+    const data = (await res.json()) as AuthResponsePayload & { error?: string };
+    if (!res.ok) {
+      setError(data.error || 'Could not synchronize your Cafe Desk session.');
+      if (supabase) await supabase.auth.signOut().catch(() => {});
+      return false;
+    }
+    applyAuthPayload(data);
+    return true;
+  };
+
+  const handleSupabaseGoogleSignIn = async () => {
+    if (!isSupabaseConfigured || !supabase) return;
+    setError('');
+    setSubmitting(true);
+    sessionStorage.setItem(PENDING_NEXT_KEY, nextPath);
+    try {
+      const { error: oauthErr } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: `${window.location.origin}/login?next=${encodeURIComponent(nextPath)}`,
+        },
+      });
+      if (oauthErr) {
+        setError(oauthErr.message || 'Google sign-in could not be started.');
+        setSubmitting(false);
+      }
+    } catch {
+      setError('Failed to start Google sign-in.');
+      setSubmitting(false);
+    }
+  };
+
+  const handleResendSupabaseVerification = async () => {
+    if (!isSupabaseConfigured || !supabase || !email) return;
+    setResendingEmail(true);
+    setError('');
+    setNotice('');
+    try {
+      const { error: resendErr } = await supabase.auth.resend({
+        type: 'signup',
+        email: email.trim().toLowerCase(),
+        options: {
+          emailRedirectTo: `${window.location.origin}/login?next=${encodeURIComponent(nextPath)}`,
+        },
+      });
+      if (resendErr) {
+        setError(resendErr.message);
+      } else {
+        setNotice(`Verification link re-sent to ${email.trim()}. Check your inbox.`);
+      }
+    } finally {
+      setResendingEmail(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setNotice('');
+
+    const trimmedEmail = email.trim().toLowerCase();
+    const trimmedName = name.trim();
+    const trimmedPhone = phone.trim();
+
+    if (mode !== 'reset' || !supabaseRecoveryActive) {
+      if (!validateEmailFormat(trimmedEmail)) {
+        setError('Please enter a valid email address.');
+        return;
+      }
+    }
+
+    if (mode === 'signup') {
+      if (trimmedName.length < 2) {
+        setError('Please enter your full name.');
+        return;
+      }
+      if (trimmedPhone && trimmedPhone.replace(/\D/g, '').length < 7) {
+        setError('Please enter a valid phone number or leave it blank.');
+        return;
+      }
+      const pwErr = validatePasswordClient(password);
+      if (pwErr) {
+        setError(pwErr);
+        return;
+      }
+      if (password !== confirmPassword) {
+        setError('Password and confirm password do not match.');
+        return;
+      }
+    }
+
+    if (mode === 'reset') {
+      const pwErr = validatePasswordClient(password);
+      if (pwErr) {
+        setError(pwErr);
+        return;
+      }
+      if (password !== confirmPassword) {
+        setError('New password and confirm password do not match.');
+        return;
+      }
+    }
+
     setSubmitting(true);
 
     try {
+      // ======================================================================
+      // SUPABASE AUTH FLOW (when VITE_SUPABASE_URL & VITE_SUPABASE_ANON_KEY set)
+      // ======================================================================
+      if (isSupabaseConfigured && supabase) {
+        if (mode === 'login') {
+          const { data: sbData, error: sbErr } = await supabase.auth.signInWithPassword({
+            email: trimmedEmail,
+            password,
+          });
+          if (sbErr || !sbData.session) {
+            const msg = sbErr?.message || 'Invalid email or password.';
+            if (/email not confirmed/i.test(msg)) {
+              setSupabaseVerifyPending(true);
+              setError('Please verify your email address before signing in.');
+            } else {
+              setError(msg);
+            }
+            setSubmitting(false);
+            return;
+          }
+          await syncOwnSupabaseProfile({
+            id: sbData.user.id,
+            email: sbData.user.email || trimmedEmail,
+          });
+          const ok = await exchangeSupabaseAccessToken(sbData.session.access_token, {
+            eventType: 'login',
+          });
+          setSubmitting(false);
+          if (ok) finishAuthNavigation();
+          return;
+        }
+
+        if (mode === 'signup') {
+          const { data: sbData, error: sbErr } = await supabase.auth.signUp({
+            email: trimmedEmail,
+            password,
+            options: {
+              emailRedirectTo: `${window.location.origin}/login?next=${encodeURIComponent(nextPath)}`,
+              data: {
+                full_name: trimmedName,
+                phone: trimmedPhone,
+              },
+            },
+          });
+          if (sbErr) {
+            if (/already registered/i.test(sbErr.message)) {
+              setError('An account with this email already exists. Please sign in.');
+            } else {
+              setError(sbErr.message);
+            }
+            setSubmitting(false);
+            return;
+          }
+
+          // Supabase returns empty identities when duplicate signup protection is enabled
+          if (sbData.user && Array.isArray(sbData.user.identities) && sbData.user.identities.length === 0) {
+            setError('An account with this email already exists. Please sign in.');
+            setSubmitting(false);
+            return;
+          }
+
+          if (sbData.session?.access_token && sbData.user) {
+            await syncOwnSupabaseProfile({
+              id: sbData.user.id,
+              fullName: trimmedName,
+              email: trimmedEmail,
+              phone: trimmedPhone,
+            });
+            const ok = await exchangeSupabaseAccessToken(sbData.session.access_token, {
+              fullName: trimmedName,
+              phone: trimmedPhone,
+              eventType: 'signup',
+            });
+            setSubmitting(false);
+            if (ok) finishAuthNavigation();
+            return;
+          }
+
+          // Email verification enabled in Supabase -> show verification confirmation card
+          setSupabaseVerifyPending(true);
+          setSubmitting(false);
+          return;
+        }
+
+        if (mode === 'forgot') {
+          const { error: resetErr } = await supabase.auth.resetPasswordForEmail(trimmedEmail, {
+            redirectTo: `${window.location.origin}/login?mode=reset&next=${encodeURIComponent(nextPath)}`,
+          });
+          if (resetErr) {
+            setError(resetErr.message);
+            setSubmitting(false);
+            return;
+          }
+          setNotice(
+            `Password reset instructions sent to ${trimmedEmail}. Open the link in your email to set a new password.`
+          );
+          setSubmitting(false);
+          return;
+        }
+
+        if (mode === 'reset' && supabaseRecoveryActive) {
+          const { data: updData, error: updErr } = await supabase.auth.updateUser({
+            password,
+          });
+          if (updErr) {
+            setError(updErr.message || 'Unable to update password.');
+            setSubmitting(false);
+            return;
+          }
+          setSupabaseRecoveryActive(false);
+          setPassword('');
+          setConfirmPassword('');
+          const { data: sessData } = await supabase.auth.getSession();
+          if (sessData.session?.access_token && updData.user) {
+            const ok = await exchangeSupabaseAccessToken(sessData.session.access_token, {
+              eventType: 'password_reset',
+            });
+            setSubmitting(false);
+            if (ok) finishAuthNavigation();
+            return;
+          }
+          setNotice('Password updated successfully. Sign in with your new password.');
+          setMode('login');
+          setSubmitting(false);
+          return;
+        }
+      }
+
+      // ======================================================================
+      // BUILT-IN CAFE DESK SESSION FALLBACK (when Supabase env is unset)
+      // ======================================================================
       if (mode === 'login') {
         const res = await fetch('/api/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'include',
-          body: JSON.stringify({ email, password }),
+          body: JSON.stringify({ email: trimmedEmail, password }),
         });
         const data = (await res.json()) as AuthResponsePayload & { error?: string };
         if (!res.ok) {
@@ -175,7 +480,13 @@ export function AuthPage() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'include',
-          body: JSON.stringify({ name, email, password }),
+          body: JSON.stringify({
+            name: trimmedName,
+            phone: trimmedPhone,
+            email: trimmedEmail,
+            password,
+            confirmPassword,
+          }),
         });
         const data = (await res.json()) as AuthResponsePayload & {
           error?: string;
@@ -197,7 +508,7 @@ export function AuthPage() {
         const res = await fetch('/api/auth/forgot-password', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email }),
+          body: JSON.stringify({ email: trimmedEmail }),
         });
         const data = (await res.json()) as {
           error?: string;
@@ -220,7 +531,7 @@ export function AuthPage() {
         const res = await fetch('/api/auth/reset-password', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, code: resetCode, newPassword: password }),
+          body: JSON.stringify({ email: trimmedEmail, code: resetCode, newPassword: password }),
         });
         const data = (await res.json()) as { error?: string; message?: string };
         if (!res.ok) {
@@ -230,6 +541,7 @@ export function AuthPage() {
         }
         setNotice(data.message || 'Password updated. Sign in with your new password.');
         setPassword('');
+        setConfirmPassword('');
         setResetCode('');
         setDevResetHint('');
         setMode('login');
@@ -267,6 +579,64 @@ export function AuthPage() {
       setSubmitting(false);
     }
   };
+
+  // Supabase Email Confirmation Pending Screen
+  if (supabaseVerifyPending) {
+    return (
+      <div className="max-w-md mx-auto px-4 py-14">
+        <div className="rounded-2xl bg-white border border-[#e6ddd0] p-7 space-y-5 shadow-sm">
+          <div className="space-y-1.5">
+            <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#1b4d3e]">
+              <CheckCircle2 className="w-4 h-4" />
+              <span>Check Your Inbox · Email Verification Required</span>
+            </div>
+            <h1 className="font-serif-display text-2xl font-bold text-[#1c1613]">
+              Verify your email address
+            </h1>
+            <p className="text-xs text-[#5c4e45] leading-relaxed">
+              We&apos;ve sent a confirmation link to <strong>{email}</strong>. Click the link in
+              your inbox to activate your account and unlock your Cafe Desk workspace experience.
+            </p>
+          </div>
+
+          {notice && (
+            <div className="p-3 rounded-xl bg-[#ecfdf5] border border-[#a7f3d0] text-xs font-medium text-[#1b4d3e]">
+              {notice}
+            </div>
+          )}
+
+          {error && (
+            <div className="p-3 rounded-xl bg-[#fef2f2] border border-[#fecaca] text-xs font-semibold text-[#991b1b]">
+              {error}
+            </div>
+          )}
+
+          <div className="space-y-2.5">
+            <button
+              type="button"
+              disabled={resendingEmail}
+              onClick={() => void handleResendSupabaseVerification()}
+              className="w-full min-h-[44px] rounded-lg bg-[#b45309] hover:bg-[#92400e] disabled:opacity-60 text-white text-xs font-semibold inline-flex items-center justify-center gap-2"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${resendingEmail ? 'animate-spin' : ''}`} />
+              <span>{resendingEmail ? 'Sending...' : 'Resend Verification Email'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSupabaseVerifyPending(false);
+                setMode('login');
+                setError('');
+              }}
+              className="w-full min-h-[42px] rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-xs font-semibold text-[#1c1613]"
+            >
+              Back to Sign In
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (needsVerificationPrompt) {
     return (
@@ -375,6 +745,7 @@ export function AuthPage() {
               onClick={() => {
                 setMode('login');
                 setError('');
+                setNotice('');
               }}
               className={`py-2 rounded-lg text-xs font-semibold transition-colors ${
                 mode === 'login' ? 'bg-white text-[#1c1613] shadow-sm' : 'text-[#5c4e45]'
@@ -387,6 +758,7 @@ export function AuthPage() {
               onClick={() => {
                 setMode('signup');
                 setError('');
+                setNotice('');
               }}
               className={`py-2 rounded-lg text-xs font-semibold transition-colors ${
                 mode === 'signup' ? 'bg-white text-[#1c1613] shadow-sm' : 'text-[#5c4e45]'
@@ -421,44 +793,68 @@ export function AuthPage() {
 
         <form onSubmit={handleSubmit} className="space-y-4">
           {mode === 'signup' && (
+            <>
+              <div>
+                <label htmlFor="auth-name" className="block text-xs font-semibold text-[#5c4e45] mb-1">
+                  Full Name
+                </label>
+                <input
+                  id="auth-name"
+                  type="text"
+                  required
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Ananya Rao"
+                  className="w-full h-11 px-3.5 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-sm text-[#1c1613]"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="auth-phone" className="block text-xs font-semibold text-[#5c4e45] mb-1">
+                  Phone Number <span className="font-normal text-[#78685c]">(Optional)</span>
+                </label>
+                <div className="relative">
+                  <Phone
+                    className="w-4 h-4 text-[#5c4e45] absolute left-3.5 top-1/2 -translate-y-1/2"
+                    aria-hidden="true"
+                  />
+                  <input
+                    id="auth-phone"
+                    type="tel"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    placeholder="+91 98765 43210"
+                    className="w-full h-11 pl-10 pr-3.5 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-sm text-[#1c1613]"
+                  />
+                </div>
+              </div>
+            </>
+          )}
+
+          {!(mode === 'reset' && supabaseRecoveryActive) && (
             <div>
-              <label htmlFor="auth-name" className="block text-xs font-semibold text-[#5c4e45] mb-1">
-                Full Name
+              <label htmlFor="auth-email" className="block text-xs font-semibold text-[#5c4e45] mb-1">
+                Email Address
               </label>
-              <input
-                id="auth-name"
-                type="text"
-                required
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Ananya Rao"
-                className="w-full h-11 px-3.5 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-sm text-[#1c1613]"
-              />
+              <div className="relative">
+                <Mail
+                  className="w-4 h-4 text-[#5c4e45] absolute left-3.5 top-1/2 -translate-y-1/2"
+                  aria-hidden="true"
+                />
+                <input
+                  id="auth-email"
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@example.com"
+                  className="w-full h-11 pl-10 pr-3.5 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-sm text-[#1c1613]"
+                />
+              </div>
             </div>
           )}
 
-          <div>
-            <label htmlFor="auth-email" className="block text-xs font-semibold text-[#5c4e45] mb-1">
-              Email Address
-            </label>
-            <div className="relative">
-              <Mail
-                className="w-4 h-4 text-[#5c4e45] absolute left-3.5 top-1/2 -translate-y-1/2"
-                aria-hidden="true"
-              />
-              <input
-                id="auth-email"
-                type="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                className="w-full h-11 pl-10 pr-3.5 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-sm text-[#1c1613]"
-              />
-            </div>
-          </div>
-
-          {mode === 'reset' && (
+          {mode === 'reset' && !supabaseRecoveryActive && (
             <div>
               <label htmlFor="auth-code" className="block text-xs font-semibold text-[#5c4e45] mb-1">
                 6-Digit Reset Code
@@ -501,6 +897,32 @@ export function AuthPage() {
             </div>
           )}
 
+          {(mode === 'signup' || mode === 'reset') && (
+            <div>
+              <label
+                htmlFor="auth-confirm-password"
+                className="block text-xs font-semibold text-[#5c4e45] mb-1"
+              >
+                {mode === 'reset' ? 'Confirm New Password' : 'Confirm Password'}
+              </label>
+              <div className="relative">
+                <KeyRound
+                  className="w-4 h-4 text-[#5c4e45] absolute left-3.5 top-1/2 -translate-y-1/2"
+                  aria-hidden="true"
+                />
+                <input
+                  id="auth-confirm-password"
+                  type="password"
+                  required
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  placeholder="Re-enter your password"
+                  className="w-full h-11 pl-10 pr-3.5 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-sm text-[#1c1613]"
+                />
+              </div>
+            </div>
+          )}
+
           <button
             type="submit"
             disabled={submitting}
@@ -519,19 +941,50 @@ export function AuthPage() {
                 : mode === 'signup'
                 ? 'Create Account'
                 : mode === 'forgot'
-                ? 'Send Reset Code'
+                ? isSupabaseConfigured
+                  ? 'Send Reset Link'
+                  : 'Send Reset Code'
                 : 'Update Password'}
             </span>
           </button>
         </form>
 
-        {/* Optional Google Sign-In when configured */}
-        {GOOGLE_CLIENT_ID && (mode === 'login' || mode === 'signup') && (
+        {/* Google OAuth via Supabase (or GIS fallback when Google Client ID configured without Supabase) */}
+        {(isSupabaseConfigured || GOOGLE_CLIENT_ID) && (mode === 'login' || mode === 'signup') && (
           <div className="space-y-3 pt-2 border-t border-[#e6ddd0]">
             <p className="text-[11px] font-semibold text-center uppercase tracking-wider text-[#5c4e45]">
               Or continue with Google
             </p>
-            <div ref={googleBtnRef} className="flex justify-center" />
+            {isSupabaseConfigured ? (
+              <button
+                type="button"
+                disabled={submitting}
+                onClick={() => void handleSupabaseGoogleSignIn()}
+                className="w-full min-h-[44px] px-4 rounded-lg border border-[#d6cbba] bg-[#faf7f2] hover:border-[#b45309] text-xs font-semibold text-[#1c1613] inline-flex items-center justify-center gap-2 transition-colors"
+              >
+                <svg className="w-4 h-4" viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    fill="#EA4335"
+                    d="M12 10.2v3.9h5.4c-.2 1.2-.9 2.3-2 3l3.2 2.5c1.9-1.7 3-4.3 3-7.4 0-.7-.1-1.4-.2-2H12z"
+                  />
+                  <path
+                    fill="#34A853"
+                    d="M12 21c2.7 0 5-.9 6.6-2.4l-3.2-2.5c-.9.6-2 .9-3.4.9-2.6 0-4.9-1.8-5.7-4.2H3v2.6C4.6 18.7 8 21 12 21z"
+                  />
+                  <path
+                    fill="#4A90E2"
+                    d="M6.3 12.8c-.2-.6-.3-1.2-.3-1.8s.1-1.2.3-1.8V6.6H3C2.4 7.9 2 9.4 2 11s.4 3.1 1 4.4l3.3-2.6z"
+                  />
+                  <path
+                    fill="#FBBC05"
+                    d="M12 5.1c1.5 0 2.8.5 3.9 1.5l2.9-2.9C17 2 14.7 1 12 1 8 1 4.6 3.3 3 6.6l3.3 2.6c.8-2.4 3.1-4.1 5.7-4.1z"
+                  />
+                </svg>
+                <span>Continue with Google</span>
+              </button>
+            ) : (
+              <div ref={googleBtnRef} className="flex justify-center" />
+            )}
           </div>
         )}
 
@@ -542,6 +995,7 @@ export function AuthPage() {
               onClick={() => {
                 setMode('forgot');
                 setError('');
+                setNotice('');
               }}
               className="font-semibold text-[#b45309] hover:underline"
             >
@@ -552,7 +1006,9 @@ export function AuthPage() {
               type="button"
               onClick={() => {
                 setMode('login');
+                setSupabaseRecoveryActive(false);
                 setError('');
+                setNotice('');
               }}
               className="font-semibold text-[#b45309] hover:underline"
             >

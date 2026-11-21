@@ -20,8 +20,11 @@ export interface SubscriptionPlan {
 
 export interface UserProfile {
   id: number;
+  supabase_id?: string | null;
   name: string;
   email: string;
+  phone?: string;
+  avatar_url?: string;
   auth_provider: 'email' | 'google';
   email_verified: boolean;
   status: 'active' | 'suspended';
@@ -194,6 +197,15 @@ export interface CustomerFeedbackItem {
   created_at: number;
 }
 
+export interface UserLoginEvent {
+  id: number;
+  event_type: string;
+  provider: string;
+  ip_address: string;
+  user_agent: string;
+  created_at: number;
+}
+
 export interface AdminUserDetailsPayload {
   user: UserProfile;
   subscription: UserSubscription | null;
@@ -203,6 +215,30 @@ export interface AdminUserDetailsPayload {
   collections: UserCollection[];
   bookings?: BookingRecord[];
   feedback?: CustomerFeedbackItem[];
+  loginEvents?: UserLoginEvent[];
 }
 
+export interface AdminUserDirectoryUser extends UserProfile {
+  subscription: UserSubscription;
+  total_spent_inr: number;
+  bookings_count: number;
+  last_payment_at: number | null;
+  last_payment_status: string;
+}
 
+export interface AdminUserDirectoryPayload {
+  supabaseConfigured: boolean;
+  analytics: {
+    totalUsers: number;
+    newToday: number;
+    newThisWeek: number;
+    newThisMonth: number;
+    verifiedUsers: number;
+    unverifiedUsers: number;
+    activeUsers: number;
+    suspendedUsers: number;
+  };
+  recentRegistrations: AdminUserDirectoryUser[];
+  users: AdminUserDirectoryUser[];
+  plans: SubscriptionPlan[];
+}

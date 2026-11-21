@@ -1,4 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { isSupabaseConfigured, supabase } from '../lib/supabase';
 import type { LocationItem } from '../types/cms';
 import type {
   CafeLibrarySnapshot,
@@ -133,6 +134,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [checkoutPlan, setCheckoutPlan] = useState<PlanTier | null>(null);
 
   const lastAuthedRef = useRef<boolean | null>(null);
+  const exchangedTokenRef = useRef<string>('');
 
   const tier: PlanTier =
     user && subscription && subscription.status !== 'expired' ? subscription.plan_id : 'free';
@@ -177,8 +179,47 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const exchangeSupabaseSession = useCallback(
+    async (accessToken: string, extra?: { fullName?: string; phone?: string; eventType?: string }) => {
+      if (!accessToken || exchangedTokenRef.current === accessToken) return;
+      exchangedTokenRef.current = accessToken;
+      try {
+        const res = await fetch('/api/auth/supabase-exchange', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+          },
+          credentials: 'include',
+          body: JSON.stringify({
+            accessToken,
+            ...(extra || {}),
+          }),
+        });
+        if (res.ok) {
+          const data = (await res.json()) as AuthResponsePayload;
+          applyAuthPayload(data);
+        } else if (res.status === 403 && supabase) {
+          await supabase.auth.signOut().catch(() => {});
+          applyAuthPayload({ authenticated: false });
+        }
+      } catch {
+        // Fallback silently; regular refreshAuth covers local session
+      }
+    },
+    [applyAuthPayload]
+  );
+
   const refreshAuth = useCallback(async () => {
     try {
+      if (isSupabaseConfigured && supabase) {
+        const { data: sessionData } = await supabase.auth.getSession();
+        if (sessionData.session?.access_token) {
+          await exchangeSupabaseSession(sessionData.session.access_token, {
+            eventType: 'session_resume',
+          });
+        }
+      }
       const res = await fetch('/api/auth/me', { credentials: 'include' });
       if (res.ok) {
         const data = (await res.json()) as AuthResponsePayload;
@@ -191,13 +232,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setLoading(false);
     }
-  }, [applyAuthPayload]);
+  }, [applyAuthPayload, exchangeSupabaseSession]);
 
   useEffect(() => {
     void Promise.all([refreshAuth(), refreshPlans()]);
   }, [refreshAuth, refreshPlans]);
 
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) return;
+    const {
+      data: { subscription: sbSub },
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      if (
+        (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') &&
+        session?.access_token
+      ) {
+        void exchangeSupabaseSession(session.access_token, {
+          eventType: event === 'SIGNED_IN' ? 'login' : 'token_refresh',
+        });
+      } else if (event === 'SIGNED_OUT') {
+        exchangedTokenRef.current = '';
+      }
+    });
+    return () => {
+      sbSub.unsubscribe();
+    };
+  }, [exchangeSupabaseSession]);
+
   const logout = useCallback(async () => {
+    exchangedTokenRef.current = '';
+    if (isSupabaseConfigured && supabase) {
+      await supabase.auth.signOut().catch(() => {});
+    }
     await fetch('/api/auth/logout', {
       method: 'POST',
       credentials: 'include',

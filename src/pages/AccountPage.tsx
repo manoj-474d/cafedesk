@@ -20,6 +20,7 @@ import {
 import { useAuth, type AuthResponsePayload } from '../context/AuthContext';
 import { useCms } from '../context/CmsContext';
 import { useDiscovery } from '../context/DiscoveryContext';
+import { isSupabaseConfigured, supabase, syncOwnSupabaseProfile } from '../lib/supabase';
 import type { PaymentRecord, SubscriptionHistoryItem } from '../types/subscription';
 import { useDocumentMeta } from '../utils/cafeHelpers';
 
@@ -61,6 +62,7 @@ export function AccountPage() {
 
   // Profile edit & email verification state
   const [editName, setEditName] = useState('');
+  const [editPhone, setEditPhone] = useState('');
   const [profileSavedMsg, setProfileSavedMsg] = useState('');
   const [profileErrorMsg, setProfileErrorMsg] = useState('');
   const [currentPassword, setCurrentPassword] = useState('');
@@ -80,7 +82,10 @@ export function AccountPage() {
   }, [loading, authenticated, navigate]);
 
   useEffect(() => {
-    if (user) setEditName(user.name);
+    if (user) {
+      setEditName(user.name);
+      setEditPhone(user.phone || '');
+    }
   }, [user]);
 
   const loadBillingHistory = async () => {
@@ -167,12 +172,22 @@ export function AccountPage() {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ name: editName }),
+      body: JSON.stringify({ name: editName, phone: editPhone }),
     });
     if (res.ok) {
       const data = (await res.json()) as AuthResponsePayload;
+      if (isSupabaseConfigured && supabase && user?.supabase_id) {
+        await supabase.auth.updateUser({
+          data: { full_name: editName.trim(), phone: editPhone.trim() },
+        }).catch(() => {});
+        await syncOwnSupabaseProfile({
+          id: user.supabase_id,
+          fullName: editName.trim(),
+          phone: editPhone.trim(),
+        });
+      }
       applyAuthPayload(data);
-      setProfileSavedMsg('Profile name updated.');
+      setProfileSavedMsg('Profile details updated.');
     } else {
       const err = (await res.json().catch(() => ({}))) as { error?: string };
       setProfileErrorMsg(err.error || 'Could not update profile.');
@@ -190,6 +205,13 @@ export function AccountPage() {
     if (newPassword !== confirmPassword) {
       setPasswordErrorMsg('New passwords do not match.');
       return;
+    }
+    if (isSupabaseConfigured && supabase && user?.supabase_id) {
+      const { error: sbPwErr } = await supabase.auth.updateUser({ password: newPassword });
+      if (sbPwErr) {
+        setPasswordErrorMsg(sbPwErr.message || 'Failed to update password in Supabase.');
+        return;
+      }
     }
     const res = await fetch('/api/auth/profile', {
       method: 'PUT',
@@ -290,7 +312,10 @@ export function AccountPage() {
           <h1 className="font-serif-display text-3xl sm:text-4xl font-bold text-[#1c1613]">
             {user.name}
           </h1>
-          <p className="text-sm text-[#5c4e45]">{user.email}</p>
+          <p className="text-sm text-[#5c4e45]">
+            {user.email}
+            {user.phone ? ` · ${user.phone}` : ''}
+          </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
@@ -454,13 +479,26 @@ export function AccountPage() {
           <form onSubmit={handleUpdateName} className="space-y-3">
             <div>
               <label htmlFor="acc-name" className="block text-xs font-semibold text-[#5c4e45] mb-1">
-                Display Name
+                Full Name
               </label>
               <input
                 id="acc-name"
                 type="text"
                 value={editName}
                 onChange={(e) => setEditName(e.target.value)}
+                className="w-full h-10 px-3 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-sm"
+              />
+            </div>
+            <div>
+              <label htmlFor="acc-phone" className="block text-xs font-semibold text-[#5c4e45] mb-1">
+                Phone Number (Optional)
+              </label>
+              <input
+                id="acc-phone"
+                type="tel"
+                value={editPhone}
+                onChange={(e) => setEditPhone(e.target.value)}
+                placeholder="+91 98765 43210"
                 className="w-full h-10 px-3 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-sm"
               />
             </div>

@@ -105,7 +105,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { key: 'bookings', label: 'Bookings & Seats', icon: CalendarCheck },
       { key: 'subscriptions', label: 'Subscriptions', icon: Crown },
-      { key: 'users', label: 'User Directory', icon: Users },
+      { key: 'users', label: 'Users & Customers', icon: Users },
       { key: 'revenue', label: 'Payments & Revenue', icon: CreditCard },
       { key: 'plans', label: 'Plan Settings', icon: Sparkles },
     ],
