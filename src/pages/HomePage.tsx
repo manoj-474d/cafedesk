@@ -31,7 +31,7 @@ import {
 import { useCms } from '../context/CmsContext';
 import { useAuth } from '../context/AuthContext';
 import { useDiscovery } from '../context/DiscoveryContext';
-import { buildWhatsAppUrl, useDocumentMeta } from '../utils/cafeHelpers';
+import { buildWhatsAppUrl, getCafeDetailRoute, useDocumentMeta } from '../utils/cafeHelpers';
 import {
   CURATED_COLLECTIONS,
   getCafeOfTheDay,
@@ -49,7 +49,7 @@ import type { HomepageSectionKey } from '../types/cms';
 
 export function HomePage() {
   const { locations, settings, testimonials } = useCms();
-  const { hasPlus, user } = useAuth();
+  const { authenticated, hasPlus, user } = useAuth();
   const {
     userLocation,
     requestUserLocation,
@@ -464,7 +464,7 @@ export function HomePage() {
                   {recentlyViewedCafes.map((rc) => (
                     <Link
                       key={rc.id}
-                      to={`/locations/${rc.slug}`}
+                      to={getCafeDetailRoute(rc.slug, authenticated)}
                       className="flex items-center gap-3 p-3 rounded-xl bg-white border border-[#e6ddd0] hover:border-[#b45309] transition-colors"
                     >
                       <div className="w-14 h-14 rounded-lg overflow-hidden bg-[#f3ede3] shrink-0">
@@ -546,21 +546,23 @@ export function HomePage() {
 
                   <div className="flex flex-wrap items-center gap-3 pt-1">
                     <Link
-                      to={`/locations/${cafeOfTheDay.slug}`}
+                      to={getCafeDetailRoute(cafeOfTheDay.slug, authenticated)}
                       className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg bg-[#1c1613] hover:bg-[#312722] text-white text-xs font-semibold"
                     >
-                      <span>View Full Cafe Guide</span>
+                      <span>Explore Cafe</span>
                       <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
                     </Link>
-                    <a
-                      href={cafeOfTheDay.map_link}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 px-4 py-2.5 rounded-lg border border-[#d6cbba] bg-[#faf7f2] hover:border-[#b45309] text-xs font-semibold text-[#1c1613]"
-                    >
-                      <span>Directions</span>
-                      <ArrowUpRight className="w-3.5 h-3.5" aria-hidden="true" />
-                    </a>
+                    {authenticated && cafeOfTheDay.map_link && (
+                      <a
+                        href={cafeOfTheDay.map_link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 px-4 py-2.5 rounded-lg border border-[#d6cbba] bg-[#faf7f2] hover:border-[#b45309] text-xs font-semibold text-[#1c1613]"
+                      >
+                        <span>Directions</span>
+                        <ArrowUpRight className="w-3.5 h-3.5" aria-hidden="true" />
+                      </a>
+                    )}
                   </div>
                 </div>
               </div>
@@ -680,7 +682,7 @@ export function HomePage() {
                   {sponsoredCafes.map((sp) => (
                     <Link
                       key={`sp-${sp.id}`}
-                      to={`/locations/${sp.slug}`}
+                      to={getCafeDetailRoute(sp.slug, authenticated)}
                       className="p-4 rounded-xl bg-white border border-[#e6ddd0] hover:border-[#b45309] space-y-2 transition-colors"
                     >
                       <div className="flex items-center justify-between gap-2 text-[11px]">

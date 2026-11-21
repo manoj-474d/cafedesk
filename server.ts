@@ -40,7 +40,7 @@ import {
 } from './server/auth.ts';
 import { registerSubscriptionRoutes } from './server/subscriptionRoutes.ts';
 import type { CafeMode } from './src/config/constants.ts';
-import type { AmenityState, DietaryType, SiteSettings } from './src/types/cms.ts';
+import type { AmenityState, DietaryType, LocationItem, SiteSettings } from './src/types/cms.ts';
 
 const PORT = Number(process.env.PORT ?? 3000);
 const IS_PROD = process.env.NODE_ENV === 'production';
@@ -225,16 +225,141 @@ async function startServer() {
   registerSubscriptionRoutes(app);
 
   // ============================================================================
-  // PUBLIC CMS & SUBMISSION API
+  // PUBLIC CMS PREVIEW & AUTH-GATED CAFE DETAILS API
   // ============================================================================
 
-  app.get('/api/public/bootstrap', (_req, res) => {
-    const locations = listLocationsFromDb(false);
+  function hasValidAdminSession(req: Request): boolean {
+    const cookies = parseCookies(req.headers.cookie);
+    const rawToken = cookies[SESSION_COOKIE_NAME];
+    if (!rawToken) return false;
+    const db = getDb();
+    const row = db
+      .prepare('SELECT id, expires_at FROM sessions WHERE token_hash = ?')
+      .get(sha256(rawToken)) as { id: number; expires_at: number } | undefined;
+    return Boolean(row && row.expires_at >= Date.now());
+  }
+
+  function isAuthenticatedVisitorOrAdmin(req: Request): boolean {
+    if (hasValidAdminSession(req)) return true;
+    const user = resolveUserFromRequest(req);
+    return Boolean(user && user.status === 'active');
+  }
+
+  function toPublicCafePreview(loc: LocationItem): LocationItem {
+    const shortExcerptSource = String(loc.verdict || loc.claims[0] || loc.description || '').trim();
+    const shortExcerpt =
+      shortExcerptSource.length > 150
+        ? `${shortExcerptSource.slice(0, 147).trimEnd()}...`
+        : shortExcerptSource;
+    const coverPhoto =
+      loc.photos_approved && Array.isArray(loc.photos) && loc.photos.length > 0
+        ? [loc.photos[0]]
+        : [];
+
+    return {
+      id: loc.id,
+      slug: loc.slug,
+      name: loc.name,
+      category: loc.category,
+      city: loc.city,
+      area: loc.area,
+      address: `${loc.area}, ${loc.city}`,
+      phone: '',
+      map_link: '',
+      website_url: '',
+      menu_url: '',
+      instagram_url: '',
+      other_social_links: '',
+      place_id: loc.place_id,
+      lat: loc.lat,
+      lng: loc.lng,
+      timings: '',
+      description: shortExcerpt,
+      photos: coverPhoto,
+      interior_photos: [],
+      exterior_photos: [],
+      photos_approved: coverPhoto.length > 0,
+      wifi_available: loc.wifi_available,
+      wifi_mbps: loc.wifi_mbps,
+      charging_sockets: loc.charging_sockets,
+      sockets_count: loc.sockets_count,
+      sockets_claimed: loc.sockets_claimed,
+      comfortable_seating: loc.comfortable_seating,
+      seating_info: '',
+      ambience: '',
+      outdoor_seating: 'unknown',
+      suitable_for_studying: loc.suitable_for_studying,
+      suitable_for_working: loc.suitable_for_working,
+      noise_level: loc.noise_level,
+      avg_cost_per_person: loc.avg_cost_per_person,
+      price_range: loc.price_range,
+      coffee_price: loc.coffee_price,
+      tea_price: loc.tea_price,
+      snacks_price: null,
+      meals_price: null,
+      popular_items: [],
+      rating: loc.rating,
+      rating_count: loc.rating_count,
+      min_spend: null,
+      laptop_friendly: loc.laptop_friendly,
+      time_limit: null,
+      modes: loc.modes,
+      facilities: [],
+      offers: [],
+      menu_services: [],
+      menu_items: [],
+      best_for: loc.best_for.slice(0, 3),
+      verdict: shortExcerpt,
+      avoid_if: null,
+      student_discount: null,
+      verified: loc.verified,
+      featured: loc.featured,
+      published: loc.published,
+      display_order: loc.display_order,
+      last_verified_date: loc.last_verified_date,
+      claims: [],
+      source_name: '',
+      source_url: '',
+      sample: loc.sample,
+    };
+  }
+
+  app.get('/api/public/bootstrap', (req, res) => {
+    const rawLocations = listLocationsFromDb(false);
+    const canViewDetails = isAuthenticatedVisitorOrAdmin(req);
+    const locations = canViewDetails ? rawLocations : rawLocations.map(toPublicCafePreview);
     const settings = getSiteSettingsFromDb();
     const navigation = listNavigationFromDb(false);
     const testimonials = listTestimonialsFromDb(false);
     const media = listMediaFromDb();
     res.json({ locations, settings, navigation, testimonials, media });
+  });
+
+  app.get('/api/cafes/:slug', (req, res) => {
+    const isAdmin = hasValidAdminSession(req);
+    const user = resolveUserFromRequest(req, res);
+    if (!isAdmin && (!user || user.status !== 'active')) {
+      res.status(401).json({
+        error: 'Sign in required to explore full cafe details.',
+        requiresAuth: true,
+      });
+      return;
+    }
+
+    const lookup = cleanStr(req.params.slug, 120);
+    if (!lookup) {
+      res.status(400).json({ error: 'Cafe identifier is required.' });
+      return;
+    }
+
+    const all = listLocationsFromDb(isAdmin);
+    const cafe = all.find((loc) => loc.slug === lookup || loc.id === lookup);
+    if (!cafe) {
+      res.status(404).json({ error: 'Cafe not found.' });
+      return;
+    }
+
+    res.json({ cafe });
   });
 
   app.post('/api/analytics/visit', (req, res) => {

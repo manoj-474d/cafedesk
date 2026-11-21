@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { BUDGET_BRACKETS, type BudgetBracketId, SITE_CONFIG } from '../config/constants';
+import type { LocationItem } from '../types/cms';
 
 /**
  * Parses "8:00 AM – 11:00 PM" or overnight "11:00 AM – 1:30 AM" into minutes from midnight.
@@ -160,4 +161,74 @@ export function useDocumentMeta(
       if (robots) robots.setAttribute('content', 'index,follow');
     }
   }, [title, description, options?.ogImage, options?.allowIndexing]);
+}
+
+/**
+ * Returns the direct cafe detail route for signed-in members,
+ * or redirects unauthenticated visitors to /login?next=<encoded_cafe_path>.
+ */
+export function getCafeDetailRoute(slugOrKey: string, authenticated: boolean): string {
+  const safePath = slugOrKey.startsWith('/locations/')
+    ? slugOrKey
+    : `/locations/${slugOrKey}`;
+  if (authenticated) return safePath;
+  return `/login?next=${encodeURIComponent(safePath)}`;
+}
+
+/**
+ * Extracts a clean starting price label (e.g., "From ₹90") for public cafe cards.
+ */
+export function getStartingPriceLabel(loc: Pick<LocationItem, 'tea_price' | 'coffee_price' | 'price_range' | 'avg_cost_per_person'>): string {
+  const candidates: number[] = [];
+  const collectNums = (raw: string | null | undefined) => {
+    if (!raw) return;
+    const matches = raw.match(/\d{2,4}/g);
+    if (matches) {
+      for (const m of matches) {
+        const n = Number(m);
+        if (Number.isFinite(n) && n >= 20 && n <= 5000) candidates.push(n);
+      }
+    }
+  };
+  collectNums(loc.tea_price);
+  collectNums(loc.coffee_price);
+  collectNums(loc.price_range);
+  if (candidates.length > 0) {
+    return `From ₹${Math.min(...candidates)}`;
+  }
+  if (loc.avg_cost_per_person !== null && loc.avg_cost_per_person > 0) {
+    return `Avg ₹${loc.avg_cost_per_person}`;
+  }
+  return 'Cafe pricing';
+}
+
+/**
+ * Derives available workspace types for public cafe cards & cafe detail views.
+ */
+export function getWorkspaceTypesForCafe(
+  loc: Pick<
+    LocationItem,
+    'laptop_friendly' | 'suitable_for_working' | 'suitable_for_studying' | 'comfortable_seating' | 'modes' | 'charging_sockets'
+  >
+): string[] {
+  const types: string[] = [];
+  if (loc.laptop_friendly || loc.suitable_for_working === 'yes' || loc.modes.includes('work')) {
+    types.push('Laptop Desk');
+  }
+  if (loc.suitable_for_studying === 'yes' || loc.modes.includes('calm')) {
+    types.push('Quiet Study');
+  }
+  if (loc.modes.includes('plan')) {
+    types.push('Meeting Seats');
+  }
+  if (loc.modes.includes('budget')) {
+    types.push('Budget Tables');
+  }
+  if (types.length === 0 && loc.comfortable_seating === 'yes') {
+    types.push('Comfortable Seating');
+  }
+  if (types.length === 0) {
+    types.push('Cafe Seating');
+  }
+  return types.slice(0, 3);
 }

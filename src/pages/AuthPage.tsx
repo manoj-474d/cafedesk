@@ -26,7 +26,9 @@ export function AuthPage() {
 
   const initialMode = (searchParams.get('mode') as AuthMode) || 'login';
   const upgradeTarget = searchParams.get('upgrade');
-  const nextPath = searchParams.get('next') || '/account';
+  const rawNext = searchParams.get('next') || '';
+  const nextPath = rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/account';
+  const isCafeRedirect = nextPath.startsWith('/locations/') || nextPath.startsWith('/cafe/');
 
   const [mode, setMode] = useState<AuthMode>(
     initialMode === 'signup' || initialMode === 'forgot' || initialMode === 'reset'
@@ -339,21 +341,27 @@ export function AuthPage() {
   return (
     <div className="max-w-md mx-auto px-4 py-12 sm:py-16">
       <div className="rounded-2xl bg-white border border-[#e6ddd0] p-7 sm:p-8 space-y-6 shadow-sm">
-        <div className="space-y-1.5 text-center">
+        <div className="space-y-2 text-center">
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#b45309]">
             {settings.brand_name} Member Access
           </p>
-          <h1 className="font-serif-display text-3xl font-bold text-[#1c1613]">
-            {mode === 'login'
-              ? 'Welcome back'
+          <h1 className="font-serif-display text-3xl font-bold text-[#1c1613] leading-tight">
+            {mode === 'forgot'
+              ? 'Reset password'
+              : mode === 'reset'
+              ? 'Set new password'
+              : isCafeRedirect
+              ? 'Discover your perfect workspace.'
               : mode === 'signup'
               ? 'Create your account'
-              : mode === 'forgot'
-              ? 'Reset password'
-              : 'Set new password'}
+              : 'Welcome back'}
           </h1>
-          <p className="text-xs text-[#5c4e45]">
-            {mode === 'signup'
+          <p className="text-xs sm:text-sm text-[#5c4e45] leading-relaxed">
+            {mode === 'forgot' || mode === 'reset'
+              ? 'Recover access to your Cafe Desk account cleanly.'
+              : isCafeRedirect
+              ? 'Sign in to explore cafe details, workspace availability, membership plans, menus, amenities, and booking options.'
+              : mode === 'signup'
               ? 'Every new account includes Free Explorer (₹0/month) automatically.'
               : 'Access your Bengaluru cafe plans, saved cafes, and personal collections.'}
           </p>
@@ -384,7 +392,7 @@ export function AuthPage() {
                 mode === 'signup' ? 'bg-white text-[#1c1613] shadow-sm' : 'text-[#5c4e45]'
               }`}
             >
-              Sign Up Free
+              Create Account
             </button>
           </div>
         )}
@@ -509,7 +517,7 @@ export function AuthPage() {
               {mode === 'login'
                 ? 'Sign In'
                 : mode === 'signup'
-                ? 'Create Free Account'
+                ? 'Create Account'
                 : mode === 'forgot'
                 ? 'Send Reset Code'
                 : 'Update Password'}

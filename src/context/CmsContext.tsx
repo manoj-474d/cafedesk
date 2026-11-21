@@ -136,24 +136,27 @@ function derivePriceRange(avgCost: number | null): string {
 const FALLBACK_LOCATIONS: LocationItem[] = CAFES.map((c, idx) => {
   const chargingSockets: AmenityState =
     (c.sockets_count !== null && c.sockets_count > 0) || c.sockets_claimed ? 'yes' : 'unknown';
-  const facilitiesList: string[] = [];
-  if (c.wifi_available === 'yes') facilitiesList.push('Customer Wi-Fi available');
-  if (c.sockets_claimed) facilitiesList.push('Power sockets reported by public sources');
-  if (c.laptop_friendly) facilitiesList.push('Laptop-friendly seating');
-  if (c.modes.includes('budget')) facilitiesList.push('Budget-friendly cafe menu');
+  const coverPhoto = c.photos.length > 0 ? [c.photos[0]] : [];
+  const shortVerdict = c.claims[0] ?? 'Bengaluru cafe listed from official website & public sources.';
 
   return {
     ...c,
     slug: c.id,
     city: 'Bengaluru',
+    address: `${c.area}, Bengaluru`,
     phone: '',
+    map_link: '',
+    website_url: '',
+    menu_url: '',
+    instagram_url: '',
     place_id: '',
     lat: null,
     lng: null,
-    verdict: c.claims[0] ?? 'Bengaluru cafe listed from official website & public sources.',
-    description: c.claims.join(' · '),
-    photos: c.photos,
-    photos_approved: c.photos.length > 0,
+    timings: '',
+    verdict: shortVerdict,
+    description: shortVerdict,
+    photos: coverPhoto,
+    photos_approved: coverPhoto.length > 0,
     wifi_available: c.wifi_available,
     charging_sockets: chargingSockets,
     comfortable_seating: c.laptop_friendly || c.modes.includes('plan') ? 'yes' : 'unknown',
@@ -165,13 +168,23 @@ const FALLBACK_LOCATIONS: LocationItem[] = CAFES.map((c, idx) => {
     price_range: derivePriceRange(c.avg_cost_per_person),
     coffee_price: c.coffee_price ?? null,
     tea_price: c.tea_price ?? null,
-    snacks_price: c.snacks_price ?? null,
-    meals_price: c.meals_price ?? null,
+    snacks_price: null,
+    meals_price: null,
+    popular_items: [],
     rating: null,
     rating_count: null,
-    facilities: facilitiesList,
+    min_spend: null,
+    time_limit: null,
+    facilities: [],
     offers: [],
     menu_services: [],
+    menu_items: [],
+    best_for: c.best_for.slice(0, 3),
+    avoid_if: null,
+    student_discount: null,
+    claims: [],
+    source_name: '',
+    source_url: '',
     published: true,
     display_order: idx + 1,
     sample: false,
@@ -226,6 +239,11 @@ export function CmsProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     void refreshCms();
     void fetch('/api/analytics/visit', { method: 'POST', credentials: 'include' }).catch(() => {});
+    const onAuthChanged = () => {
+      void refreshCms();
+    };
+    window.addEventListener('cafedesk:auth-changed', onAuthChanged);
+    return () => window.removeEventListener('cafedesk:auth-changed', onAuthChanged);
   }, [refreshCms]);
 
   useEffect(() => {

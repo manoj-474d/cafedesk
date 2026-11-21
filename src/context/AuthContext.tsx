@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { LocationItem } from '../types/cms';
 import type {
   CafeLibrarySnapshot,
@@ -132,6 +132,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [upgradePrompt, setUpgradePrompt] = useState<UpgradePromptState | null>(null);
   const [checkoutPlan, setCheckoutPlan] = useState<PlanTier | null>(null);
 
+  const lastAuthedRef = useRef<boolean | null>(null);
+
   const tier: PlanTier =
     user && subscription && subscription.status !== 'expired' ? subscription.plan_id : 'free';
   // Unified Cafe Desk Plus access: any active non-free plan (Monthly, Annual, or custom paid plan) unlocks Plus features
@@ -139,7 +141,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const hasPremium = hasPlus;
 
   const applyAuthPayload = useCallback((payload: AuthResponsePayload) => {
-    if (payload.authenticated && payload.user) {
+    const nextAuthed = Boolean(payload.authenticated && payload.user);
+    if (nextAuthed && payload.user) {
       setUser(payload.user);
       setSubscription(payload.subscription ?? null);
       setSavedCafes(Array.isArray(payload.savedCafes) ? payload.savedCafes : []);
@@ -150,6 +153,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setSavedCafes([]);
       setCollections([]);
     }
+    if (lastAuthedRef.current !== null && lastAuthedRef.current !== nextAuthed) {
+      window.dispatchEvent(new Event('cafedesk:auth-changed'));
+    }
+    lastAuthedRef.current = nextAuthed;
   }, []);
 
   const refreshPlans = useCallback(async () => {

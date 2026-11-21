@@ -35,6 +35,7 @@ import {
 } from '../context/DiscoveryContext';
 import {
   formatDistanceKm,
+  getCafeDetailRoute,
   isCafeOpenNow,
   matchesBudgetBracket,
   useDocumentMeta,
@@ -64,6 +65,7 @@ type ViewMode = 'split' | 'list' | 'map';
 export function LocationsPage() {
   const { locations, settings } = useCms();
   const {
+    authenticated,
     hasPlus,
     openUpgradeModal,
     isCafeSaved,
@@ -1069,7 +1071,10 @@ export function LocationsPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
             {filteredGooglePlaces.map((gc) => {
               const distText = formatDistanceKm(gc.distanceKm);
-              const detailPath = `/locations/google:${encodeURIComponent(gc.placeId)}`;
+              const detailPath = getCafeDetailRoute(
+                `google:${encodeURIComponent(gc.placeId)}`,
+                authenticated
+              );
               const locItem = googleDiscoveryToLocationItem(gc);
               const snapshot = locationToLibrarySnapshot(locItem);
               const saved = isCafeSaved(snapshot.key);

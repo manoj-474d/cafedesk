@@ -13,6 +13,7 @@ import {
   X,
 } from 'lucide-react';
 import { BENGALURU_CENTER } from '../config/constants';
+import { useAuth } from '../context/AuthContext';
 import { useCms } from '../context/CmsContext';
 import {
   checkGmpQuotaError,
@@ -20,7 +21,7 @@ import {
   useDiscovery,
 } from '../context/DiscoveryContext';
 import type { LocationItem } from '../types/cms';
-import { formatDistanceKm } from '../utils/cafeHelpers';
+import { formatDistanceKm, getCafeDetailRoute } from '../utils/cafeHelpers';
 
 interface CafeAutocompleteSearchProps {
   id?: string;
@@ -41,6 +42,7 @@ export function CafeAutocompleteSearch({
 }: CafeAutocompleteSearchProps) {
   const navigate = useNavigate();
   const placesLib = useMapsLibrary('places');
+  const { authenticated } = useAuth();
   const { locations } = useCms();
   const { userLocation, getEffectiveLocation, resolvePredictionToPlace } = useDiscovery();
 
@@ -142,7 +144,7 @@ export function CafeAutocompleteSearch({
   const handleSelectCurated = (loc: LocationItem) => {
     setOpen(false);
     sessionTokenRef.current = null;
-    navigate(`/locations/${loc.slug}`);
+    navigate(getCafeDetailRoute(loc.slug, authenticated));
   };
 
   const handleSelectPrediction = async (
@@ -156,7 +158,7 @@ export function CafeAutocompleteSearch({
     setOpen(false);
 
     if (resolved) {
-      navigate(`/locations/google:${encodeURIComponent(resolved.placeId)}`);
+      navigate(getCafeDetailRoute(`google:${encodeURIComponent(resolved.placeId)}`, authenticated));
     } else if (onSubmitQuery) {
       onSubmitQuery(suggestion.placePrediction?.mainText?.text || value);
     }

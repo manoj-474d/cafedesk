@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, Navigate, useLocation, useParams } from 'react-router-dom';
 import {
   AlertTriangle,
   ArrowLeft,
   ArrowUpRight,
   Armchair,
+  Award,
   BookOpen,
   Bookmark,
   Briefcase,
@@ -49,11 +50,13 @@ import {
   useDiscovery,
   type GoogleDiscoveryCafe,
 } from '../context/DiscoveryContext';
-import type { AmenityState } from '../types/cms';
+import type { AmenityState, LocationItem } from '../types/cms';
 import {
   buildWhatsAppUrl,
   formatDistanceKm,
   getCafeOpenStatus,
+  getStartingPriceLabel,
+  getWorkspaceTypesForCafe,
   useDocumentMeta,
 } from '../utils/cafeHelpers';
 import {
@@ -71,6 +74,7 @@ function formatAmenityLabel(state: AmenityState, yesText: string, noText: string
 
 export function LocationDetailPage() {
   const { id, slug } = useParams<{ id?: string; slug?: string }>();
+  const routerLocation = useLocation();
   const lookupKey = slug ?? id ?? '';
   const isGoogleRoute = lookupKey.startsWith('google:');
   const googlePlaceId = useMemo(
@@ -80,7 +84,12 @@ export function LocationDetailPage() {
 
   const { locations, settings } = useCms();
   const {
+    loading: authLoading,
+    authenticated,
     user,
+    tier,
+    plans,
+    openCheckout,
     hasPlus,
     openUpgradeModal,
     isCafeSaved,
@@ -101,10 +110,16 @@ export function LocationDetailPage() {
     placesReady,
   } = useDiscovery();
 
-  const baseLocation = useMemo(
+  const [serverCafe, setServerCafe] = useState<LocationItem | null>(null);
+  const [serverLoading, setServerLoading] = useState<boolean>(() => !isGoogleRoute);
+  const [authDenied, setAuthDenied] = useState(false);
+
+  const contextLocation = useMemo(
     () => (isGoogleRoute ? undefined : locations.find((l) => l.slug === lookupKey || l.id === lookupKey)),
     [locations, lookupKey, isGoogleRoute]
   );
+
+  const baseLocation = serverCafe ?? contextLocation;
 
   const [fetchedGooglePlace, setFetchedGooglePlace] = useState<GoogleDiscoveryCafe | null>(null);
   const [loadingGooglePlace, setLoadingGooglePlace] = useState(false);
@@ -133,17 +148,55 @@ export function LocationDetailPage() {
     }
   }, [user]);
 
-  // Lazy-enrich & record recently viewed once per curated branch view
+  // Fetch authoritative full cafe details from protected backend endpoint
   useEffect(() => {
-    if (baseLocation) {
+    if (isGoogleRoute) {
+      setServerLoading(false);
+      setServerCafe(null);
+      return;
+    }
+    if (!lookupKey) return;
+    let cancelled = false;
+    setServerLoading(true);
+    setAuthDenied(false);
+
+    void fetch(`/api/cafes/${encodeURIComponent(lookupKey)}`, { credentials: 'include' })
+      .then(async (res) => {
+        if (cancelled) return;
+        if (res.status === 401) {
+          setAuthDenied(true);
+          setServerCafe(null);
+          return;
+        }
+        if (res.ok) {
+          const data = (await res.json()) as { cafe?: LocationItem };
+          if (!cancelled && data.cafe) {
+            setServerCafe(data.cafe);
+            setAuthDenied(false);
+          }
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setServerLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [lookupKey, isGoogleRoute, authenticated]);
+
+  // Lazy-enrich & record recently viewed once authenticated
+  useEffect(() => {
+    if (baseLocation && authenticated) {
       recordRecentlyViewedSlug(baseLocation.slug);
       void enrichLocationFromPlaces(baseLocation);
     }
-  }, [baseLocation, enrichLocationFromPlaces]);
+  }, [baseLocation, authenticated, enrichLocationFromPlaces]);
 
-  // Fetch full place details when navigating to /locations/google:<placeId>
+  // Fetch full place details when navigating to /locations/google:<placeId> (authenticated only)
   useEffect(() => {
-    if (!isGoogleRoute || !googlePlaceId) return;
+    if (!isGoogleRoute || !googlePlaceId || !authenticated) return;
     let cancelled = false;
     setLoadingGooglePlace(true);
     void fetchGooglePlaceDetails(googlePlaceId).then((res) => {
@@ -155,7 +208,7 @@ export function LocationDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [isGoogleRoute, googlePlaceId, placesReady, fetchGooglePlaceDetails]);
+  }, [isGoogleRoute, googlePlaceId, placesReady, authenticated, fetchGooglePlaceDetails]);
 
   const activeGooglePlace = isGoogleRoute
     ? fetchedGooglePlace ?? livePlaceCache[googlePlaceId] ?? null
@@ -230,6 +283,27 @@ export function LocationDetailPage() {
     }
   );
 
+  const loginRedirectUrl = `/login?next=${encodeURIComponent(
+    `${routerLocation.pathname}${routerLocation.search}`
+  )}`;
+
+  // Show loading screen while confirming member / owner authorization
+  if (authLoading || (!isGoogleRoute && serverLoading)) {
+    return (
+      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-24 text-center space-y-4">
+        <Loader2 className="w-8 h-8 animate-spin text-[#b45309] mx-auto" aria-hidden="true" />
+        <h1 className="font-serif-display text-2xl font-bold text-[#1c1613]">
+          Loading cafe workspace guide...
+        </h1>
+      </div>
+    );
+  }
+
+  // Redirect unauthenticated visitors to sign in with return path preserved
+  if (authDenied || (isGoogleRoute && !authenticated) || (!authenticated && !serverCafe)) {
+    return <Navigate to={loginRedirectUrl} replace />;
+  }
+
   if (!location && isGoogleRoute && (loadingGooglePlace || !placesReady)) {
     return (
       <div className="max-w-3xl mx-auto px-4 sm:px-6 py-24 text-center space-y-4">
@@ -290,6 +364,8 @@ export function LocationDetailPage() {
   const favourited = isCafeFavourite(cafeSnapshot.key);
   const inCompare = compareList.some((c) => c.id === location.id);
   const outdoorFriendly = isOutdoorFriendly(location);
+  const workspaceTypes = getWorkspaceTypesForCafe(location);
+  const startingPrice = getStartingPriceLabel(location);
 
   const handleShareCafe = async () => {
     const shareUrl = window.location.href;
@@ -735,22 +811,14 @@ export function LocationDetailPage() {
           <h2 id="specs-heading" className="font-serif-display text-2xl font-bold text-[#1c1613]">
             Workspace, Wi-Fi &amp; Budget Details
           </h2>
-          {!hasPlus && (
-            <button
-              type="button"
-              onClick={() =>
-                openUpgradeModal({
-                  featureName: 'Wi-Fi Speed & Work Readiness',
-                  requiredPlan: 'plus',
-                  description:
-                    'Unlock Wi-Fi availability, measured speeds (Mbps), and remote work suitability across Bengaluru cafes.',
-                })
-              }
+          {plans.length > 0 && (
+            <Link
+              to="/pricing"
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#faf7f2] border border-[#d6cbba] hover:border-[#b45309] text-xs font-semibold text-[#b45309]"
             >
-              <Lock className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>Unlock Plus Specs (₹79/mo)</span>
-            </button>
+              <Award className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>View Membership Plans</span>
+            </Link>
           )}
         </div>
 
@@ -760,41 +828,23 @@ export function LocationDetailPage() {
               <Wifi className="w-4 h-4 text-[#1b4d3e]" aria-hidden="true" />
               <span>Wi-Fi Availability &amp; Speed</span>
             </dt>
-            {hasPlus ? (
-              <>
-                <dd className="text-sm font-bold text-[#1b4d3e]">
-                  Wi-Fi Available:{' '}
-                  {location.wifi_available === 'yes'
-                    ? 'Yes'
-                    : location.wifi_available === 'no'
-                    ? 'No'
-                    : 'Not verified'}
-                </dd>
-                <p
-                  className={`font-mono-data text-base sm:text-lg font-bold ${
-                    location.wifi_mbps === null ? 'text-[#5c4e45]' : 'text-[#1c1613]'
-                  }`}
-                >
-                  {location.wifi_mbps !== null
-                    ? `Wi-Fi Speed: ${location.wifi_mbps} Mbps`
-                    : 'Wi-Fi Speed: Not verified'}
-                </p>
-              </>
-            ) : (
-              <button
-                type="button"
-                onClick={() =>
-                  openUpgradeModal({
-                    featureName: 'Wi-Fi Availability & Speeds',
-                    requiredPlan: 'plus',
-                  })
-                }
-                className="pt-1 text-left inline-flex items-center gap-1.5 text-sm font-bold text-[#b45309] hover:underline"
-              >
-                <Lock className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                <span>Plus ₹79/mo</span>
-              </button>
-            )}
+            <dd className="text-sm font-bold text-[#1b4d3e]">
+              Wi-Fi Available:{' '}
+              {location.wifi_available === 'yes'
+                ? 'Yes'
+                : location.wifi_available === 'no'
+                ? 'No'
+                : 'Not verified'}
+            </dd>
+            <p
+              className={`font-mono-data text-base sm:text-lg font-bold ${
+                location.wifi_mbps === null ? 'text-[#5c4e45]' : 'text-[#1c1613]'
+              }`}
+            >
+              {location.wifi_mbps !== null
+                ? `Wi-Fi Speed: ${location.wifi_mbps} Mbps`
+                : 'Wi-Fi Speed: Not verified'}
+            </p>
           </div>
 
           <div className="p-5 rounded-xl bg-white border border-[#e6ddd0] space-y-1">
@@ -837,40 +887,22 @@ export function LocationDetailPage() {
 
           <div className="p-5 rounded-xl bg-white border border-[#e6ddd0] space-y-1">
             <dt className="text-xs font-semibold text-[#5c4e45]">Price Range &amp; Budget</dt>
-            {hasPlus ? (
-              <>
-                <dd
-                  className={`font-mono-data text-lg sm:text-xl font-bold ${
-                    !location.price_range && location.avg_cost_per_person === null
-                      ? 'text-[#5c4e45]'
-                      : 'text-[#1c1613]'
-                  }`}
-                >
-                  {location.price_range ||
-                    (location.avg_cost_per_person !== null
-                      ? `₹${location.avg_cost_per_person} avg`
-                      : 'Not measured yet')}
-                </dd>
-                {location.price_range && location.avg_cost_per_person !== null && (
-                  <p className="text-xs text-[#5c4e45] font-mono-data">
-                    ~₹{location.avg_cost_per_person} per person
-                  </p>
-                )}
-              </>
-            ) : (
-              <button
-                type="button"
-                onClick={() =>
-                  openUpgradeModal({
-                    featureName: 'Price Range & Average Budget',
-                    requiredPlan: 'plus',
-                  })
-                }
-                className="pt-1 text-left inline-flex items-center gap-1.5 text-sm font-bold text-[#b45309] hover:underline"
-              >
-                <Lock className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                <span>Plus ₹79/mo</span>
-              </button>
+            <dd
+              className={`font-mono-data text-lg sm:text-xl font-bold ${
+                !location.price_range && location.avg_cost_per_person === null
+                  ? 'text-[#5c4e45]'
+                  : 'text-[#1c1613]'
+              }`}
+            >
+              {location.price_range ||
+                (location.avg_cost_per_person !== null
+                  ? `₹${location.avg_cost_per_person} avg`
+                  : startingPrice)}
+            </dd>
+            {location.price_range && location.avg_cost_per_person !== null && (
+              <p className="text-xs text-[#5c4e45] font-mono-data">
+                {startingPrice} · ~₹{location.avg_cost_per_person} per person
+              </p>
             )}
           </div>
         </dl>
@@ -882,26 +914,13 @@ export function LocationDetailPage() {
               <Briefcase className="w-3.5 h-3.5 text-[#1b4d3e]" aria-hidden="true" />
               <span>Working</span>
             </p>
-            {hasPlus ? (
-              <p className="text-sm font-semibold text-[#1c1613]">
-                {formatAmenityLabel(
-                  location.suitable_for_working,
-                  'Suitable for remote work',
-                  'Better for casual visits'
-                )}
-              </p>
-            ) : (
-              <button
-                type="button"
-                onClick={() =>
-                  openUpgradeModal({ featureName: 'Work Suitability Details', requiredPlan: 'plus' })
-                }
-                className="inline-flex items-center gap-1 text-xs font-bold text-[#b45309] hover:underline"
-              >
-                <Lock className="w-3 h-3" aria-hidden="true" />
-                <span>Plus ₹79</span>
-              </button>
-            )}
+            <p className="text-sm font-semibold text-[#1c1613]">
+              {formatAmenityLabel(
+                location.suitable_for_working,
+                'Suitable for remote work',
+                'Better for casual visits'
+              )}
+            </p>
           </div>
 
           <div className="p-4 rounded-xl bg-white border border-[#e6ddd0] space-y-1">
@@ -966,14 +985,50 @@ export function LocationDetailPage() {
               {location.timings}
             </p>
             <p className="text-[11px] text-[#5c4e45]">
-              {hasPlus
-                ? location.min_spend
-                  ? `Min spend ${location.min_spend}`
-                  : 'No min spend noted'
-                : 'Min spend: Plus'}{' '}
-              · {location.time_limit || 'No time limit reported'}
+              {location.min_spend ? `Min spend ${location.min_spend}` : 'No min spend noted'} ·{' '}
+              {location.time_limit || 'No time limit reported'}
             </p>
           </div>
+        </div>
+
+        {/* Workspace Options & Seat Availability */}
+        <div className="p-5 rounded-xl bg-white border border-[#e6ddd0] flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-wider text-[#1b4d3e]">
+              Workspace Options &amp; Seat Availability
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {workspaceTypes.map((wt) => (
+                <span
+                  key={wt}
+                  className="px-3 py-1 rounded-lg bg-[#f3ede3] border border-[#e6ddd0] text-xs font-semibold text-[#1c1613]"
+                >
+                  {wt}
+                </span>
+              ))}
+              {location.seating_info && (
+                <span className="px-3 py-1 rounded-lg bg-[#ecfdf5] border border-[#a7f3d0] text-xs font-semibold text-[#1b4d3e]">
+                  {location.seating_info}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {settings.bookings_enabled && (
+            <button
+              type="button"
+              onClick={() => {
+                setBookingOpen(true);
+                document
+                  .getElementById('reserve-workspace-card')
+                  ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }}
+              className="shrink-0 inline-flex items-center gap-2 min-h-[42px] px-4 py-2 rounded-lg bg-[#1c1613] hover:bg-[#b45309] text-white text-xs font-semibold transition-colors"
+            >
+              <CalendarCheck className="w-4 h-4" aria-hidden="true" />
+              <span>Check Available Seats &amp; Book</span>
+            </button>
+          )}
         </div>
 
         {/* Live Google Weekly Opening Hours */}
@@ -996,64 +1051,18 @@ export function LocationDetailPage() {
       {/* Main Column + Location Map Pin & Platform Links Aside */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
         <div className="lg:col-span-7 space-y-8">
-          {/* Food & Beverage Prices */}
+          {/* Food & Beverage Menu & Prices */}
           <section className="p-6 sm:p-8 rounded-2xl bg-white border border-[#e6ddd0] space-y-5">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <h2 className="font-serif-display text-2xl font-bold text-[#1c1613]">
-                  Food &amp; Beverage Prices
+                  Food &amp; Beverage Menu &amp; Prices
                 </h2>
-                {!hasPlus && (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#faf7f2] border border-[#e6ddd0] text-[11px] font-bold text-[#b45309]">
-                    <Lock className="w-3 h-3" aria-hidden="true" />
-                    Plus ₹79
-                  </span>
-                )}
               </div>
               <Coffee className="w-5 h-5 text-[#b45309]" aria-hidden="true" />
             </div>
 
-            {!hasPlus ? (
-              <div className="p-5 rounded-xl bg-[#faf7f2] border border-[#e6ddd0] space-y-3">
-                {location.popular_items.length > 0 && (
-                  <div className="space-y-1.5">
-                    <p className="text-[11px] font-semibold uppercase tracking-wider text-[#5c4e45]">
-                      Menu Preview (Popular Items)
-                    </p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {location.popular_items.slice(0, 4).map((item) => (
-                        <span
-                          key={item}
-                          className="px-2.5 py-1 rounded-md bg-white border border-[#e6ddd0] text-xs font-medium text-[#1c1613]"
-                        >
-                          {item}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                <p className="text-sm text-[#5c4e45] leading-relaxed">
-                  Upgrade to <strong className="text-[#1c1613]">Cafe Desk Plus (₹79/month or ₹499/year)</strong>{' '}
-                  to view full coffee, tea, snack, and meal prices plus average budget per person
-                  across Bengaluru cafes.
-                </p>
-                <button
-                  type="button"
-                  onClick={() =>
-                    openUpgradeModal({
-                      featureName: 'Food & Beverage Prices',
-                      requiredPlan: 'plus',
-                      description:
-                        'Compare coffee, tea, snacks, and meal pricing plus popular menu picks across Bengaluru cafes.',
-                    })
-                  }
-                  className="inline-flex items-center gap-2 min-h-[40px] px-4 py-2 rounded-lg bg-[#b45309] hover:opacity-95 text-white text-xs font-semibold"
-                >
-                  <Lock className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>Unlock Full Menu &amp; Budget (Plus ₹79/mo)</span>
-                </button>
-              </div>
-            ) : hasAnyFoodPrices ? (
+            {hasAnyFoodPrices ? (
               <>
                 {(location.coffee_price ||
                   location.tea_price ||
@@ -1250,51 +1259,128 @@ export function LocationDetailPage() {
             )}
           </div>
 
-          {/* Public Source Claims & Attribution */}
-          {(location.claims.length > 0 || location.source_name) && (
-            <section className="p-6 sm:p-8 rounded-2xl bg-white border border-[#e6ddd0] space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-2">
+          {/* Reviews, Ratings & Community Verdict */}
+          <section className="p-6 sm:p-8 rounded-2xl bg-white border border-[#e6ddd0] space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Star className="w-5 h-5 text-[#d97706] fill-[#d97706]" aria-hidden="true" />
                 <h2 className="font-serif-display text-xl font-bold text-[#1c1613]">
-                  What Public Sources Say
+                  Reviews &amp; Community Verdict
                 </h2>
-                {!location.verified && (
-                  <span className="text-xs font-semibold text-[#b45309]">
-                    Unverified · Field audit pending
-                  </span>
+              </div>
+              {location.rating !== null ? (
+                <span className="font-mono-data text-sm font-bold text-[#1c1613]">
+                  {location.rating.toFixed(1)} / 5
+                  {location.rating_count !== null ? ` (${location.rating_count} reviews)` : ''}
+                </span>
+              ) : (
+                <span className="text-xs font-semibold text-[#5c4e45]">Community verified guide</span>
+              )}
+            </div>
+
+            {location.verdict && (
+              <p className="text-sm text-[#1c1613] leading-relaxed bg-[#faf7f2] p-4 rounded-xl border border-[#e6ddd0]">
+                {location.verdict}
+              </p>
+            )}
+
+            {location.claims.length > 0 && (
+              <ul className="space-y-2 text-sm text-[#5c4e45]">
+                {location.claims.map((claim, idx) => (
+                  <li key={idx} className="flex items-start gap-2">
+                    <span className="text-[#b45309] font-bold" aria-hidden="true">
+                      ·
+                    </span>
+                    <span>{claim}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {location.source_name && (
+              <div className="pt-3 border-t border-[#e6ddd0] text-xs text-[#5c4e45]">
+                Source:{' '}
+                {location.source_url ? (
+                  <a
+                    href={location.source_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 font-semibold text-[#1c1613] hover:text-[#b45309] underline underline-offset-4"
+                  >
+                    <span>{location.source_name}</span>
+                    <ArrowUpRight className="w-3.5 h-3.5" aria-hidden="true" />
+                  </a>
+                ) : (
+                  <strong className="text-[#1c1613]">{location.source_name}</strong>
                 )}
               </div>
+            )}
+          </section>
 
-              {location.claims.length > 0 && (
-                <ul className="space-y-2 text-sm text-[#5c4e45]">
-                  {location.claims.map((claim, idx) => (
-                    <li key={idx} className="flex items-start gap-2">
-                      <span className="text-[#b45309] font-bold" aria-hidden="true">
-                        ·
-                      </span>
-                      <span>{claim}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-
-              {location.source_name && (
-                <div className="pt-3 border-t border-[#e6ddd0] text-xs text-[#5c4e45]">
-                  Source:{' '}
-                  {location.source_url ? (
-                    <a
-                      href={location.source_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 font-semibold text-[#1c1613] hover:text-[#b45309] underline underline-offset-4"
-                    >
-                      <span>{location.source_name}</span>
-                      <ArrowUpRight className="w-3.5 h-3.5" aria-hidden="true" />
-                    </a>
-                  ) : (
-                    <strong className="text-[#1c1613]">{location.source_name}</strong>
-                  )}
+          {/* Cafe Desk Membership & Subscription Plans */}
+          {plans.length > 0 && (
+            <section className="p-6 sm:p-8 rounded-2xl bg-white border border-[#e6ddd0] space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="space-y-0.5">
+                  <div className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-[#b45309]">
+                    <Award className="w-4 h-4" aria-hidden="true" />
+                    <span>Membership &amp; Subscription Plans</span>
+                  </div>
+                  <h2 className="font-serif-display text-xl font-bold text-[#1c1613]">
+                    Unlock extra workspace perks &amp; cafe offers
+                  </h2>
                 </div>
-              )}
+                <Link
+                  to="/pricing"
+                  className="text-xs font-semibold text-[#b45309] hover:underline underline-offset-4"
+                >
+                  Compare all plans &rarr;
+                </Link>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {plans.slice(0, 3).map((plan) => {
+                  const isCurrent = tier === plan.id;
+                  return (
+                    <div
+                      key={plan.id}
+                      className={`p-4 rounded-xl border flex flex-col justify-between space-y-3 ${
+                        isCurrent
+                          ? 'bg-[#ecfdf5] border-[#a7f3d0]'
+                          : 'bg-[#faf7f2] border-[#e6ddd0]'
+                      }`}
+                    >
+                      <div className="space-y-1">
+                        <p className="text-xs font-bold text-[#1c1613]">{plan.name}</p>
+                        <p className="font-mono-data text-lg font-bold text-[#b45309]">
+                          {plan.price_inr === 0 ? 'Free' : `₹${plan.price_inr}`}
+                          <span className="text-[11px] font-normal text-[#5c4e45]">
+                            {plan.price_inr > 0
+                              ? plan.interval_days >= 360
+                                ? '/yr'
+                                : '/mo'
+                              : ''}
+                          </span>
+                        </p>
+                        <p className="text-[11px] text-[#5c4e45] line-clamp-2">{plan.tagline}</p>
+                      </div>
+                      {isCurrent ? (
+                        <span className="text-[11px] font-bold text-[#1b4d3e]">Current Plan</span>
+                      ) : plan.price_inr > 0 ? (
+                        <button
+                          type="button"
+                          onClick={() => openCheckout(plan.id)}
+                          className="w-full py-2 rounded-lg bg-[#1c1613] hover:bg-[#b45309] text-white text-xs font-semibold transition-colors"
+                        >
+                          Select Plan
+                        </button>
+                      ) : (
+                        <span className="text-[11px] font-semibold text-[#5c4e45]">Included free</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </section>
           )}
 
@@ -1306,49 +1392,19 @@ export function LocationDetailPage() {
                   <GraduationCap className="w-4 h-4" aria-hidden="true" />
                   <span>Student Perks &amp; Location Offers</span>
                 </div>
-                {!hasPlus && (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white border border-[#e6ddd0] text-[11px] font-bold text-[#b45309]">
-                    <Lock className="w-3 h-3" aria-hidden="true" />
-                    Plus ₹79
-                  </span>
-                )}
               </div>
-              {hasPlus ? (
-                <>
-                  {location.student_discount && (
-                    <p className="text-sm text-[#1c1613] font-medium">{location.student_discount}</p>
-                  )}
-                  {location.offers.length > 0 && (
-                    <ul className="space-y-1.5 pt-1 text-sm text-[#5c4e45]">
-                      {location.offers.map((offer, i) => (
-                        <li key={i} className="flex items-center gap-2">
-                          <Tag className="w-3.5 h-3.5 text-[#b45309] shrink-0" aria-hidden="true" />
-                          <span>{offer}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </>
-              ) : (
-                <div className="space-y-2.5">
-                  <p className="text-xs text-[#5c4e45]">
-                    Student discounts and exclusive cafe offers are available on Cafe Desk Plus
-                    (₹79/mo or ₹499/yr).
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      openUpgradeModal({
-                        featureName: 'Exclusive Cafe Offers & Student Perks',
-                        requiredPlan: 'plus',
-                      })
-                    }
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#b45309] text-white text-xs font-semibold"
-                  >
-                    <Lock className="w-3.5 h-3.5" aria-hidden="true" />
-                    <span>Unlock Offers (Plus ₹79/mo)</span>
-                  </button>
-                </div>
+              {location.student_discount && (
+                <p className="text-sm text-[#1c1613] font-medium">{location.student_discount}</p>
+              )}
+              {location.offers.length > 0 && (
+                <ul className="space-y-1.5 pt-1 text-sm text-[#5c4e45]">
+                  {location.offers.map((offer, i) => (
+                    <li key={i} className="flex items-center gap-2">
+                      <Tag className="w-3.5 h-3.5 text-[#b45309] shrink-0" aria-hidden="true" />
+                      <span>{offer}</span>
+                    </li>
+                  ))}
+                </ul>
               )}
             </div>
           )}
@@ -1517,7 +1573,10 @@ export function LocationDetailPage() {
 
           {/* Optional Seat / Workspace Reservation Card (controlled by Admin Settings) */}
           {settings.bookings_enabled && (
-            <div className="p-6 rounded-2xl bg-white border border-[#e6ddd0] space-y-4">
+            <div
+              id="reserve-workspace-card"
+              className="p-6 rounded-2xl bg-white border border-[#e6ddd0] space-y-4"
+            >
               <div className="flex items-start justify-between gap-3">
                 <div className="space-y-1">
                   <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-[#1b4d3e]">

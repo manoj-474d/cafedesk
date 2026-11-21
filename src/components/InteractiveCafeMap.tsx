@@ -10,9 +10,10 @@ import {
 } from '@vis.gl/react-google-maps';
 import { ArrowUpRight, Coffee, LocateFixed, MapPin, Navigation, Star, Wifi } from 'lucide-react';
 import { BENGALURU_AREAS, BENGALURU_CENTER } from '../config/constants';
+import { useAuth } from '../context/AuthContext';
 import type { LocationItem } from '../types/cms';
 import type { GoogleDiscoveryCafe, LatLngPoint } from '../context/DiscoveryContext';
-import { formatDistanceKm } from '../utils/cafeHelpers';
+import { formatDistanceKm, getCafeDetailRoute } from '../utils/cafeHelpers';
 import { GOOGLE_MAPS_API_KEY } from '../App';
 
 export interface MapMarkerItem {
@@ -63,6 +64,7 @@ function CafeMarkerPin({
   onSelect: () => void;
   onClose: () => void;
 }) {
+  const { authenticated } = useAuth();
   const [markerRef, marker] = useAdvancedMarkerRef();
   const isCurated = item.source === 'curated';
   const distText = formatDistanceKm(item.distanceKm);
@@ -125,23 +127,25 @@ function CafeMarkerPin({
             <div className="pt-1.5 border-t border-[#e6ddd0] flex items-center justify-between gap-2 text-xs">
               {item.slug ? (
                 <Link
-                  to={`/locations/${item.slug}`}
+                  to={getCafeDetailRoute(item.slug, authenticated)}
                   className="font-semibold text-[#b45309] hover:underline"
                 >
-                  View Details &rarr;
+                  Explore Cafe &rarr;
                 </Link>
               ) : (
                 <span className="text-[11px] text-[#5c4e45]">Nearby cafe</span>
               )}
-              <a
-                href={item.mapLink}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-0.5 font-semibold text-[#1c1613] hover:text-[#b45309]"
-              >
-                <span>Directions</span>
-                <ArrowUpRight className="w-3 h-3" aria-hidden="true" />
-              </a>
+              {authenticated && item.mapLink && (
+                <a
+                  href={item.mapLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-0.5 font-semibold text-[#1c1613] hover:text-[#b45309]"
+                >
+                  <span>Directions</span>
+                  <ArrowUpRight className="w-3 h-3" aria-hidden="true" />
+                </a>
+              )}
             </div>
           </div>
         </InfoWindow>

@@ -25,7 +25,7 @@ import { BENGALURU_AREAS } from '../config/constants';
 import { useAuth } from '../context/AuthContext';
 import { useCms } from '../context/CmsContext';
 import { useDiscovery } from '../context/DiscoveryContext';
-import { useDocumentMeta } from '../utils/cafeHelpers';
+import { getCafeDetailRoute, useDocumentMeta } from '../utils/cafeHelpers';
 import {
   isHiddenGem,
   isOutdoorFriendly,
@@ -66,7 +66,7 @@ const PURPOSE_OPTIONS: Array<{
 
 export function CafeFinderPage() {
   const { locations, settings } = useCms();
-  const { hasPlus, openUpgradeModal } = useAuth();
+  const { authenticated, hasPlus, openUpgradeModal } = useAuth();
   const { userLocation, geoStatus, requestUserLocation, getEffectiveLocation } = useDiscovery();
 
   useDocumentMeta(
@@ -498,10 +498,10 @@ export function CafeFinderPage() {
             </p>
           </div>
           <Link
-            to={`/locations/${topPick.location.slug}`}
+            to={getCafeDetailRoute(topPick.location.slug, authenticated)}
             className="shrink-0 inline-flex items-center justify-center px-5 py-2.5 rounded-lg bg-[#b45309] hover:opacity-95 text-white text-xs sm:text-sm font-semibold"
           >
-            Inspect {topPick.location.name} &rarr;
+            Explore {topPick.location.name} &rarr;
           </Link>
         </div>
       )}
