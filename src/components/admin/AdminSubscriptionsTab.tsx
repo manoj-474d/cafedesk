@@ -375,129 +375,203 @@ export function AdminSubscriptionsTab({ csrfToken }: { csrfToken: string }) {
         </select>
       </div>
 
-      {/* Subscriptions Table */}
-      <div className="rounded-xl border border-[#e2e8f0] bg-white overflow-x-auto">
-        <table className="w-full text-left border-collapse text-xs">
-          <thead>
-            <tr className="border-b border-[#e2e8f0] bg-[#f8fafc] text-[#475569] font-semibold">
-              <th className="py-3 px-4">ID</th>
-              <th className="py-3 px-4">Subscriber</th>
-              <th className="py-3 px-4">Plan &amp; Price</th>
-              <th className="py-3 px-4">Start / Expiry</th>
-              <th className="py-3 px-4">Last Payment</th>
-              <th className="py-3 px-4">Sub Status &amp; Renewal</th>
-              <th className="py-3 px-4">Switch Plan</th>
-              <th className="py-3 px-4 text-right">Details</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-[#f1f5f9]">
-            {pagedUsers.length === 0 ? (
-              <tr>
-                <td colSpan={8} className="py-8 text-center text-[#64748b]">
-                  No subscriber records match this filter.
-                </td>
+      {/* Subscriptions List: Desktop Table + Mobile Cards */}
+      <div className="rounded-xl border border-[#e2e8f0] bg-white overflow-hidden">
+        <div className="hidden md:block overflow-x-auto">
+          <table className="w-full text-left border-collapse text-xs">
+            <thead>
+              <tr className="border-b border-[#e2e8f0] bg-[#f8fafc] text-[#475569] font-semibold">
+                <th className="py-3 px-4">ID</th>
+                <th className="py-3 px-4">Subscriber</th>
+                <th className="py-3 px-4">Plan &amp; Price</th>
+                <th className="py-3 px-4">Start / Expiry</th>
+                <th className="py-3 px-4">Last Payment</th>
+                <th className="py-3 px-4">Sub Status &amp; Renewal</th>
+                <th className="py-3 px-4">Switch Plan</th>
+                <th className="py-3 px-4 text-right">Details</th>
               </tr>
-            ) : (
-              pagedUsers.map((u) => {
-                const subPrice = u.subscription.subscribed_price_inr ?? u.subscription.price_inr;
-                return (
-                  <tr key={u.id} className="hover:bg-[#f8fafc]">
-                    <td className="py-3 px-4 font-mono-data text-[#64748b]">#{u.id}</td>
-                    <td className="py-3 px-4">
-                      <p className="font-semibold text-[#0f172a]">{u.name}</p>
-                      <p className="text-[#64748b]">{u.email}</p>
-                    </td>
-                    <td className="py-3 px-4 whitespace-nowrap">
-                      <span
-                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded font-semibold ${
-                          u.subscription.plan_id === 'premium'
-                            ? 'bg-[#1c1613] text-[#f59e0b]'
-                            : u.subscription.plan_id !== 'free'
-                            ? 'bg-amber-50 text-[#b45309]'
-                            : 'bg-[#f1f5f9] text-[#475569]'
-                        }`}
-                      >
-                        {u.subscription.plan_name || u.subscription.plan_id}
-                      </span>
-                      <p className="font-mono-data tabular-nums text-[#334155] mt-1">
-                        ₹{subPrice}
+            </thead>
+            <tbody className="divide-y divide-[#f1f5f9]">
+              {pagedUsers.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="py-8 text-center text-[#64748b]">
+                    No subscriber records match this filter.
+                  </td>
+                </tr>
+              ) : (
+                pagedUsers.map((u) => {
+                  const subPrice = u.subscription.subscribed_price_inr ?? u.subscription.price_inr;
+                  return (
+                    <tr key={u.id} className="hover:bg-[#f8fafc]">
+                      <td className="py-3 px-4 font-mono-data text-[#64748b]">#{u.id}</td>
+                      <td className="py-3 px-4">
+                        <p className="font-semibold text-[#0f172a]">{u.name}</p>
+                        <p className="text-[#64748b]">{u.email}</p>
+                      </td>
+                      <td className="py-3 px-4 whitespace-nowrap">
+                        <span
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded font-semibold ${
+                            u.subscription.plan_id === 'premium'
+                              ? 'bg-[#1c1613] text-[#f59e0b]'
+                              : u.subscription.plan_id !== 'free'
+                              ? 'bg-amber-50 text-[#b45309]'
+                              : 'bg-[#f1f5f9] text-[#475569]'
+                          }`}
+                        >
+                          {u.subscription.plan_name || u.subscription.plan_id}
+                        </span>
+                        <p className="font-mono-data tabular-nums text-[#334155] mt-1">
+                          ₹{subPrice}
+                        </p>
+                      </td>
+                      <td className="py-3 px-4 font-mono-data whitespace-nowrap text-[#334155]">
+                        <p>Start: {formatDate(u.subscription.started_at)}</p>
+                        <p className="text-[#64748b]">
+                          Exp:{' '}
+                          {u.subscription.expires_at
+                            ? formatDate(u.subscription.expires_at)
+                            : 'Free / Lifetime'}
+                        </p>
+                      </td>
+                      <td className="py-3 px-4 whitespace-nowrap">
+                        {u.last_payment_at ? (
+                          <>
+                            <p className="font-mono-data text-[#0f172a]">
+                              {formatDate(u.last_payment_at)}
+                            </p>
+                            <p className="capitalize font-semibold text-[#64748b]">
+                              {u.last_payment_status} · Total ₹{u.total_spent_inr}
+                            </p>
+                          </>
+                        ) : (
+                          <span className="text-[#94a3b8]">No payment</span>
+                        )}
+                      </td>
+                      <td className="py-3 px-4 whitespace-nowrap">
+                        <span
+                          className={`inline-block px-2 py-0.5 rounded border text-[11px] font-semibold capitalize ${
+                            u.subscription.status === 'active'
+                              ? 'bg-[#ecfdf5] border-[#a7f3d0] text-[#16a34a]'
+                              : u.subscription.status === 'cancelled'
+                              ? 'bg-[#fef2f2] border-[#fecaca] text-[#b91c1c]'
+                              : 'bg-[#f1f5f9] border-[#cbd5e1] text-[#475569]'
+                          }`}
+                        >
+                          {u.subscription.status}
+                        </span>
+                        <p className="text-[11px] text-[#64748b] mt-1">
+                          {u.subscription.plan_id === 'free'
+                            ? 'Free tier'
+                            : u.subscription.auto_renew
+                            ? `Auto-renew · ${formatDate(u.subscription.expires_at)}`
+                            : 'Auto-renew off'}
+                        </p>
+                      </td>
+                      <td className="py-3 px-4">
+                        <select
+                          aria-label={`Change plan for ${u.email}`}
+                          value={u.subscription.plan_id}
+                          onChange={(e) =>
+                            void handleChangeUserPlan(u.id, e.target.value as PlanTier)
+                          }
+                          className="h-8 px-2 rounded border border-[#cbd5e1] bg-[#f8fafc] text-xs font-semibold"
+                        >
+                          {data.plans.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.name} (₹{p.price_inr})
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="py-3 px-4 text-right whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => void openDetails(u.id)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-[#cbd5e1] bg-white hover:bg-[#f1f5f9] font-semibold text-[#0f172a]"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>Inspect</span>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Mobile Stacked Cards */}
+        <div className="md:hidden divide-y divide-[#e2e8f0]">
+          {pagedUsers.length === 0 ? (
+            <p className="p-8 text-center text-xs text-[#64748b]">
+              No subscriber records match this filter.
+            </p>
+          ) : (
+            pagedUsers.map((u) => {
+              const subPrice = u.subscription.subscribed_price_inr ?? u.subscription.price_inr;
+              return (
+                <div key={u.id} className="p-4 space-y-3 text-xs">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="font-bold text-sm text-[#0f172a]">
+                        {u.name} <span className="font-mono-data text-xs text-[#64748b]">#{u.id}</span>
                       </p>
-                    </td>
-                    <td className="py-3 px-4 font-mono-data whitespace-nowrap text-[#334155]">
-                      <p>Start: {formatDate(u.subscription.started_at)}</p>
-                      <p className="text-[#64748b]">
-                        Exp:{' '}
-                        {u.subscription.expires_at
-                          ? formatDate(u.subscription.expires_at)
-                          : 'Free / Lifetime'}
-                      </p>
-                    </td>
-                    <td className="py-3 px-4 whitespace-nowrap">
-                      {u.last_payment_at ? (
-                        <>
-                          <p className="font-mono-data text-[#0f172a]">
-                            {formatDate(u.last_payment_at)}
-                          </p>
-                          <p className="capitalize font-semibold text-[#64748b]">
-                            {u.last_payment_status} · Total ₹{u.total_spent_inr}
-                          </p>
-                        </>
-                      ) : (
-                        <span className="text-[#94a3b8]">No payment</span>
-                      )}
-                    </td>
-                    <td className="py-3 px-4 whitespace-nowrap">
-                      <span
-                        className={`inline-block px-2 py-0.5 rounded border text-[11px] font-semibold capitalize ${
-                          u.subscription.status === 'active'
-                            ? 'bg-[#ecfdf5] border-[#a7f3d0] text-[#16a34a]'
-                            : u.subscription.status === 'cancelled'
-                            ? 'bg-[#fef2f2] border-[#fecaca] text-[#b91c1c]'
-                            : 'bg-[#f1f5f9] border-[#cbd5e1] text-[#475569]'
-                        }`}
-                      >
-                        {u.subscription.status}
-                      </span>
-                      <p className="text-[11px] text-[#64748b] mt-1">
-                        {u.subscription.plan_id === 'free'
-                          ? 'Free tier'
-                          : u.subscription.auto_renew
-                          ? `Auto-renew · ${formatDate(u.subscription.expires_at)}`
-                          : 'Auto-renew off'}
-                      </p>
-                    </td>
-                    <td className="py-3 px-4">
-                      <select
-                        aria-label={`Change plan for ${u.email}`}
-                        value={u.subscription.plan_id}
-                        onChange={(e) =>
-                          void handleChangeUserPlan(u.id, e.target.value as PlanTier)
-                        }
-                        className="h-8 px-2 rounded border border-[#cbd5e1] bg-[#f8fafc] text-xs font-semibold"
-                      >
-                        {data.plans.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name} (₹{p.price_inr})
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                    <td className="py-3 px-4 text-right whitespace-nowrap">
-                      <button
-                        type="button"
-                        onClick={() => void openDetails(u.id)}
-                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-[#cbd5e1] bg-white hover:bg-[#f1f5f9] font-semibold text-[#0f172a]"
-                      >
-                        <Eye className="w-3.5 h-3.5" />
-                        <span>Inspect</span>
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
+                      <p className="text-[#64748b] truncate">{u.email}</p>
+                    </div>
+                    <span
+                      className={`px-2 py-0.5 rounded border text-[11px] font-semibold capitalize shrink-0 ${
+                        u.subscription.status === 'active'
+                          ? 'bg-[#ecfdf5] border-[#a7f3d0] text-[#16a34a]'
+                          : u.subscription.status === 'cancelled'
+                          ? 'bg-[#fef2f2] border-[#fecaca] text-[#b91c1c]'
+                          : 'bg-[#f1f5f9] border-[#cbd5e1] text-[#475569]'
+                      }`}
+                    >
+                      {u.subscription.status}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between text-[#475569] font-mono-data">
+                    <span>
+                      {u.subscription.plan_name || u.subscription.plan_id} · ₹{subPrice}
+                    </span>
+                    <span>
+                      {u.subscription.expires_at
+                        ? `Exp ${formatDate(u.subscription.expires_at)}`
+                        : 'Free / Lifetime'}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <select
+                      aria-label={`Change plan for ${u.email}`}
+                      value={u.subscription.plan_id}
+                      onChange={(e) =>
+                        void handleChangeUserPlan(u.id, e.target.value as PlanTier)
+                      }
+                      className="flex-1 h-11 px-3 rounded-lg border border-[#cbd5e1] bg-[#f8fafc] text-xs font-semibold"
+                    >
+                      {data.plans.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name} (₹{p.price_inr})
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => void openDetails(u.id)}
+                      className="min-h-[44px] px-4 rounded-lg border border-[#cbd5e1] bg-white font-semibold text-[#0f172a] inline-flex items-center gap-1.5"
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                      <span>Inspect</span>
+                    </button>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
 
         {filtered.length > PAGE_SIZE && (
           <div className="px-4 py-3 border-t border-[#e2e8f0] bg-[#f8fafc] flex items-center justify-between text-xs">

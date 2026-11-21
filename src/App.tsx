@@ -55,8 +55,13 @@ function AppRoutes() {
           <Route path="/owners" element={<OwnersPage />} />
         </Route>
 
-        {/* Administrator Portal Routes */}
-        <Route path="/admin" element={<Navigate to="/admin/login" replace />} />
+        {/* Owner Panel Routes */}
+        <Route path="/owner" element={<Navigate to="/owner/login" replace />} />
+        <Route path="/owner/login" element={<AdminLoginPage />} />
+        <Route path="/owner/dashboard" element={<AdminDashboardPage />} />
+
+        {/* Legacy /admin Compatibility Routes */}
+        <Route path="/admin" element={<Navigate to="/owner/login" replace />} />
         <Route path="/admin/login" element={<AdminLoginPage />} />
         <Route path="/admin/dashboard" element={<AdminDashboardPage />} />
 

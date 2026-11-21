@@ -16,6 +16,7 @@ export interface MenuItemRecord {
   category: string;
   description: string;
   price_inr: number;
+  discount_price_inr?: number | null;
   photo_url: string;
   available: boolean;
   dietary: DietaryType;
@@ -218,6 +219,18 @@ export interface SiteSettings {
   seo_contact_description: string;
   seo_og_image: string;
   seo_allow_indexing: boolean;
+
+  currency_code: string;
+  currency_symbol: string;
+  bookings_enabled: boolean;
+  booking_lead_hours: number;
+  booking_max_guests: number;
+  booking_policy_note: string;
+  notify_new_booking: boolean;
+  notify_new_customer: boolean;
+  notify_new_payment: boolean;
+  notify_new_suggestion: boolean;
+  notification_email: string;
 }
 
 export interface NavigationItem {

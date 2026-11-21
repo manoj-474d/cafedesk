@@ -29,6 +29,7 @@ import {
   recordRateAttempt,
   requireAdminAuth,
   requireFullAdmin,
+  resolveUserFromRequest,
   SESSION_COOKIE_NAME,
   setSessionCookie,
   sha256,
@@ -362,6 +363,122 @@ async function startServer() {
 
     recordActivity('Public Visitor', `Submitted ${type}`, cafeName || contactName || contactInfo || 'Form');
     res.status(201).json({ ok: true, id: Number(result.lastInsertRowid) });
+  });
+
+  // Public Workspace / Seat Booking Creation
+  app.post('/api/bookings', (req, res) => {
+    const ip = getClientIp(req);
+    const rl = checkRateLimit(`booking:${ip}`, 12, 15 * 60 * 1000);
+    if (!rl.allowed) {
+      res.status(429).json({
+        error: `Too many booking attempts. Please retry in ${rl.retryAfterSec} seconds.`,
+      });
+      return;
+    }
+
+    const settings = getSiteSettingsFromDb();
+    if (!settings.bookings_enabled) {
+      res.status(403).json({ error: 'Seat & workspace bookings are currently paused by the administrator.' });
+      return;
+    }
+
+    const db = getDb();
+    const resolvedUser = resolveUserFromRequest(req, res);
+
+    const cafeId = cleanStr(req.body?.cafe_id, 100);
+    const cafeRow = cafeId
+      ? (db.prepare('SELECT id, name FROM cafes WHERE id = ? OR slug = ?').get(cafeId, cafeId) as
+          | { id: string; name: string }
+          | undefined)
+      : undefined;
+    const cafeName = cafeRow?.name || cleanStr(req.body?.cafe_name, 140);
+    const finalCafeId = cafeRow?.id || cafeId || 'custom';
+
+    const customerName = cleanStr(req.body?.customer_name || resolvedUser?.name, 100);
+    const customerEmail = cleanStr(req.body?.customer_email || resolvedUser?.email, 160).toLowerCase();
+    const customerPhone = cleanStr(req.body?.customer_phone, 30);
+    const workspaceType = cleanStr(req.body?.workspace_type, 60) || 'Laptop Desk';
+    const bookingDate = cleanStr(req.body?.booking_date, 20);
+    const timeSlot = cleanStr(req.body?.time_slot, 40);
+    const maxGuests = Math.max(1, Number(settings.booking_max_guests || 8));
+    const guestsCount = Math.max(1, Math.min(maxGuests, Math.round(Number(req.body?.guests_count ?? 1))));
+    const notes = cleanStr(req.body?.notes, 500);
+
+    if (!customerName || (!customerEmail && !customerPhone)) {
+      res.status(400).json({ error: 'Customer name and email or phone are required.' });
+      return;
+    }
+    if (customerEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail)) {
+      res.status(400).json({ error: 'Please enter a valid email address.' });
+      return;
+    }
+    if (!cafeName) {
+      res.status(400).json({ error: 'Please select a cafe for your booking.' });
+      return;
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(bookingDate) || !timeSlot) {
+      res.status(400).json({ error: 'Booking date and time slot are required.' });
+      return;
+    }
+
+    recordRateAttempt(`booking:${ip}`, 15 * 60 * 1000);
+    const now = Date.now();
+    const bookingRef = `BK-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+
+    const insertRes = db
+      .prepare(
+        `INSERT INTO bookings
+         (booking_ref, user_id, customer_name, customer_email, customer_phone, cafe_id, cafe_name, workspace_type, booking_date, time_slot, guests_count, amount_inr, payment_status, status, notes, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'pay_at_cafe', 'pending', ?, ?, ?)`
+      )
+      .run(
+        bookingRef,
+        resolvedUser?.id ?? null,
+        customerName,
+        customerEmail,
+        customerPhone,
+        finalCafeId,
+        cafeName,
+        workspaceType,
+        bookingDate,
+        timeSlot,
+        guestsCount,
+        notes,
+        now,
+        now
+      );
+
+    recordActivity(
+      resolvedUser ? resolvedUser.email : customerName,
+      'Created workspace booking',
+      `${cafeName} (${bookingDate} · ${timeSlot})`,
+      '',
+      bookingRef
+    );
+
+    res.status(201).json({
+      ok: true,
+      booking: {
+        id: Number(insertRes.lastInsertRowid),
+        booking_ref: bookingRef,
+        user_id: resolvedUser?.id ?? null,
+        customer_name: customerName,
+        customer_email: customerEmail,
+        customer_phone: customerPhone,
+        cafe_id: finalCafeId,
+        cafe_name: cafeName,
+        workspace_type: workspaceType,
+        booking_date: bookingDate,
+        time_slot: timeSlot,
+        guests_count: guestsCount,
+        amount_inr: 0,
+        payment_status: 'pay_at_cafe',
+        status: 'pending',
+        notes,
+        created_at: now,
+        updated_at: now,
+      },
+    });
   });
 
   // ============================================================================
@@ -981,6 +1098,104 @@ async function startServer() {
       )
       .all();
 
+    // Bookings summary & popularity analytics
+    const istTodayStart = (() => {
+      try {
+        const d = new Date(`${today}T00:00:00+05:30`);
+        return Number.isFinite(d.getTime()) ? d.getTime() : now - 24 * 60 * 60 * 1000;
+      } catch {
+        return now - 24 * 60 * 60 * 1000;
+      }
+    })();
+
+    const bookingAgg = db
+      .prepare(
+        `SELECT
+           COUNT(*) as totalBookings,
+           SUM(CASE WHEN booking_date = ? OR created_at >= ? THEN 1 ELSE 0 END) as todayBookings,
+           SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pendingBookings,
+           SUM(CASE WHEN status = 'confirmed' THEN 1 ELSE 0 END) as confirmedBookings,
+           SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelledBookings
+         FROM bookings`
+      )
+      .get(today, istTodayStart) as {
+      totalBookings: number;
+      todayBookings: number;
+      pendingBookings: number;
+      confirmedBookings: number;
+      cancelledBookings: number;
+    };
+
+    const recentBookings = db
+      .prepare(
+        `SELECT id, booking_ref, customer_name, customer_email, cafe_name, workspace_type, booking_date, time_slot, guests_count, amount_inr, payment_status, status, created_at
+         FROM bookings
+         ORDER BY created_at DESC
+         LIMIT 6`
+      )
+      .all();
+
+    // Aggregate popular workspace types from real bookings + cafe capabilities
+    const workspaceCountMap = new Map<string, number>();
+    const bookingWsRows = db
+      .prepare('SELECT workspace_type, COUNT(*) as cnt FROM bookings GROUP BY workspace_type')
+      .all() as Array<{ workspace_type: string; cnt: number }>;
+    for (const r of bookingWsRows) {
+      const label = String(r.workspace_type || 'Laptop Desk').trim() || 'Laptop Desk';
+      workspaceCountMap.set(label, (workspaceCountMap.get(label) ?? 0) + Number(r.cnt || 0));
+    }
+
+    const publishedCafeRows = db
+      .prepare('SELECT modes_json, best_for_json, laptop_friendly, suitable_for_studying FROM cafes WHERE published = 1')
+      .all() as Array<{
+      modes_json: string;
+      best_for_json: string;
+      laptop_friendly: number;
+      suitable_for_studying: string;
+    }>;
+    for (const c of publishedCafeRows) {
+      let modes: string[] = [];
+      let bestFor: string[] = [];
+      try {
+        modes = JSON.parse(c.modes_json || '[]');
+      } catch {
+        modes = [];
+      }
+      try {
+        bestFor = JSON.parse(c.best_for_json || '[]');
+      } catch {
+        bestFor = [];
+      }
+      if (modes.includes('work') || c.laptop_friendly) {
+        workspaceCountMap.set('Laptop Desk', (workspaceCountMap.get('Laptop Desk') ?? 0) + 1);
+      }
+      if (modes.includes('calm') || c.suitable_for_studying === 'yes') {
+        workspaceCountMap.set('Quiet Study Zone', (workspaceCountMap.get('Quiet Study Zone') ?? 0) + 1);
+      }
+      if (modes.includes('plan') || bestFor.some((b) => /meeting|call|team/i.test(b))) {
+        workspaceCountMap.set('Meeting Booth', (workspaceCountMap.get('Meeting Booth') ?? 0) + 1);
+      }
+      if (modes.includes('budget')) {
+        workspaceCountMap.set('Casual & Budget Seating', (workspaceCountMap.get('Casual & Budget Seating') ?? 0) + 1);
+      }
+    }
+
+    const popularWorkspaceTypes = Array.from(workspaceCountMap.entries())
+      .map(([type, count]) => ({ type, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 6);
+
+    const popularMenuItems = db
+      .prepare(
+        `SELECT m.id, m.name, m.category, m.price_inr, m.discount_price_inr, m.is_bestseller, m.is_featured, c.name as cafe_name
+         FROM menu_items m
+         JOIN cafes c ON c.id = m.cafe_id
+         WHERE m.available = 1
+         ORDER BY m.is_bestseller DESC, m.is_featured DESC, m.id ASC
+         LIMIT 8`
+      )
+      .all();
+
     const totalUsers = Number(userCountRow.total ?? 0);
     const activeSubs = Number(subStats?.activePaidSubs ?? 0);
     const freeUsers = Math.max(0, totalUsers - activeSubs);
@@ -1007,6 +1222,11 @@ async function startServer() {
       monthRevenueInr: Number(revAgg?.monthRev ?? 0),
       yearRevenueInr: Number(revAgg?.yearRev ?? 0),
       mrrInr,
+      totalBookings: Number(bookingAgg?.totalBookings ?? 0),
+      todayBookings: Number(bookingAgg?.todayBookings ?? 0),
+      pendingBookings: Number(bookingAgg?.pendingBookings ?? 0),
+      confirmedBookings: Number(bookingAgg?.confirmedBookings ?? 0),
+      cancelledBookings: Number(bookingAgg?.cancelledBookings ?? 0),
       totalSubmissions: Number(enquiryStats.total),
       newSubmissions: Number(enquiryStats.pending ?? 0),
       totalSuggestions: Number(suggestionStats.total),
@@ -1018,6 +1238,9 @@ async function startServer() {
       recentPayments,
       recentUsers,
       recentRenewals,
+      recentBookings,
+      popularWorkspaceTypes,
+      popularMenuItems,
       recentActivity,
     });
   });
@@ -1608,8 +1831,8 @@ async function startServer() {
     const now = Date.now();
     const ins = db.prepare(
       `INSERT INTO menu_items
-       (cafe_id, name, category, description, price_inr, photo_url, available, dietary, is_bestseller, is_featured, sort_order, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       (cafe_id, name, category, description, price_inr, discount_price_inr, photo_url, available, dietary, is_bestseller, is_featured, sort_order, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
 
     const createdIds: number[] = [];
@@ -1623,6 +1846,15 @@ async function startServer() {
       const category = cleanStr(rec.category, 60) || 'Coffee';
       const description = cleanStr(rec.description, 300);
       const priceInr = Math.max(0, Math.min(100000, Math.round(Number(rec.price_inr ?? 0))));
+      let discountPriceInr: number | null = null;
+      if (rec.discount_price_inr !== null && rec.discount_price_inr !== undefined && rec.discount_price_inr !== '') {
+        const parsedDisc = Math.round(Number(rec.discount_price_inr));
+        if (!Number.isFinite(parsedDisc) || parsedDisc < 0 || parsedDisc >= priceInr) {
+          res.status(400).json({ error: `Item "${name}" discounted price must be lower than regular price.` });
+          return;
+        }
+        discountPriceInr = parsedDisc;
+      }
       const photoUrl = cleanStr(rec.photo_url, 500);
       if (photoUrl && !isSafeLinkOrPath(photoUrl)) {
         res.status(400).json({ error: 'Invalid photo URL.' });
@@ -1641,6 +1873,7 @@ async function startServer() {
         category,
         description,
         priceInr,
+        discountPriceInr,
         photoUrl,
         available ? 1 : 0,
         dietary,
@@ -1698,6 +1931,24 @@ async function startServer() {
       req.body?.price_inr === undefined
         ? Number(existing.price_inr ?? 0)
         : Math.max(0, Math.min(100000, Math.round(Number(req.body.price_inr))));
+    let discountPriceInr: number | null =
+      existing.discount_price_inr !== null && existing.discount_price_inr !== undefined
+        ? Number(existing.discount_price_inr)
+        : null;
+    if (req.body?.discount_price_inr !== undefined) {
+      if (req.body.discount_price_inr === null || req.body.discount_price_inr === '') {
+        discountPriceInr = null;
+      } else {
+        const parsedDisc = Math.round(Number(req.body.discount_price_inr));
+        if (!Number.isFinite(parsedDisc) || parsedDisc < 0 || parsedDisc >= priceInr) {
+          res.status(400).json({ error: 'Discounted price must be lower than regular price.' });
+          return;
+        }
+        discountPriceInr = parsedDisc;
+      }
+    } else if (discountPriceInr !== null && discountPriceInr >= priceInr) {
+      discountPriceInr = null;
+    }
     const photoUrl =
       req.body?.photo_url === undefined
         ? String(existing.photo_url || '')
@@ -1729,7 +1980,7 @@ async function startServer() {
     const now = Date.now();
     db.prepare(
       `UPDATE menu_items
-       SET name = ?, category = ?, description = ?, price_inr = ?, photo_url = ?,
+       SET name = ?, category = ?, description = ?, price_inr = ?, discount_price_inr = ?, photo_url = ?,
            available = ?, dietary = ?, is_bestseller = ?, is_featured = ?, sort_order = ?, updated_at = ?
        WHERE id = ?`
     ).run(
@@ -1737,6 +1988,7 @@ async function startServer() {
       category,
       description,
       priceInr,
+      discountPriceInr,
       photoUrl,
       available ? 1 : 0,
       dietary,
@@ -1754,7 +2006,7 @@ async function startServer() {
       'Updated menu item',
       `${name} (${cafeId})`,
       `₹${Number(existing.price_inr ?? 0)} · ${Boolean(existing.available) ? 'Available' : 'Unavailable'}`,
-      `₹${priceInr} · ${available ? 'Available' : 'Unavailable'}`
+      `₹${priceInr}${discountPriceInr !== null ? ` (sale ₹${discountPriceInr})` : ''} · ${available ? 'Available' : 'Unavailable'}`
     );
 
     res.json({ ok: true, items: listMenuItemsFromDb(cafeId) });
@@ -1786,6 +2038,194 @@ async function startServer() {
       'Deleted'
     );
     res.json({ ok: true, items: listMenuItemsFromDb(existing.cafe_id) });
+  });
+
+  // ---- Bookings Management ----
+  const ALLOWED_BOOKING_STATUSES = new Set(['pending', 'confirmed', 'cancelled', 'completed']);
+  const ALLOWED_BOOKING_PAYMENT_STATUSES = new Set(['unpaid', 'paid', 'refunded', 'pay_at_cafe']);
+
+  function formatBookingRow(b: Record<string, unknown>) {
+    return {
+      id: Number(b.id),
+      booking_ref: String(b.booking_ref),
+      user_id: b.user_id !== null && b.user_id !== undefined ? Number(b.user_id) : null,
+      customer_name: String(b.customer_name),
+      customer_email: String(b.customer_email || ''),
+      customer_phone: String(b.customer_phone || ''),
+      cafe_id: String(b.cafe_id),
+      cafe_name: String(b.cafe_name),
+      workspace_type: String(b.workspace_type || 'Laptop Desk'),
+      booking_date: String(b.booking_date),
+      time_slot: String(b.time_slot),
+      guests_count: Number(b.guests_count ?? 1),
+      amount_inr: Number(b.amount_inr ?? 0),
+      payment_status: String(b.payment_status || 'pay_at_cafe'),
+      status: String(b.status || 'pending'),
+      notes: String(b.notes || ''),
+      created_at: Number(b.created_at),
+      updated_at: Number(b.updated_at),
+    };
+  }
+
+  app.get('/api/admin/bookings', requireAdminAuth, (_req, res) => {
+    const db = getDb();
+    const rows = db
+      .prepare('SELECT * FROM bookings ORDER BY created_at DESC LIMIT 500')
+      .all() as Array<Record<string, unknown>>;
+    res.json({ bookings: rows.map(formatBookingRow) });
+  });
+
+  app.get('/api/admin/bookings/export', requireAdminAuth, (req, res) => {
+    const db = getDb();
+    const rows = db
+      .prepare('SELECT * FROM bookings ORDER BY created_at DESC LIMIT 1000')
+      .all() as Array<Record<string, unknown>>;
+
+    const header = [
+      'Booking Ref',
+      'Status',
+      'Payment Status',
+      'Amount INR',
+      'Cafe',
+      'Workspace Type',
+      'Booking Date',
+      'Time Slot',
+      'Guests',
+      'Customer Name',
+      'Customer Email',
+      'Customer Phone',
+      'Notes',
+      'Created At',
+    ].join(',');
+
+    const lines = rows.map((b) =>
+      [
+        csvEscape(b.booking_ref),
+        csvEscape(b.status),
+        csvEscape(b.payment_status),
+        csvEscape(b.amount_inr),
+        csvEscape(b.cafe_name),
+        csvEscape(b.workspace_type),
+        csvEscape(b.booking_date),
+        csvEscape(b.time_slot),
+        csvEscape(b.guests_count),
+        csvEscape(b.customer_name),
+        csvEscape(b.customer_email),
+        csvEscape(b.customer_phone),
+        csvEscape(b.notes),
+        csvEscape(new Date(Number(b.created_at)).toISOString()),
+      ].join(',')
+    );
+
+    recordActivity(req.admin!.username, 'Exported bookings CSV', `${rows.length} bookings`);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="cafedesk-bookings.csv"');
+    res.send([header, ...lines].join('\n'));
+  });
+
+  app.patch('/api/admin/bookings/:id', requireAdminAuth, (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      res.status(400).json({ error: 'Invalid booking ID.' });
+      return;
+    }
+
+    const db = getDb();
+    const existing = db.prepare('SELECT * FROM bookings WHERE id = ?').get(id) as
+      | Record<string, unknown>
+      | undefined;
+    if (!existing) {
+      res.status(404).json({ error: 'Booking not found.' });
+      return;
+    }
+
+    const status =
+      req.body?.status === undefined
+        ? String(existing.status)
+        : cleanStr(req.body.status, 30);
+    if (!ALLOWED_BOOKING_STATUSES.has(status)) {
+      res.status(400).json({ error: 'Invalid booking status.' });
+      return;
+    }
+
+    const paymentStatus =
+      req.body?.payment_status === undefined
+        ? String(existing.payment_status)
+        : cleanStr(req.body.payment_status, 30);
+    if (!ALLOWED_BOOKING_PAYMENT_STATUSES.has(paymentStatus)) {
+      res.status(400).json({ error: 'Invalid booking payment status.' });
+      return;
+    }
+
+    const bookingDate =
+      req.body?.booking_date === undefined
+        ? String(existing.booking_date)
+        : cleanStr(req.body.booking_date, 20);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(bookingDate)) {
+      res.status(400).json({ error: 'Booking date must be in YYYY-MM-DD format.' });
+      return;
+    }
+
+    const timeSlot =
+      req.body?.time_slot === undefined
+        ? String(existing.time_slot)
+        : cleanStr(req.body.time_slot, 40) || String(existing.time_slot);
+    const workspaceType =
+      req.body?.workspace_type === undefined
+        ? String(existing.workspace_type)
+        : cleanStr(req.body.workspace_type, 60) || String(existing.workspace_type);
+    const guestsCount =
+      req.body?.guests_count === undefined
+        ? Number(existing.guests_count ?? 1)
+        : Math.max(1, Math.min(50, Math.round(Number(req.body.guests_count))));
+    const amountInr =
+      req.body?.amount_inr === undefined
+        ? Number(existing.amount_inr ?? 0)
+        : Math.max(0, Math.min(100000, Math.round(Number(req.body.amount_inr))));
+    const notes =
+      req.body?.notes === undefined
+        ? String(existing.notes || '')
+        : cleanStr(req.body.notes, 500);
+
+    const now = Date.now();
+    db.prepare(
+      `UPDATE bookings
+       SET status = ?, payment_status = ?, booking_date = ?, time_slot = ?, workspace_type = ?, guests_count = ?, amount_inr = ?, notes = ?, updated_at = ?
+       WHERE id = ?`
+    ).run(status, paymentStatus, bookingDate, timeSlot, workspaceType, guestsCount, amountInr, notes, now, id);
+
+    const updated = db.prepare('SELECT * FROM bookings WHERE id = ?').get(id) as Record<string, unknown>;
+    recordActivity(
+      req.admin!.username,
+      `Updated booking ${String(existing.booking_ref)}`,
+      String(existing.cafe_name),
+      `${String(existing.status)} (${String(existing.booking_date)} ${String(existing.time_slot)})`,
+      `${status} (${bookingDate} ${timeSlot})`
+    );
+    res.json({ ok: true, booking: formatBookingRow(updated) });
+  });
+
+  app.delete('/api/admin/bookings/:id', requireAdminAuth, (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      res.status(400).json({ error: 'Invalid booking ID.' });
+      return;
+    }
+    const db = getDb();
+    const existing = db
+      .prepare('SELECT booking_ref, cafe_name FROM bookings WHERE id = ?')
+      .get(id) as { booking_ref: string; cafe_name: string } | undefined;
+    if (!existing) {
+      res.status(404).json({ error: 'Booking not found.' });
+      return;
+    }
+    db.prepare('DELETE FROM bookings WHERE id = ?').run(id);
+    recordActivity(
+      req.admin!.username,
+      'Deleted booking',
+      `${existing.booking_ref} · ${existing.cafe_name}`
+    );
+    res.json({ ok: true });
   });
 
   // ---- Submissions & Enquiries Management ----
@@ -2056,6 +2496,37 @@ async function startServer() {
         : current.seo_og_image,
       seo_allow_indexing:
         b.seo_allow_indexing === undefined ? current.seo_allow_indexing : Boolean(b.seo_allow_indexing),
+
+      currency_code: cleanStr(b.currency_code, 10).toUpperCase() || current.currency_code,
+      currency_symbol: cleanStr(b.currency_symbol, 8) || current.currency_symbol,
+      bookings_enabled:
+        b.bookings_enabled === undefined ? current.bookings_enabled : Boolean(b.bookings_enabled),
+      booking_lead_hours:
+        b.booking_lead_hours === undefined
+          ? current.booking_lead_hours
+          : Math.max(0, Math.min(168, Math.round(Number(b.booking_lead_hours)))),
+      booking_max_guests:
+        b.booking_max_guests === undefined
+          ? current.booking_max_guests
+          : Math.max(1, Math.min(50, Math.round(Number(b.booking_max_guests)))),
+      booking_policy_note:
+        b.booking_policy_note === undefined
+          ? current.booking_policy_note
+          : cleanStr(b.booking_policy_note, 400),
+      notify_new_booking:
+        b.notify_new_booking === undefined ? current.notify_new_booking : Boolean(b.notify_new_booking),
+      notify_new_customer:
+        b.notify_new_customer === undefined ? current.notify_new_customer : Boolean(b.notify_new_customer),
+      notify_new_payment:
+        b.notify_new_payment === undefined ? current.notify_new_payment : Boolean(b.notify_new_payment),
+      notify_new_suggestion:
+        b.notify_new_suggestion === undefined
+          ? current.notify_new_suggestion
+          : Boolean(b.notify_new_suggestion),
+      notification_email:
+        b.notification_email === undefined
+          ? current.notification_email
+          : cleanStr(b.notification_email, 160),
     };
 
     const db = getDb();

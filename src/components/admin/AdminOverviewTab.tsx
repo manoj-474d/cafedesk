@@ -2,11 +2,13 @@ import React, { useState } from 'react';
 import {
   Activity,
   Building2,
+  CalendarCheck,
   Coffee,
   Crown,
   Eye,
   Inbox,
   IndianRupee,
+  Laptop,
   Lightbulb,
   Search,
   TrendingUp,
@@ -74,6 +76,37 @@ export interface OverviewStats {
     user_name: string;
     user_email: string;
   }>;
+  totalBookings?: number;
+  todayBookings?: number;
+  pendingBookings?: number;
+  confirmedBookings?: number;
+  cancelledBookings?: number;
+  recentBookings?: Array<{
+    id: number;
+    booking_ref: string;
+    customer_name: string;
+    customer_email: string;
+    cafe_name: string;
+    workspace_type: string;
+    booking_date: string;
+    time_slot: string;
+    guests_count: number;
+    amount_inr: number;
+    payment_status: string;
+    status: string;
+    created_at: number;
+  }>;
+  popularWorkspaceTypes?: Array<{ type: string; count: number }>;
+  popularMenuItems?: Array<{
+    id: number;
+    name: string;
+    category: string;
+    price_inr: number;
+    discount_price_inr?: number | null;
+    is_bestseller: boolean | number;
+    is_featured: boolean | number;
+    cafe_name: string;
+  }>;
   recentActivity: Array<{
     id: number;
     actor: string;
@@ -119,7 +152,7 @@ export function AdminOverviewTab({
       {/* Page Title */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-[#0f172a]">Super Admin Overview</h1>
+          <h1 className="text-2xl font-bold text-[#0f172a]">Owner Overview</h1>
           <p className="text-xs text-[#64748b] mt-0.5">
             Live SQLite platform metrics across Bengaluru cafe listings, menus, members, subscriptions, and revenue.
           </p>
@@ -186,8 +219,25 @@ export function AdminOverviewTab({
         </div>
       </div>
 
-      {/* Secondary Metrics Strip */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      {/* Secondary Metrics Strip (including Bookings) */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <button
+          type="button"
+          onClick={() => onNavigateTab('bookings')}
+          className="text-left p-4 rounded-xl border border-[#e2e8f0] bg-white hover:border-[#0f172a] transition-colors flex items-center justify-between"
+        >
+          <div>
+            <p className="text-xs font-medium text-[#64748b]">Total &amp; Today&apos;s Bookings</p>
+            <p className="font-mono-data tabular-nums text-xl font-bold text-[#0f172a] mt-0.5">
+              {overview.totalBookings ?? 0}{' '}
+              <span className="text-xs font-semibold text-[#1b4d3e]">
+                ({overview.todayBookings ?? 0} today · {overview.pendingBookings ?? 0} pending)
+              </span>
+            </p>
+          </div>
+          <CalendarCheck className="w-5 h-5 text-[#1b4d3e]" aria-hidden="true" />
+        </button>
+
         <button
           type="button"
           onClick={() => onNavigateTab('enquiries')}
@@ -404,6 +454,7 @@ export function AdminOverviewTab({
           <h2 className="text-sm font-semibold text-[#0f172a]">Quick Management Shortcuts</h2>
           <div className="grid grid-cols-1 gap-2">
             {[
+              { tab: 'bookings', label: 'Manage Seat & Desk Bookings', tag: 'Bookings' },
               { tab: 'locations', label: 'Manage Bengaluru Cafes', tag: 'Cafes' },
               { tab: 'menu', label: 'Edit Menu & Food Prices', tag: 'Menu' },
               { tab: 'subscriptions', label: 'View Active Subscribers', tag: 'Subs' },
@@ -421,6 +472,146 @@ export function AdminOverviewTab({
               </button>
             ))}
           </div>
+        </div>
+      </div>
+
+      {/* Popular Workspace Types, Popular Food & Beverages, and Recent Bookings */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <div className="lg:col-span-4 p-5 rounded-xl border border-[#e2e8f0] bg-white space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-[#0f172a] inline-flex items-center gap-1.5">
+              <Laptop className="w-4 h-4 text-[#1b4d3e]" aria-hidden="true" />
+              <span>Popular Workspace Types</span>
+            </h2>
+            <button
+              type="button"
+              onClick={() => onNavigateTab('locations')}
+              className="text-xs font-semibold text-[#b45309] hover:underline"
+            >
+              Cafes &rarr;
+            </button>
+          </div>
+          {!overview.popularWorkspaceTypes || overview.popularWorkspaceTypes.length === 0 ? (
+            <p className="text-xs text-[#64748b] py-4">No workspace breakdown available yet.</p>
+          ) : (
+            <div className="space-y-3 pt-1">
+              {(() => {
+                const maxWs = Math.max(
+                  1,
+                  ...overview.popularWorkspaceTypes.map((w) => w.count)
+                );
+                return overview.popularWorkspaceTypes.map((ws) => {
+                  const pct = Math.max(8, Math.round((ws.count / maxWs) * 100));
+                  return (
+                    <div key={ws.type} className="space-y-1 text-xs">
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold text-[#0f172a]">{ws.type}</span>
+                        <span className="font-mono-data text-[#475569]">{ws.count}</span>
+                      </div>
+                      <div className="h-2 rounded-full bg-[#f1f5f9] overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-[#1b4d3e]"
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+          )}
+        </div>
+
+        <div className="lg:col-span-4 p-5 rounded-xl border border-[#e2e8f0] bg-white space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-[#0f172a] inline-flex items-center gap-1.5">
+              <Coffee className="w-4 h-4 text-[#b45309]" aria-hidden="true" />
+              <span>Popular Food &amp; Beverages</span>
+            </h2>
+            <button
+              type="button"
+              onClick={() => onNavigateTab('menu')}
+              className="text-xs font-semibold text-[#b45309] hover:underline"
+            >
+              Menus &rarr;
+            </button>
+          </div>
+          {!overview.popularMenuItems || overview.popularMenuItems.length === 0 ? (
+            <p className="text-xs text-[#64748b] py-4">No menu items added yet.</p>
+          ) : (
+            <div className="divide-y divide-[#f1f5f9] text-xs">
+              {overview.popularMenuItems.slice(0, 6).map((m) => (
+                <div key={m.id} className="py-2 flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-[#0f172a] truncate">{m.name}</p>
+                    <p className="text-[11px] text-[#64748b] truncate">
+                      {m.cafe_name} · {m.category}
+                      {m.is_bestseller ? ' · Bestseller' : ''}
+                    </p>
+                  </div>
+                  <div className="font-mono-data font-bold text-[#0f172a] shrink-0 text-right">
+                    {m.discount_price_inr !== null &&
+                    m.discount_price_inr !== undefined &&
+                    m.discount_price_inr < m.price_inr ? (
+                      <>
+                        <span className="text-[#1b4d3e]">₹{m.discount_price_inr}</span>
+                        <del className="text-[#94a3b8] font-normal ml-1 text-[10px]">
+                          ₹{m.price_inr}
+                        </del>
+                      </>
+                    ) : (
+                      <span>₹{m.price_inr}</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="lg:col-span-4 p-5 rounded-xl border border-[#e2e8f0] bg-white space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-[#0f172a] inline-flex items-center gap-1.5">
+              <CalendarCheck className="w-4 h-4 text-[#b45309]" aria-hidden="true" />
+              <span>Recent Bookings</span>
+            </h2>
+            <button
+              type="button"
+              onClick={() => onNavigateTab('bookings')}
+              className="text-xs font-semibold text-[#b45309] hover:underline"
+            >
+              All Bookings &rarr;
+            </button>
+          </div>
+          {!overview.recentBookings || overview.recentBookings.length === 0 ? (
+            <p className="text-xs text-[#64748b] py-4">No bookings submitted yet.</p>
+          ) : (
+            <div className="divide-y divide-[#f1f5f9] text-xs">
+              {overview.recentBookings.map((b) => (
+                <div key={b.id} className="py-2 flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-[#0f172a] truncate">
+                      {b.customer_name} · <span className="font-mono-data">{b.booking_ref}</span>
+                    </p>
+                    <p className="text-[11px] text-[#64748b] truncate">
+                      {b.cafe_name} · {b.booking_date}
+                    </p>
+                  </div>
+                  <span
+                    className={`px-2 py-0.5 rounded text-[10px] font-bold capitalize shrink-0 ${
+                      b.status === 'confirmed'
+                        ? 'bg-[#ecfdf5] text-[#1b4d3e]'
+                        : b.status === 'cancelled'
+                        ? 'bg-[#fef2f2] text-[#991b1b]'
+                        : 'bg-[#fffbeb] text-[#b45309]'
+                    }`}
+                  >
+                    {b.status}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 

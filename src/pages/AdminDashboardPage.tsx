@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   Activity,
   Building2,
+  CalendarCheck,
   Clock,
   Coffee,
   Compass,
@@ -55,13 +56,15 @@ import { AdminRevenueTab } from '../components/admin/AdminRevenueTab';
 import { AdminPlansTab } from '../components/admin/AdminPlansTab';
 import { AdminAuditTab } from '../components/admin/AdminAuditTab';
 import { AdminSuggestionsTab } from '../components/admin/AdminSuggestionsTab';
-import type { FeatureSuggestion } from '../types/subscription';
+import { AdminBookingsTab } from '../components/admin/AdminBookingsTab';
+import type { BookingRecord, FeatureSuggestion } from '../types/subscription';
 
 type TabKey =
   | 'overview'
   | 'locations'
   | 'menu'
   | 'media'
+  | 'bookings'
   | 'subscriptions'
   | 'users'
   | 'revenue'
@@ -100,6 +103,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     heading: 'Members & Revenue',
     items: [
+      { key: 'bookings', label: 'Bookings & Seats', icon: CalendarCheck },
       { key: 'subscriptions', label: 'Subscriptions', icon: Crown },
       { key: 'users', label: 'User Directory', icon: Users },
       { key: 'revenue', label: 'Payments & Revenue', icon: CreditCard },
@@ -128,9 +132,11 @@ const NAV_GROUPS: NavGroup[] = [
 
 export function AdminDashboardPage() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const loginPath = location.pathname.startsWith('/admin') ? '/admin/login' : '/owner/login';
   const { settings: publicSettings, refreshCms } = useCms();
 
-  useDocumentMeta('Admin Control Center – CafeDesk CMS', 'CafeDesk administrator CMS.', {
+  useDocumentMeta('Owner Panel – CafeDesk', 'CafeDesk Owner management panel.', {
     allowIndexing: false,
   });
 
@@ -149,17 +155,18 @@ export function AdminDashboardPage() {
   const [media, setMedia] = useState<MediaAsset[]>([]);
   const [submissions, setSubmissions] = useState<SubmissionRecord[]>([]);
   const [suggestions, setSuggestions] = useState<FeatureSuggestion[]>([]);
+  const [bookings, setBookings] = useState<BookingRecord[]>([]);
   const [teamUsers, setTeamUsers] = useState<AdminUserRecord[]>([]);
 
   const handleAuthStatusCheck = useCallback(
     (res: Response) => {
       if (res.status === 401) {
-        navigate('/admin/login', { replace: true });
+        navigate(loginPath, { replace: true });
         return false;
       }
       return res.ok;
     },
-    [navigate]
+    [navigate, loginPath]
   );
 
   const loadOverview = useCallback(async () => {
@@ -226,6 +233,14 @@ export function AdminDashboardPage() {
     }
   }, [handleAuthStatusCheck]);
 
+  const loadBookings = useCallback(async () => {
+    const res = await fetch('/api/admin/bookings', { credentials: 'include' });
+    if (handleAuthStatusCheck(res)) {
+      const data = (await res.json()) as { bookings?: BookingRecord[] };
+      if (Array.isArray(data.bookings)) setBookings(data.bookings);
+    }
+  }, [handleAuthStatusCheck]);
+
   const loadUsers = useCallback(
     async (role: AdminIdentity['role']) => {
       if (role !== 'super_admin' && role !== 'admin') return;
@@ -249,6 +264,7 @@ export function AdminDashboardPage() {
         loadMedia(),
         loadSubmissions(),
         loadSuggestions(),
+        loadBookings(),
         loadUsers(role),
       ]);
     },
@@ -261,6 +277,7 @@ export function AdminDashboardPage() {
       loadMedia,
       loadSubmissions,
       loadSuggestions,
+      loadBookings,
       loadUsers,
     ]
   );
@@ -272,7 +289,7 @@ export function AdminDashboardPage() {
       .then((data: { authenticated?: boolean; admin?: AdminIdentity }) => {
         if (!active) return;
         if (!data.authenticated || !data.admin) {
-          navigate('/admin/login', { replace: true });
+          navigate(loginPath, { replace: true });
           return;
         }
         setAdmin(data.admin);
@@ -280,13 +297,13 @@ export function AdminDashboardPage() {
         void loadAllAdminData(data.admin.role);
       })
       .catch(() => {
-        if (active) navigate('/admin/login', { replace: true });
+        if (active) navigate(loginPath, { replace: true });
       });
 
     return () => {
       active = false;
     };
-  }, [navigate, loadAllAdminData]);
+  }, [navigate, loginPath, loadAllAdminData]);
 
   const handleSaveSettings = async (next: SiteSettings): Promise<boolean> => {
     if (!admin) return false;
@@ -301,7 +318,7 @@ export function AdminDashboardPage() {
         body: JSON.stringify(next),
       });
       if (res.status === 401) {
-        navigate('/admin/login', { replace: true });
+        navigate(loginPath, { replace: true });
         return false;
       }
       if (!res.ok) return false;
@@ -322,14 +339,14 @@ export function AdminDashboardPage() {
         credentials: 'include',
       }).catch(() => {});
     }
-    navigate('/admin/login', { replace: true });
+    navigate(loginPath, { replace: true });
   };
 
   if (checkingAuth || !admin) {
     return (
       <div className="min-h-screen bg-[#f8fafc] flex items-center justify-center p-6">
         <p className="text-sm font-semibold text-[#475569]">
-          Verifying administrator session...
+          Verifying owner session...
         </p>
       </div>
     );
@@ -337,6 +354,7 @@ export function AdminDashboardPage() {
 
   const unreadEnquiries = submissions.filter((s) => s.status === 'new').length;
   const newSuggestions = suggestions.filter((s) => s.status === 'new').length;
+  const pendingBookings = bookings.filter((b) => b.status === 'pending').length;
 
   const sessionMinsLeft = admin.expiresAt
     ? Math.max(0, Math.round((admin.expiresAt - Date.now()) / 60000))
@@ -352,14 +370,14 @@ export function AdminDashboardPage() {
           <button
             type="button"
             onClick={() => setMobileMenuOpen((v) => !v)}
-            aria-label="Toggle admin menu"
+            aria-label="Toggle owner menu"
             className="h-9 w-9 rounded-lg border border-[#3a2f2a] flex items-center justify-center"
           >
             {mobileMenuOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
           </button>
           <div>
             <span className="font-serif-display text-lg font-semibold">
-              {cmsSettings.brand_name || 'CafeDesk'} Admin
+              {cmsSettings.brand_name || 'CafeDesk'} Owner
             </span>
           </div>
         </div>
@@ -382,7 +400,7 @@ export function AdminDashboardPage() {
           <div className="hidden lg:block space-y-1">
             <div className="flex items-center gap-2 text-[#f59e0b] text-xs font-semibold">
               <ShieldCheck className="w-4 h-4" aria-hidden="true" />
-              <span>Super Admin Panel</span>
+              <span>Owner Panel</span>
             </div>
             <p className="font-serif-display text-xl font-bold text-white">
               {cmsSettings.brand_name || 'CafeDesk'}
@@ -398,7 +416,7 @@ export function AdminDashboardPage() {
             )}
           </div>
 
-          <nav aria-label="CMS sections" className="space-y-4">
+          <nav aria-label="Owner panel sections" className="space-y-4">
             {NAV_GROUPS.map((group) => (
               <div key={group.heading} className="space-y-1">
                 <p className="px-3 text-[10px] font-bold uppercase tracking-wider text-[#9a8e80]">
@@ -424,6 +442,11 @@ export function AdminDashboardPage() {
                         <Icon className="w-4 h-4 shrink-0" aria-hidden="true" />
                         <span>{label}</span>
                       </span>
+                      {key === 'bookings' && pendingBookings > 0 && (
+                        <span className="px-1.5 py-0.5 rounded bg-white text-[#1c1613] text-[10px] font-bold font-mono-data">
+                          {pendingBookings}
+                        </span>
+                      )}
                       {key === 'enquiries' && unreadEnquiries > 0 && (
                         <span className="px-1.5 py-0.5 rounded bg-white text-[#1c1613] text-[10px] font-bold font-mono-data">
                           {unreadEnquiries}
@@ -501,6 +524,17 @@ export function AdminDashboardPage() {
             csrfToken={admin.csrfToken}
             onRefreshMedia={async () => {
               await Promise.all([loadMedia(), loadOverview(), refreshCms()]);
+            }}
+          />
+        )}
+
+        {activeTab === 'bookings' && (
+          <AdminBookingsTab
+            bookings={bookings}
+            locations={locations}
+            csrfToken={admin.csrfToken}
+            onRefreshBookings={async () => {
+              await Promise.all([loadBookings(), loadOverview()]);
             }}
           />
         )}

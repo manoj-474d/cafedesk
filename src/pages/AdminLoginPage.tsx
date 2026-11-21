@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { ArrowLeft, KeyRound, Lock, ShieldCheck, UserPlus } from 'lucide-react';
 import { useDocumentMeta } from '../utils/cafeHelpers';
 
@@ -7,7 +7,11 @@ type AuthMode = 'checking' | 'setup' | 'login' | 'reset_req' | 'reset_confirm';
 
 export function AdminLoginPage() {
   const navigate = useNavigate();
-  useDocumentMeta('Administrator Sign In – CafeDesk CMS', 'Secure CafeDesk administrator portal.', {
+  const location = useLocation();
+  const dashboardPath = location.pathname.startsWith('/admin')
+    ? '/admin/dashboard'
+    : '/owner/dashboard';
+  useDocumentMeta('Owner Sign In – CafeDesk', 'Secure CafeDesk Owner Panel.', {
     allowIndexing: false,
   });
 
@@ -31,7 +35,7 @@ export function AdminLoginPage() {
       .then((data: { setupRequired?: boolean; authenticated?: boolean }) => {
         if (!active) return;
         if (data.authenticated) {
-          navigate('/admin/dashboard', { replace: true });
+          navigate(dashboardPath, { replace: true });
           return;
         }
         setMode(data.setupRequired ? 'setup' : 'login');
@@ -42,7 +46,7 @@ export function AdminLoginPage() {
     return () => {
       active = false;
     };
-  }, [navigate]);
+  }, [navigate, dashboardPath]);
 
   const handleSetup = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -57,10 +61,10 @@ export function AdminLoginPage() {
       });
       const data = (await res.json()) as { error?: string };
       if (!res.ok) {
-        setErrorMsg(data.error || 'Unable to create administrator account.');
+        setErrorMsg(data.error || 'Unable to create owner account.');
         return;
       }
-      navigate('/admin/dashboard', { replace: true });
+      navigate(dashboardPath, { replace: true });
     } catch {
       setErrorMsg('Network error. Please try again.');
     } finally {
@@ -99,7 +103,7 @@ export function AdminLoginPage() {
         setErrorMsg(data.error || 'Invalid credentials.');
         return;
       }
-      navigate('/admin/dashboard', { replace: true });
+      navigate(dashboardPath, { replace: true });
     } catch {
       setErrorMsg('Network error. Please try again.');
     } finally {
@@ -176,7 +180,7 @@ export function AdminLoginPage() {
           </Link>
           <span className="inline-flex items-center gap-1 text-xs font-semibold text-[#1b4d3e]">
             <ShieldCheck className="w-4 h-4" aria-hidden="true" />
-            <span>Server-Authenticated CMS</span>
+            <span>Owner Portal</span>
           </span>
         </div>
 
@@ -184,19 +188,19 @@ export function AdminLoginPage() {
           <div className="space-y-1">
             <h1 className="font-serif-display text-2xl sm:text-3xl font-bold text-[#0f172a]">
               {mode === 'setup'
-                ? 'Initial Admin Setup'
+                ? 'Initial Owner Setup'
                 : mode === 'reset_req' || mode === 'reset_confirm'
-                ? 'Reset Admin Password'
-                : 'CafeDesk Admin Sign In'}
+                ? 'Reset Owner Password'
+                : 'CafeDesk Owner Sign In'}
             </h1>
             <p className="text-sm text-[#475569]">
               {mode === 'setup'
-                ? 'Create the primary Super Administrator account to manage CafeDesk.'
+                ? 'Create the primary Owner account to manage CafeDesk.'
                 : mode === 'reset_req'
-                ? 'Enter your admin username or email to generate a 15-minute server recovery code.'
+                ? 'Enter your owner username or email to generate a 15-minute server recovery code.'
                 : mode === 'reset_confirm'
                 ? 'Enter the single-use recovery code from your server console and choose a new password.'
-                : 'Sign in with your administrator username or email and password.'}
+                : 'Sign in with your owner username or email and password.'}
             </p>
           </div>
 
@@ -228,7 +232,7 @@ export function AdminLoginPage() {
             <form onSubmit={handleSetup} className="space-y-4">
               <div>
                 <label htmlFor="st-user" className="block text-xs font-semibold text-[#334155] mb-1">
-                  Admin Username *
+                  Owner Username *
                 </label>
                 <input
                   id="st-user"
@@ -236,21 +240,21 @@ export function AdminLoginPage() {
                   required
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  placeholder="e.g. cafedesk_admin"
+                  placeholder="e.g. cafedesk_owner"
                   className="w-full h-11 px-3.5 rounded-lg border border-[#cbd5e1] bg-[#f8fafc] text-sm"
                 />
               </div>
 
               <div>
                 <label htmlFor="st-email" className="block text-xs font-semibold text-[#334155] mb-1">
-                  Admin Email (optional)
+                  Owner Email (optional)
                 </label>
                 <input
                   id="st-email"
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="admin@cafedesk.space"
+                  placeholder="owner@cafedesk.space"
                   className="w-full h-11 px-3.5 rounded-lg border border-[#cbd5e1] bg-[#f8fafc] text-sm"
                 />
               </div>
@@ -264,7 +268,7 @@ export function AdminLoginPage() {
                   type="text"
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
-                  placeholder="Site Administrator"
+                  placeholder="CafeDesk Owner"
                   className="w-full h-11 px-3.5 rounded-lg border border-[#cbd5e1] bg-[#f8fafc] text-sm"
                 />
               </div>
@@ -293,7 +297,7 @@ export function AdminLoginPage() {
                 className="w-full min-h-[44px] px-4 py-2.5 rounded-lg bg-[#0f172a] hover:bg-[#1e293b] disabled:opacity-60 text-white text-sm font-semibold inline-flex items-center justify-center gap-2"
               >
                 <UserPlus className="w-4 h-4" aria-hidden="true" />
-                <span>{busy ? 'Creating account...' : 'Create Super Admin & Enter'}</span>
+                <span>{busy ? 'Creating account...' : 'Create Owner & Enter'}</span>
               </button>
             </form>
           )}
@@ -392,7 +396,7 @@ export function AdminLoginPage() {
                       : 'Signing in...'
                     : requires2FA
                     ? 'Verify & Sign In'
-                    : 'Sign In to Dashboard'}
+                    : 'Sign In to Owner Panel'}
                 </span>
               </button>
 
@@ -428,7 +432,7 @@ export function AdminLoginPage() {
                   required
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  placeholder="Enter admin username or email"
+                  placeholder="Enter owner username or email"
                   className="w-full h-11 px-3.5 rounded-lg border border-[#cbd5e1] bg-[#f8fafc] text-sm"
                 />
               </div>

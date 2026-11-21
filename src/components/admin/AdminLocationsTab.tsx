@@ -450,138 +450,243 @@ export function AdminLocationsTab({
         </div>
       </div>
 
-      {/* Locations Table */}
-      <div className="bg-white rounded-xl border border-[#e2e8f0] overflow-x-auto">
-        <table className="w-full text-left border-collapse text-xs">
-          <thead>
-            <tr className="border-b border-[#e2e8f0] bg-[#f8fafc] text-[#475569] font-semibold">
-              <th className="py-3 px-4">Order</th>
-              <th className="py-3 px-4">Cafe &amp; Locality</th>
-              <th className="py-3 px-4">Specs</th>
-              <th className="py-3 px-4">Photos</th>
-              <th className="py-3 px-4">Status</th>
-              <th className="py-3 px-4 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-[#f1f5f9]">
-            {pagedLocations.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="py-8 text-center text-[#64748b]">
-                  No cafes match the current filters.
-                </td>
+      {/* Locations List: Desktop Table + Mobile Stacked Cards */}
+      <div className="bg-white rounded-xl border border-[#e2e8f0] overflow-hidden">
+        <div className="hidden md:block overflow-x-auto">
+          <table className="w-full text-left border-collapse text-xs">
+            <thead>
+              <tr className="border-b border-[#e2e8f0] bg-[#f8fafc] text-[#475569] font-semibold">
+                <th className="py-3 px-4">Order</th>
+                <th className="py-3 px-4">Cafe &amp; Locality</th>
+                <th className="py-3 px-4">Specs</th>
+                <th className="py-3 px-4">Photos</th>
+                <th className="py-3 px-4">Status</th>
+                <th className="py-3 px-4 text-right">Actions</th>
               </tr>
-            ) : (
-              pagedLocations.map((loc) => (
-                <tr key={loc.id} className="hover:bg-[#f8fafc]">
-                  <td className="py-3 px-4 font-mono-data text-[#64748b]">{loc.display_order}</td>
-                  <td className="py-3 px-4">
-                    <p className="font-semibold text-[#0f172a] text-sm">{loc.name}</p>
-                    <p className="text-[#64748b]">
-                      {loc.area}, {loc.city} · /{loc.slug}
-                      {loc.category ? ` · ${loc.category}` : ''}
-                    </p>
-                  </td>
-                  <td className="py-3 px-4 font-mono-data text-[#334155] whitespace-nowrap">
-                    {loc.wifi_mbps !== null ? `${loc.wifi_mbps} Mbps` : 'WiFi —'} ·{' '}
-                    {loc.sockets_count !== null
-                      ? `${loc.sockets_count} plugs`
-                      : loc.sockets_claimed
-                      ? 'Plugs claimed'
-                      : 'Plugs —'}{' '}
-                    · {loc.avg_cost_per_person !== null ? `₹${loc.avg_cost_per_person}` : '₹ —'}
-                  </td>
-                  <td className="py-3 px-4 whitespace-nowrap">
-                    {loc.photos.length === 0 ? (
-                      <span className="text-[#64748b]">None uploaded</span>
-                    ) : loc.photos_approved ? (
-                      <span className="text-[#16a34a] font-semibold">
-                        {loc.photos.length} approved
-                      </span>
-                    ) : (
-                      <span className="text-[#d97706] font-semibold">
-                        {loc.photos.length} awaiting approval
-                      </span>
-                    )}
-                  </td>
-                  <td className="py-3 px-4">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <button
-                        type="button"
-                        onClick={() => handleQuickToggle(loc, 'published')}
-                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[11px] font-semibold ${
-                          loc.published
-                            ? 'bg-[#ecfdf5] border-[#a7f3d0] text-[#16a34a]'
-                            : 'bg-[#f1f5f9] border-[#cbd5e1] text-[#64748b]'
-                        }`}
-                      >
-                        {loc.published ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
-                        <span>{loc.published ? 'Published' : 'Draft'}</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => handleQuickToggle(loc, 'verified')}
-                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[11px] font-semibold ${
-                          loc.verified
-                            ? 'bg-[#eff6ff] border-[#bfdbfe] text-[#1d4ed8]'
-                            : 'bg-white border-[#cbd5e1] text-[#64748b]'
-                        }`}
-                      >
-                        <CheckCircle2 className="w-3 h-3" />
-                        <span>Verified</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => handleQuickToggle(loc, 'featured')}
-                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[11px] font-semibold ${
-                          loc.featured
-                            ? 'bg-[#fef3c7] border-[#fde68a] text-[#b45309]'
-                            : 'bg-white border-[#cbd5e1] text-[#64748b]'
-                        }`}
-                      >
-                        <Star className="w-3 h-3" />
-                        <span>Featured</span>
-                      </button>
-                    </div>
-                  </td>
-                  <td className="py-3 px-4 text-right whitespace-nowrap">
-                    <div className="inline-flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => setPreviewLoc(loc)}
-                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-[#e2e8f0] bg-white hover:bg-[#f1f5f9] text-[#475569] font-semibold"
-                      >
-                        <Eye className="w-3.5 h-3.5" aria-hidden="true" />
-                        <span>Preview</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => openEditor(loc)}
-                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-[#cbd5e1] bg-white hover:bg-[#f1f5f9] text-[#0f172a] font-semibold"
-                      >
-                        <Edit3 className="w-3.5 h-3.5" aria-hidden="true" />
-                        <span>Edit</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setConfirmDeleteLoc(loc)}
-                        aria-label={`Delete ${loc.name}`}
-                        className="p-1.5 rounded-md border border-[#fecaca] text-[#dc2626] hover:bg-[#fef2f2]"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
+            </thead>
+            <tbody className="divide-y divide-[#f1f5f9]">
+              {pagedLocations.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="py-8 text-center text-[#64748b]">
+                    No cafes match the current filters.
                   </td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+              ) : (
+                pagedLocations.map((loc) => (
+                  <tr key={loc.id} className="hover:bg-[#f8fafc]">
+                    <td className="py-3 px-4 font-mono-data text-[#64748b]">{loc.display_order}</td>
+                    <td className="py-3 px-4">
+                      <p className="font-semibold text-[#0f172a] text-sm">{loc.name}</p>
+                      <p className="text-[#64748b]">
+                        {loc.area}, {loc.city} · /{loc.slug}
+                        {loc.category ? ` · ${loc.category}` : ''}
+                      </p>
+                    </td>
+                    <td className="py-3 px-4 font-mono-data text-[#334155] whitespace-nowrap">
+                      {loc.wifi_mbps !== null ? `${loc.wifi_mbps} Mbps` : 'WiFi —'} ·{' '}
+                      {loc.sockets_count !== null
+                        ? `${loc.sockets_count} plugs`
+                        : loc.sockets_claimed
+                        ? 'Plugs claimed'
+                        : 'Plugs —'}{' '}
+                      · {loc.avg_cost_per_person !== null ? `₹${loc.avg_cost_per_person}` : '₹ —'}
+                    </td>
+                    <td className="py-3 px-4 whitespace-nowrap">
+                      {loc.photos.length === 0 ? (
+                        <span className="text-[#64748b]">None uploaded</span>
+                      ) : loc.photos_approved ? (
+                        <span className="text-[#16a34a] font-semibold">
+                          {loc.photos.length} approved
+                        </span>
+                      ) : (
+                        <span className="text-[#d97706] font-semibold">
+                          {loc.photos.length} awaiting approval
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-3 px-4">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <button
+                          type="button"
+                          onClick={() => handleQuickToggle(loc, 'published')}
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[11px] font-semibold ${
+                            loc.published
+                              ? 'bg-[#ecfdf5] border-[#a7f3d0] text-[#16a34a]'
+                              : 'bg-[#f1f5f9] border-[#cbd5e1] text-[#64748b]'
+                          }`}
+                        >
+                          {loc.published ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
+                          <span>{loc.published ? 'Published' : 'Draft'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleQuickToggle(loc, 'verified')}
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[11px] font-semibold ${
+                            loc.verified
+                              ? 'bg-[#eff6ff] border-[#bfdbfe] text-[#1d4ed8]'
+                              : 'bg-white border-[#cbd5e1] text-[#64748b]'
+                          }`}
+                        >
+                          <CheckCircle2 className="w-3 h-3" />
+                          <span>Verified</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleQuickToggle(loc, 'featured')}
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[11px] font-semibold ${
+                            loc.featured
+                              ? 'bg-[#fef3c7] border-[#fde68a] text-[#b45309]'
+                              : 'bg-white border-[#cbd5e1] text-[#64748b]'
+                          }`}
+                        >
+                          <Star className="w-3 h-3" />
+                          <span>Featured</span>
+                        </button>
+                      </div>
+                    </td>
+                    <td className="py-3 px-4 text-right whitespace-nowrap">
+                      <div className="inline-flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setPreviewLoc(loc)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-[#e2e8f0] bg-white hover:bg-[#f1f5f9] text-[#475569] font-semibold"
+                        >
+                          <Eye className="w-3.5 h-3.5" aria-hidden="true" />
+                          <span>Preview</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openEditor(loc)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-[#cbd5e1] bg-white hover:bg-[#f1f5f9] text-[#0f172a] font-semibold"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" aria-hidden="true" />
+                          <span>Edit</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteLoc(loc)}
+                          aria-label={`Delete ${loc.name}`}
+                          className="p-1.5 rounded-md border border-[#fecaca] text-[#dc2626] hover:bg-[#fef2f2]"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Mobile Stacked Cards */}
+        <div className="md:hidden divide-y divide-[#e2e8f0]">
+          {pagedLocations.length === 0 ? (
+            <p className="p-8 text-center text-xs text-[#64748b]">
+              No cafes match the current filters.
+            </p>
+          ) : (
+            pagedLocations.map((loc) => (
+              <div key={loc.id} className="p-4 space-y-3 text-xs">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="font-bold text-sm text-[#0f172a]">{loc.name}</p>
+                    <p className="text-[#64748b]">
+                      {loc.area}, {loc.city}
+                      {loc.category ? ` · ${loc.category}` : ''}
+                    </p>
+                  </div>
+                  <span className="font-mono-data text-[#64748b] shrink-0">
+                    #{loc.display_order}
+                  </span>
+                </div>
+
+                <p className="font-mono-data text-[#334155]">
+                  {loc.wifi_mbps !== null ? `${loc.wifi_mbps} Mbps` : 'WiFi —'} ·{' '}
+                  {loc.sockets_count !== null
+                    ? `${loc.sockets_count} plugs`
+                    : loc.sockets_claimed
+                    ? 'Plugs claimed'
+                    : 'Plugs —'}{' '}
+                  · {loc.avg_cost_per_person !== null ? `₹${loc.avg_cost_per_person}` : '₹ —'} ·{' '}
+                  {loc.photos.length} photos
+                </p>
+
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => handleQuickToggle(loc, 'published')}
+                    className={`min-h-[36px] inline-flex items-center gap-1 px-2.5 py-1 rounded border text-[11px] font-semibold ${
+                      loc.published
+                        ? 'bg-[#ecfdf5] border-[#a7f3d0] text-[#16a34a]'
+                        : 'bg-[#f1f5f9] border-[#cbd5e1] text-[#64748b]'
+                    }`}
+                  >
+                    {loc.published ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
+                    <span>{loc.published ? 'Published' : 'Draft'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleQuickToggle(loc, 'verified')}
+                    className={`min-h-[36px] inline-flex items-center gap-1 px-2.5 py-1 rounded border text-[11px] font-semibold ${
+                      loc.verified
+                        ? 'bg-[#eff6ff] border-[#bfdbfe] text-[#1d4ed8]'
+                        : 'bg-white border-[#cbd5e1] text-[#64748b]'
+                    }`}
+                  >
+                    <CheckCircle2 className="w-3 h-3" />
+                    <span>Verified</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleQuickToggle(loc, 'featured')}
+                    className={`min-h-[36px] inline-flex items-center gap-1 px-2.5 py-1 rounded border text-[11px] font-semibold ${
+                      loc.featured
+                        ? 'bg-[#fef3c7] border-[#fde68a] text-[#b45309]'
+                        : 'bg-white border-[#cbd5e1] text-[#64748b]'
+                    }`}
+                  >
+                    <Star className="w-3 h-3" />
+                    <span>Featured</span>
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setPreviewLoc(loc)}
+                    className="flex-1 min-h-[44px] px-3 rounded-lg border border-[#e2e8f0] bg-white font-semibold text-[#475569] inline-flex items-center justify-center gap-1.5"
+                  >
+                    <Eye className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Preview</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openEditor(loc)}
+                    className="flex-1 min-h-[44px] px-3 rounded-lg border border-[#cbd5e1] bg-white font-semibold text-[#0f172a] inline-flex items-center justify-center gap-1.5"
+                  >
+                    <Edit3 className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Edit</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDeleteLoc(loc)}
+                    aria-label={`Delete ${loc.name}`}
+                    className="min-h-[44px] min-w-[44px] rounded-lg border border-[#fecaca] text-[#dc2626] flex items-center justify-center"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
 
         {/* Pagination Footer */}
         {filtered.length > PAGE_SIZE && (
-          <div className="px-4 py-3 border-t border-[#e2e8f0] bg-[#f8fafc] flex items-center justify-between text-xs">
+          <div className="px-4 py-3 border-t border-[#e2e8f0] bg-[#f8fafc] flex flex-wrap items-center justify-between gap-2 text-xs">
             <span className="text-[#64748b] font-mono-data">
               Showing {(safePage - 1) * PAGE_SIZE + 1}–
               {Math.min(safePage * PAGE_SIZE, filtered.length)} of {filtered.length} cafes
@@ -591,7 +696,7 @@ export function AdminLocationsTab({
                 type="button"
                 disabled={safePage <= 1}
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
-                className="inline-flex items-center gap-1 h-8 px-2.5 rounded border border-[#cbd5e1] bg-white disabled:opacity-40 font-semibold"
+                className="inline-flex items-center gap-1 min-h-[38px] px-2.5 rounded border border-[#cbd5e1] bg-white disabled:opacity-40 font-semibold"
               >
                 <ChevronLeft className="w-3.5 h-3.5" />
                 <span>Previous</span>
@@ -603,7 +708,7 @@ export function AdminLocationsTab({
                 type="button"
                 disabled={safePage >= totalPages}
                 onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                className="inline-flex items-center gap-1 h-8 px-2.5 rounded border border-[#cbd5e1] bg-white disabled:opacity-40 font-semibold"
+                className="inline-flex items-center gap-1 min-h-[38px] px-2.5 rounded border border-[#cbd5e1] bg-white disabled:opacity-40 font-semibold"
               >
                 <span>Next</span>
                 <ChevronRight className="w-3.5 h-3.5" />

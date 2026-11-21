@@ -8,6 +8,7 @@ import {
   BookOpen,
   Bookmark,
   Briefcase,
+  CalendarCheck,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -79,6 +80,7 @@ export function LocationDetailPage() {
 
   const { locations, settings } = useCms();
   const {
+    user,
     hasPlus,
     openUpgradeModal,
     isCafeSaved,
@@ -109,6 +111,27 @@ export function LocationDetailPage() {
   const [collectionMenuOpen, setCollectionMenuOpen] = useState(false);
   const [collectionAddedNotice, setCollectionAddedNotice] = useState('');
   const [copiedShare, setCopiedShare] = useState(false);
+
+  // Optional workspace / seat reservation state
+  const [bookingOpen, setBookingOpen] = useState(false);
+  const [bookName, setBookName] = useState('');
+  const [bookEmail, setBookEmail] = useState('');
+  const [bookPhone, setBookPhone] = useState('');
+  const [bookWorkspace, setBookWorkspace] = useState('Laptop Desk');
+  const [bookDate, setBookDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [bookSlot, setBookSlot] = useState('09:00 AM - 12:00 PM');
+  const [bookGuests, setBookGuests] = useState(1);
+  const [bookNotes, setBookNotes] = useState('');
+  const [bookingBusy, setBookingBusy] = useState(false);
+  const [bookingError, setBookingError] = useState('');
+  const [bookingSuccessRef, setBookingSuccessRef] = useState('');
+
+  useEffect(() => {
+    if (user) {
+      setBookName((prev) => prev || user.name || '');
+      setBookEmail((prev) => prev || user.email || '');
+    }
+  }, [user]);
 
   // Lazy-enrich & record recently viewed once per curated branch view
   useEffect(() => {
@@ -155,6 +178,9 @@ export function LocationDetailPage() {
     setLightboxOpen(false);
     setCollectionMenuOpen(false);
     setCollectionAddedNotice('');
+    setBookingOpen(false);
+    setBookingError('');
+    setBookingSuccessRef('');
   }, [lookupKey]);
 
   useEffect(() => {
@@ -1137,9 +1163,20 @@ export function LocationDetailPage() {
                             )}
                           </div>
                         </div>
-                        <span className="font-mono-data text-sm font-bold text-[#1c1613] shrink-0">
-                          ₹{item.price_inr}
-                        </span>
+                        <div className="font-mono-data text-sm font-bold text-[#1c1613] shrink-0 text-right">
+                          {item.discount_price_inr !== null &&
+                          item.discount_price_inr !== undefined &&
+                          item.discount_price_inr < item.price_inr ? (
+                            <>
+                              <span className="text-[#1b4d3e]">₹{item.discount_price_inr}</span>
+                              <del className="text-[#5c4e45] font-normal ml-1.5 text-xs">
+                                ₹{item.price_inr}
+                              </del>
+                            </>
+                          ) : (
+                            <span>₹{item.price_inr}</span>
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -1477,6 +1514,236 @@ export function LocationDetailPage() {
               </p>
             )}
           </div>
+
+          {/* Optional Seat / Workspace Reservation Card (controlled by Admin Settings) */}
+          {settings.bookings_enabled && (
+            <div className="p-6 rounded-2xl bg-white border border-[#e6ddd0] space-y-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-[#1b4d3e]">
+                    <CalendarCheck className="w-4 h-4" aria-hidden="true" />
+                    <span>Workspace Reservation</span>
+                  </div>
+                  <h2 className="font-serif-display text-xl font-bold text-[#1c1613]">
+                    Reserve a Workspace / Seat
+                  </h2>
+                  <p className="text-xs text-[#5c4e45]">
+                    {settings.booking_policy_note ||
+                      'Book a laptop desk, quiet study seat, or meeting table with instant reference confirmation.'}
+                  </p>
+                </div>
+              </div>
+
+              {bookingSuccessRef ? (
+                <div className="p-4 rounded-xl bg-[#ecfdf5] border border-[#a7f3d0] space-y-2 text-xs text-[#1b4d3e]">
+                  <p className="font-bold flex items-center gap-1.5">
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
+                    <span>Booking Request Received!</span>
+                  </p>
+                  <p>
+                    Reference:{' '}
+                    <span className="font-mono-data font-bold text-[#1c1613]">
+                      {bookingSuccessRef}
+                    </span>{' '}
+                    for {location.name} on {bookDate} ({bookSlot}).
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBookingSuccessRef('');
+                      setBookingOpen(true);
+                    }}
+                    className="font-semibold underline underline-offset-2 text-[#1c1613]"
+                  >
+                    Make another reservation
+                  </button>
+                </div>
+              ) : !bookingOpen ? (
+                <button
+                  type="button"
+                  onClick={() => setBookingOpen(true)}
+                  className="w-full min-h-[44px] px-4 py-2.5 rounded-lg bg-[#1c1613] hover:bg-[#312722] text-white text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors"
+                >
+                  <CalendarCheck className="w-4 h-4" aria-hidden="true" />
+                  <span>Book a Desk or Seat</span>
+                </button>
+              ) : (
+                <form
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    setBookingBusy(true);
+                    setBookingError('');
+                    try {
+                      const res = await fetch('/api/bookings', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        body: JSON.stringify({
+                          cafe_id: location.id,
+                          cafe_name: location.name,
+                          customer_name: bookName,
+                          customer_email: bookEmail,
+                          customer_phone: bookPhone,
+                          workspace_type: bookWorkspace,
+                          booking_date: bookDate,
+                          time_slot: bookSlot,
+                          guests_count: bookGuests,
+                          notes: bookNotes,
+                        }),
+                      });
+                      const data = (await res.json().catch(() => ({}))) as {
+                        ok?: boolean;
+                        booking?: { booking_ref?: string };
+                        error?: string;
+                      };
+                      if (!res.ok) {
+                        setBookingError(data.error || 'Could not submit reservation.');
+                        return;
+                      }
+                      setBookingSuccessRef(data.booking?.booking_ref || 'CONFIRMED');
+                      setBookingOpen(false);
+                      setBookNotes('');
+                    } catch {
+                      setBookingError('Network error submitting reservation.');
+                    } finally {
+                      setBookingBusy(false);
+                    }
+                  }}
+                  className="space-y-3 text-xs pt-2 border-t border-[#e6ddd0]"
+                >
+                  {bookingError && (
+                    <div className="p-2.5 rounded-lg bg-[#fef2f2] border border-[#fecaca] text-[#991b1b] font-semibold">
+                      {bookingError}
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block font-semibold text-[#1c1613] mb-1">Full Name *</label>
+                    <input
+                      type="text"
+                      required
+                      value={bookName}
+                      onChange={(e) => setBookName(e.target.value)}
+                      placeholder="Your name"
+                      className="w-full h-10 px-3 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-xs"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div>
+                      <label className="block font-semibold text-[#1c1613] mb-1">Email *</label>
+                      <input
+                        type="email"
+                        required={!bookPhone.trim()}
+                        value={bookEmail}
+                        onChange={(e) => setBookEmail(e.target.value)}
+                        placeholder="you@example.com"
+                        className="w-full h-10 px-3 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-semibold text-[#1c1613] mb-1">Phone</label>
+                      <input
+                        type="tel"
+                        value={bookPhone}
+                        onChange={(e) => setBookPhone(e.target.value)}
+                        placeholder="+91 98..."
+                        className="w-full h-10 px-3 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-xs"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div>
+                      <label className="block font-semibold text-[#1c1613] mb-1">Date *</label>
+                      <input
+                        type="date"
+                        required
+                        min={new Date().toISOString().slice(0, 10)}
+                        value={bookDate}
+                        onChange={(e) => setBookDate(e.target.value)}
+                        className="w-full h-10 px-3 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-xs font-mono-data"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-semibold text-[#1c1613] mb-1">Time Slot *</label>
+                      <select
+                        value={bookSlot}
+                        onChange={(e) => setBookSlot(e.target.value)}
+                        className="w-full h-10 px-3 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-xs"
+                      >
+                        <option value="09:00 AM - 12:00 PM">09:00 AM - 12:00 PM</option>
+                        <option value="12:00 PM - 03:00 PM">12:00 PM - 03:00 PM</option>
+                        <option value="03:00 PM - 06:00 PM">03:00 PM - 06:00 PM</option>
+                        <option value="06:00 PM - 09:00 PM">06:00 PM - 09:00 PM</option>
+                        <option value="Full Day (09:00 AM - 07:00 PM)">Full Day (9 AM - 7 PM)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div>
+                      <label className="block font-semibold text-[#1c1613] mb-1">Workspace</label>
+                      <select
+                        value={bookWorkspace}
+                        onChange={(e) => setBookWorkspace(e.target.value)}
+                        className="w-full h-10 px-3 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-xs"
+                      >
+                        <option value="Laptop Desk">Laptop Desk</option>
+                        <option value="Quiet Study Zone">Quiet Study Zone</option>
+                        <option value="Meeting Booth">Meeting Booth</option>
+                        <option value="Casual & Budget Seating">Casual &amp; Budget Seating</option>
+                        <option value="Window Bar Counter">Window Bar Counter</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block font-semibold text-[#1c1613] mb-1">
+                        Seats (Max {settings.booking_max_guests || 8})
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={settings.booking_max_guests || 8}
+                        value={bookGuests}
+                        onChange={(e) => setBookGuests(Number(e.target.value))}
+                        className="w-full h-10 px-3 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-xs font-mono-data"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-[#1c1613] mb-1">
+                      Preferences / Socket Note
+                    </label>
+                    <input
+                      type="text"
+                      value={bookNotes}
+                      onChange={(e) => setBookNotes(e.target.value)}
+                      placeholder="Near power socket, quiet corner..."
+                      className="w-full h-10 px-3 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-xs"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setBookingOpen(false)}
+                      className="min-h-[42px] px-4 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-[#1c1613] font-semibold"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={bookingBusy}
+                      className="flex-1 min-h-[42px] px-4 rounded-lg bg-[#b45309] hover:bg-[#92400e] text-white font-semibold"
+                    >
+                      {bookingBusy ? 'Submitting...' : 'Confirm Reservation'}
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          )}
         </aside>
       </div>
 

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   ArrowRight,
@@ -80,72 +80,50 @@ const COMPARISON_ROWS: Array<{
   },
 ];
 
+function formatIntervalLabel(priceInr: number, intervalDays: number): string {
+  if (priceInr <= 0) return '/ forever';
+  if (intervalDays === 1) return '/ day';
+  if (intervalDays === 7) return '/ week';
+  if (intervalDays === 30) return '/ month';
+  if (intervalDays === 365) return '/ year';
+  return `/ ${intervalDays} days`;
+}
+
 export function PricingPage() {
   const navigate = useNavigate();
   const { settings } = useCms();
-  const { authenticated, tier, hasPlus, plans, openCheckout } = useAuth();
-  const [billingCycle, setBillingCycle] = useState<'monthly' | 'annual'>('monthly');
+  const { authenticated, tier, plans, openCheckout } = useAuth();
+
+  const currencySymbol = settings.currency_symbol || '₹';
+  const activePlans = plans.filter((p) => p.active);
+
+  const plusMonthly = plans.find((p) => p.id === 'plus');
+  const plusAnnual = plans.find((p) => p.id === 'premium');
+  const monthlyPrice = plusMonthly?.price_inr ?? 79;
+  const annualPrice = plusAnnual?.price_inr ?? 499;
 
   useDocumentMeta(
     `Plans & Pricing – ${settings.brand_name}`,
-    'Explore Bengaluru cafes free forever, or upgrade to Cafe Desk Plus (₹79/mo or ₹499/year) for full menus, prices, budget filters, comparisons, and exclusive deals.',
+    `Explore Bengaluru cafes free forever, or upgrade to Cafe Desk memberships (${currencySymbol}${monthlyPrice}/mo or ${currencySymbol}${annualPrice}/year) for full menus, prices, budget filters, comparisons, and exclusive deals.`,
     { allowIndexing: true }
   );
 
-  const freePlan = plans.find((p) => p.id === 'free');
-  const plusMonthly = plans.find((p) => p.id === 'plus');
-  const plusAnnual = plans.find((p) => p.id === 'premium');
-
-  const monthlyPrice = plusMonthly?.price_inr ?? 79;
-  const annualPrice = plusAnnual?.price_inr ?? 499;
-  const selectedPaidPlanId = billingCycle === 'annual' ? 'premium' : 'plus';
-  const activePaidPrice = billingCycle === 'annual' ? annualPrice : monthlyPrice;
-  const monthlyEquivalent = Math.round(annualPrice / 12);
-  const annualSavingsPct = Math.max(
-    0,
-    Math.round(((monthlyPrice * 12 - annualPrice) / Math.max(1, monthlyPrice * 12)) * 100)
-  );
-
-  const freeFeatures = freePlan?.features ?? [
-    'Search all Bengaluru cafes by name, locality & live autocomplete',
-    'Nearby GPS discovery, photos & Google Maps directions',
-    'Interactive Cafe Finder & curated Bengaluru collections',
-    'Laptop-friendly status, seating, studying, noise level, sockets & ambience',
-    'Save & bookmark favourite Bengaluru cafes across sessions',
-  ];
-
-  const plusFeatures =
-    (billingCycle === 'annual' ? plusAnnual?.features : plusMonthly?.features) ?? [
-      'Everything in Free Explorer',
-      'Full food & beverage menus, prices & average budget per person',
-      'Verified Wi-Fi availability, measured speeds (Mbps) & work/meeting filters',
-      'Advanced budget & food category filters',
-      'Compare up to 4 Bengaluru cafes side-by-side',
-      'Personal custom cafe collections & personalized recommendations',
-      'Exclusive cafe deals, partner perks & student discounts',
-    ];
-
-  const customPlans = plans.filter(
-    (p) => p.active && p.id !== 'free' && p.id !== 'plus' && p.id !== 'premium'
-  );
-  const activePaidObj = billingCycle === 'annual' ? plusAnnual : plusMonthly;
-
-  const handleFreeAction = () => {
-    if (authenticated) navigate('/locations');
-    else navigate('/login?mode=signup');
-  };
-
-  const handlePlusAction = (targetId: string = selectedPaidPlanId) => {
-    if (!authenticated) {
-      navigate(`/login?mode=signup&upgrade=${targetId}`);
+  const handlePlanAction = (planId: string, priceInr: number) => {
+    if (planId === 'free' || priceInr <= 0) {
+      if (authenticated) navigate('/locations');
+      else navigate('/login?mode=signup');
       return;
     }
-    openCheckout(targetId);
+    if (!authenticated) {
+      navigate(`/login?mode=signup&upgrade=${encodeURIComponent(planId)}`);
+      return;
+    }
+    openCheckout(planId);
   };
 
   return (
     <div className="max-w-6xl mx-auto px-4 sm:px-6 py-12 sm:py-16 space-y-14">
-      {/* Header + Monthly / Annual Toggle */}
+      {/* Header */}
       <header className="max-w-3xl mx-auto text-center space-y-5">
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#b45309]">
           Simple, Transparent Memberships
@@ -155,250 +133,172 @@ export function PricingPage() {
         </h1>
         <p className="text-base sm:text-lg text-[#5c4e45] leading-relaxed">
           {settings.pricing_subtitle ||
-            'Save favourites, check laptop readiness, seating, sockets, and noise levels free forever. Upgrade to Cafe Desk Plus when you want full food prices, verified Wi-Fi speeds, comparisons, and deals.'}
+            'Save favourites, check laptop readiness, seating, sockets, and noise levels free forever. Upgrade when you want full food prices, verified Wi-Fi speeds, comparisons, and deals.'}
         </p>
-
-        {/* Billing Cycle Toggle */}
-        <div className="inline-flex items-center p-1.5 rounded-xl bg-[#f3ede3] border border-[#e6ddd0]">
-          <button
-            type="button"
-            onClick={() => setBillingCycle('monthly')}
-            className={`px-4 py-2 rounded-lg text-xs font-semibold transition-colors ${
-              billingCycle === 'monthly'
-                ? 'bg-[#1c1613] text-white shadow-sm'
-                : 'text-[#5c4e45] hover:text-[#1c1613]'
-            }`}
-          >
-            Monthly · ₹{monthlyPrice}/mo
-          </button>
-          <button
-            type="button"
-            onClick={() => setBillingCycle('annual')}
-            className={`px-4 py-2 rounded-lg text-xs font-semibold transition-colors inline-flex items-center gap-1.5 ${
-              billingCycle === 'annual'
-                ? 'bg-[#b45309] text-white shadow-sm'
-                : 'text-[#5c4e45] hover:text-[#1c1613]'
-            }`}
-          >
-            <span>Annual · ₹{annualPrice}/yr</span>
-            {annualSavingsPct > 0 && (
-              <span className="px-1.5 py-0.5 rounded bg-white/20 text-[10px] font-bold">
-                Save {annualSavingsPct}%
-              </span>
-            )}
-          </button>
-        </div>
       </header>
 
-      {/* Two Clear Tiers: Free Explorer vs Cafe Desk Plus */}
-      <section aria-label="Subscription plans" className="grid grid-cols-1 md:grid-cols-2 gap-8 items-stretch">
-        {/* Tier 1: Free Explorer */}
-        <div className="rounded-2xl p-8 bg-white text-[#1c1613] border border-[#e6ddd0] flex flex-col justify-between">
-          <div className="space-y-5">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-bold uppercase tracking-wider text-[#1b4d3e]">
-                {freePlan?.badge_text || 'Free Forever'}
-              </span>
-              {authenticated && tier === 'free' && (
-                <span className="px-2.5 py-0.5 rounded-md bg-[#1b4d3e] text-white text-[11px] font-semibold">
-                  Current Plan
-                </span>
-              )}
-            </div>
+      {/* Dynamic Active Membership Plans Grid */}
+      <section
+        aria-label="Subscription plans"
+        className={`grid grid-cols-1 ${
+          activePlans.length === 2 ? 'md:grid-cols-2' : 'md:grid-cols-2 lg:grid-cols-3'
+        } gap-7 items-stretch`}
+      >
+        {activePlans.map((plan) => {
+          const isDark = Boolean(plan.is_recommended);
+          const isCurrent = authenticated && tier === plan.id;
+          const isFree = plan.id === 'free' || plan.price_inr <= 0;
+          const intervalLabel = formatIntervalLabel(plan.price_inr, plan.interval_days);
 
-            <div>
-              <h2 className="font-serif-display text-3xl font-bold text-[#1c1613]">
-                {freePlan?.name || 'Free Explorer'}
-              </h2>
-              <p className="text-sm text-[#5c4e45] mt-1.5 leading-relaxed">
-                {freePlan?.tagline ||
-                  'Discover Bengaluru cafes, save favourites, and check laptops, seating, study suitability, noise level & charging sockets.'}
-              </p>
-            </div>
-
-            <div className="pt-4 pb-5 border-y border-[#e6ddd0]">
-              <div className="flex items-baseline gap-1.5">
-                <span className="font-mono-data text-4xl font-bold">₹0</span>
-                <span className="text-sm text-[#5c4e45]">/ forever</span>
-              </div>
-              <p className="text-xs text-[#5c4e45] mt-1">No credit card required · Instant discovery</p>
-            </div>
-
-            <ul className="space-y-2.5 text-sm">
-              {freeFeatures.map((feature) => (
-                <li key={feature} className="flex items-start gap-2.5">
-                  <CheckCircle2
-                    className="w-4 h-4 text-[#1b4d3e] shrink-0 mt-0.5"
-                    aria-hidden="true"
-                  />
-                  <span className="text-[#1c1613]">{feature}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          <div className="pt-8">
-            <button
-              type="button"
-              onClick={handleFreeAction}
-              className="w-full min-h-[46px] px-5 py-2.5 rounded-lg bg-[#1c1613] hover:bg-[#312722] text-white text-sm font-semibold transition-colors"
-            >
-              {authenticated ? 'Explore Cafes Now' : 'Get Started Free'}
-            </button>
-          </div>
-        </div>
-
-        {/* Tier 2: Cafe Desk Plus */}
-        <div className="rounded-2xl p-8 bg-[#1c1613] text-[#faf7f2] border border-[#1c1613] shadow-xl flex flex-col justify-between">
-          <div className="space-y-5">
-            <div className="flex items-center justify-between gap-2">
-              <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-[#f59e0b]">
-                {billingCycle === 'annual' ? (
-                  <Crown className="w-4 h-4" aria-hidden="true" />
-                ) : (
-                  <Sparkles className="w-4 h-4" aria-hidden="true" />
-                )}
-                <span>
-                  {billingCycle === 'annual'
-                    ? `Best Value · Save ${annualSavingsPct}%`
-                    : 'Most Popular'}
-                </span>
-              </span>
-              {authenticated && hasPlus && (
-                <span className="px-2.5 py-0.5 rounded-md bg-[#1b4d3e] text-white text-[11px] font-semibold">
-                  Plus Active
-                </span>
-              )}
-            </div>
-
-            <div>
-              <h2 className="font-serif-display text-3xl font-bold text-white">Cafe Desk Plus</h2>
-              <p className="text-sm text-[#faf7f2]/80 mt-1.5 leading-relaxed">
-                Complete food &amp; beverage menus, budget filters, verified Wi-Fi speeds,
-                side-by-side comparisons, custom collections, and exclusive Bengaluru cafe deals.
-              </p>
-            </div>
-
-            <div className="pt-4 pb-5 border-y border-white/15">
-              <div className="flex items-baseline gap-2">
-                <span className="font-mono-data text-4xl font-bold text-white">
-                  ₹{activePaidPrice}
-                </span>
-                <span className="text-sm text-[#faf7f2]/75">
-                  / {billingCycle === 'annual' ? 'year' : 'month'}
-                </span>
-              </div>
-              <p className="text-xs text-[#f59e0b] font-medium mt-1">
-                {activePaidObj?.promo_note
-                  ? activePaidObj.promo_note
-                  : billingCycle === 'annual'
-                  ? `Only ₹${monthlyEquivalent}/month effective · 365 days access`
-                  : `Or switch to ₹${annualPrice}/year (save ${annualSavingsPct}%)`}
-              </p>
-            </div>
-
-            <ul className="space-y-2.5 text-sm">
-              {plusFeatures.map((feature) => (
-                <li key={feature} className="flex items-start gap-2.5">
-                  <CheckCircle2
-                    className="w-4 h-4 text-[#f59e0b] shrink-0 mt-0.5"
-                    aria-hidden="true"
-                  />
-                  <span className="text-[#faf7f2]/92">{feature}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          <div className="pt-8 space-y-2.5">
-            <button
-              type="button"
-              disabled={authenticated && tier === selectedPaidPlanId}
-              onClick={() => handlePlusAction(selectedPaidPlanId)}
-              className={`w-full min-h-[46px] px-5 py-2.5 rounded-lg text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors ${
-                authenticated && tier === selectedPaidPlanId
-                  ? 'bg-[#1b4d3e] text-white cursor-default opacity-90'
-                  : 'bg-[#b45309] hover:bg-[#d97706] text-white'
+          return (
+            <div
+              key={plan.id}
+              className={`rounded-2xl p-7 sm:p-8 flex flex-col justify-between border transition-shadow ${
+                isDark
+                  ? 'bg-[#1c1613] text-[#faf7f2] border-[#1c1613] shadow-xl'
+                  : 'bg-white text-[#1c1613] border-[#e6ddd0]'
               }`}
             >
-              <span>
-                {authenticated && tier === selectedPaidPlanId
-                  ? `Active (${billingCycle === 'annual' ? 'Annual' : 'Monthly'} Plan)`
-                  : authenticated && hasPlus
-                  ? `Switch / Extend (${billingCycle === 'annual' ? `₹${annualPrice}/yr` : `₹${monthlyPrice}/mo`})`
-                  : `Unlock Cafe Desk Plus · ₹${activePaidPrice}/${billingCycle === 'annual' ? 'yr' : 'mo'}`}
-              </span>
-              {!(authenticated && tier === selectedPaidPlanId) && (
-                <ArrowRight className="w-4 h-4" aria-hidden="true" />
-              )}
-            </button>
-          </div>
-        </div>
-      </section>
-
-      {/* Additional Custom Membership Plans Added via Admin */}
-      {customPlans.length > 0 && (
-        <section aria-label="Additional membership options" className="space-y-5">
-          <div className="space-y-1">
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#b45309]">
-              Additional Membership Options
-            </p>
-            <h2 className="font-serif-display text-2xl sm:text-3xl font-bold text-[#1c1613]">
-              Specialized Passes &amp; Plans
-            </h2>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {customPlans.map((cp) => (
-              <div
-                key={cp.id}
-                className="rounded-2xl p-6 bg-white border border-[#e6ddd0] flex flex-col justify-between space-y-5"
-              >
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-bold uppercase tracking-wider text-[#b45309]">
-                      {cp.badge_text || 'Membership Pass'}
+              <div className="space-y-5">
+                <div className="flex items-center justify-between gap-2">
+                  <span
+                    className={`inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider ${
+                      isDark ? 'text-[#f59e0b]' : isFree ? 'text-[#1b4d3e]' : 'text-[#b45309]'
+                    }`}
+                  >
+                    {isDark ? (
+                      plan.interval_days >= 365 ? (
+                        <Crown className="w-4 h-4" aria-hidden="true" />
+                      ) : (
+                        <Sparkles className="w-4 h-4" aria-hidden="true" />
+                      )
+                    ) : null}
+                    <span>{plan.badge_text || (isFree ? 'Free Forever' : 'Membership Plan')}</span>
+                  </span>
+                  {isCurrent && (
+                    <span className="px-2.5 py-0.5 rounded-md bg-[#1b4d3e] text-white text-[11px] font-semibold">
+                      Current Plan
                     </span>
-                    {authenticated && tier === cp.id && (
-                      <span className="text-xs font-bold text-[#1b4d3e]">Active</span>
-                    )}
-                  </div>
-                  <div>
-                    <h3 className="font-serif-display text-2xl font-bold text-[#1c1613]">{cp.name}</h3>
-                    {cp.tagline && <p className="text-xs text-[#5c4e45] mt-1">{cp.tagline}</p>}
-                  </div>
-                  <div className="py-3 border-y border-[#e6ddd0]">
-                    <div className="flex items-baseline gap-1.5">
-                      <span className="font-mono-data text-3xl font-bold text-[#1c1613]">
-                        ₹{cp.price_inr}
-                      </span>
-                      <span className="text-xs text-[#5c4e45]">/ {cp.interval_days} days</span>
-                    </div>
-                    {cp.promo_note && (
-                      <p className="text-xs text-[#b45309] font-medium mt-1">{cp.promo_note}</p>
-                    )}
-                  </div>
-                  <ul className="space-y-2 text-xs text-[#1c1613]">
-                    {cp.features.map((f) => (
-                      <li key={f} className="flex items-start gap-2">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-[#1b4d3e] shrink-0 mt-0.5" />
-                        <span>{f}</span>
-                      </li>
-                    ))}
-                  </ul>
+                  )}
                 </div>
+
+                <div>
+                  <h2
+                    className={`font-serif-display text-3xl font-bold ${
+                      isDark ? 'text-white' : 'text-[#1c1613]'
+                    }`}
+                  >
+                    {plan.name}
+                  </h2>
+                  {plan.tagline && (
+                    <p
+                      className={`text-sm mt-1.5 leading-relaxed ${
+                        isDark ? 'text-[#faf7f2]/80' : 'text-[#5c4e45]'
+                      }`}
+                    >
+                      {plan.tagline}
+                    </p>
+                  )}
+                </div>
+
+                <div
+                  className={`pt-4 pb-5 border-y ${
+                    isDark ? 'border-white/15' : 'border-[#e6ddd0]'
+                  }`}
+                >
+                  <div className="flex items-baseline gap-1.5">
+                    <span
+                      className={`font-mono-data text-4xl font-bold ${
+                        isDark ? 'text-white' : 'text-[#1c1613]'
+                      }`}
+                    >
+                      {currencySymbol}
+                      {plan.price_inr}
+                    </span>
+                    <span
+                      className={`text-sm ${
+                        isDark ? 'text-[#faf7f2]/75' : 'text-[#5c4e45]'
+                      }`}
+                    >
+                      {intervalLabel}
+                    </span>
+                  </div>
+                  {plan.promo_note ? (
+                    <p
+                      className={`text-xs font-medium mt-1 ${
+                        isDark ? 'text-[#f59e0b]' : 'text-[#b45309]'
+                      }`}
+                    >
+                      {plan.promo_note}
+                    </p>
+                  ) : isFree ? (
+                    <p
+                      className={`text-xs mt-1 ${
+                        isDark ? 'text-[#faf7f2]/70' : 'text-[#5c4e45]'
+                      }`}
+                    >
+                      No credit card required · Instant discovery
+                    </p>
+                  ) : null}
+                  {plan.usage_limits && (
+                    <p
+                      className={`text-[11px] mt-1 font-medium ${
+                        isDark ? 'text-[#faf7f2]/75' : 'text-[#5c4e45]'
+                      }`}
+                    >
+                      Limits: {plan.usage_limits}
+                    </p>
+                  )}
+                </div>
+
+                <ul className="space-y-2.5 text-sm">
+                  {plan.features.map((feature) => (
+                    <li key={feature} className="flex items-start gap-2.5">
+                      <CheckCircle2
+                        className={`w-4 h-4 shrink-0 mt-0.5 ${
+                          isDark ? 'text-[#f59e0b]' : 'text-[#1b4d3e]'
+                        }`}
+                        aria-hidden="true"
+                      />
+                      <span className={isDark ? 'text-[#faf7f2]/92' : 'text-[#1c1613]'}>
+                        {feature}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="pt-8">
                 <button
                   type="button"
-                  disabled={authenticated && tier === cp.id}
-                  onClick={() => handlePlusAction(cp.id)}
-                  className="w-full min-h-[42px] px-4 py-2 rounded-lg bg-[#1c1613] hover:bg-[#312722] disabled:bg-[#1b4d3e] text-white text-xs font-semibold"
+                  disabled={isCurrent && !isFree}
+                  onClick={() => handlePlanAction(plan.id, plan.price_inr)}
+                  className={`w-full min-h-[46px] px-5 py-2.5 rounded-lg text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors ${
+                    isCurrent && !isFree
+                      ? 'bg-[#1b4d3e] text-white cursor-default opacity-90'
+                      : isDark
+                      ? 'bg-[#b45309] hover:bg-[#d97706] text-white'
+                      : 'bg-[#1c1613] hover:bg-[#312722] text-white'
+                  }`}
                 >
-                  {authenticated && tier === cp.id ? 'Current Active Plan' : `Select ${cp.name}`}
+                  <span>
+                    {isFree
+                      ? authenticated
+                        ? 'Explore Cafes Now'
+                        : 'Get Started Free'
+                      : isCurrent
+                      ? 'Current Active Plan'
+                      : `Choose ${plan.name} · ${currencySymbol}${plan.price_inr}`}
+                  </span>
+                  {!(isCurrent && !isFree) && !isFree && (
+                    <ArrowRight className="w-4 h-4" aria-hidden="true" />
+                  )}
                 </button>
               </div>
-            ))}
-          </div>
-        </section>
-      )}
+            </div>
+          );
+        })}
+      </section>
 
       {/* Feature Comparison Table */}
       <section aria-labelledby="compare-plans-heading" className="space-y-5">
@@ -411,7 +311,7 @@ export function PricingPage() {
               id="compare-plans-heading"
               className="font-serif-display text-3xl font-bold text-[#1c1613]"
             >
-              Free vs Cafe Desk Plus
+              Free vs Paid Membership Features
             </h2>
           </div>
           <p className="text-xs text-[#5c4e45] inline-flex items-center gap-1.5">
@@ -427,12 +327,16 @@ export function PricingPage() {
                 <th className="py-4 px-5 font-semibold text-[#5c4e45]">Feature</th>
                 <th className="py-4 px-4 text-center font-bold text-[#1c1613] min-w-[140px]">
                   Free Explorer
-                  <div className="font-mono-data text-xs font-normal text-[#5c4e45]">₹0 Forever</div>
+                  <div className="font-mono-data text-xs font-normal text-[#5c4e45]">
+                    {currencySymbol}0 Forever
+                  </div>
                 </th>
                 <th className="py-4 px-4 text-center font-bold text-[#b45309] min-w-[160px]">
-                  Cafe Desk Plus
+                  Cafe Desk Plus / Pro
                   <div className="font-mono-data text-xs font-normal text-[#5c4e45]">
-                    ₹{monthlyPrice}/mo · ₹{annualPrice}/yr
+                    From {currencySymbol}
+                    {monthlyPrice}/mo · {currencySymbol}
+                    {annualPrice}/yr
                   </div>
                 </th>
               </tr>

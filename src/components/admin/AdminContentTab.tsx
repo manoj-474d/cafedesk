@@ -16,6 +16,7 @@ interface AdminContentTabProps {
 type ContentSubTab =
   | 'about'
   | 'services'
+  | 'gallery'
   | 'pricing'
   | 'faqs'
   | 'announcements'
@@ -35,9 +36,9 @@ export function AdminContentTab({
   const [form, setForm] = useState<SiteSettings>(settings);
   const [saving, setSaving] = useState(false);
   const [statusMsg, setStatusMsg] = useState('');
-  const [pickerTarget, setPickerTarget] = useState<'about_image_url' | 'services_image_url' | null>(
-    null
-  );
+  const [pickerTarget, setPickerTarget] = useState<
+    'about_image_url' | 'services_image_url' | { galleryIdx: number } | null
+  >(null);
   const [confirmDeleteTestimonial, setConfirmDeleteTestimonial] =
     useState<TestimonialItem | null>(null);
 
@@ -146,6 +147,7 @@ export function AdminContentTab({
           [
             ['about', 'About Us'],
             ['services', 'Services & Facilities'],
+            ['gallery', 'Homepage Gallery'],
             ['pricing', 'Pricing Page Copy'],
             ['faqs', 'FAQs'],
             ['announcements', 'Announcements'],
@@ -389,6 +391,126 @@ export function AdminContentTab({
               ))}
             </div>
           </div>
+        </div>
+      )}
+
+      {subTab === 'gallery' && (
+        <div className="p-6 rounded-xl border border-[#e2e8f0] bg-white space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-semibold text-[#0f172a]">
+                Homepage Editorial Photo Gallery ({form.editorial_gallery.length})
+              </h3>
+              <p className="text-xs text-[#64748b]">
+                Curate photographs, captions, and alt text showcased in the homepage experience strip.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() =>
+                setForm({
+                  ...form,
+                  editorial_gallery: [
+                    ...form.editorial_gallery,
+                    { url: '', alt: '', caption: '' },
+                  ],
+                })
+              }
+              className="inline-flex items-center gap-1 min-h-[40px] px-3 rounded-lg border border-[#cbd5e1] bg-white hover:bg-[#f8fafc] text-xs font-semibold text-[#b45309]"
+            >
+              <Plus className="w-3.5 h-3.5" /> Add Gallery Photo
+            </button>
+          </div>
+
+          {form.editorial_gallery.length === 0 ? (
+            <p className="text-xs text-[#64748b] py-4">
+              No gallery items configured yet. Click &ldquo;Add Gallery Photo&rdquo; to add one.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {form.editorial_gallery.map((item, idx) => (
+                <div
+                  key={idx}
+                  className="p-4 rounded-lg border border-[#e2e8f0] bg-[#f8fafc] grid grid-cols-1 sm:grid-cols-12 gap-3 items-start text-xs"
+                >
+                  <div className="sm:col-span-3">
+                    {item.url ? (
+                      <img
+                        src={item.url}
+                        alt={item.alt || 'Gallery preview'}
+                        referrerPolicy="no-referrer"
+                        className="w-full h-24 object-cover rounded-lg border border-[#cbd5e1]"
+                      />
+                    ) : (
+                      <div className="w-full h-24 rounded-lg border border-dashed border-[#cbd5e1] bg-white flex items-center justify-center text-[#94a3b8]">
+                        No preview
+                      </div>
+                    )}
+                  </div>
+                  <div className="sm:col-span-9 space-y-2">
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={item.url}
+                        onChange={(e) => {
+                          const next = [...form.editorial_gallery];
+                          next[idx] = { ...next[idx], url: e.target.value };
+                          setForm({ ...form, editorial_gallery: next });
+                        }}
+                        placeholder="Image URL (https://... or /uploads/...)"
+                        className="flex-1 h-10 px-3 rounded-lg border border-[#cbd5e1] bg-white font-mono-data"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setPickerTarget({ galleryIdx: idx })}
+                        className="inline-flex items-center gap-1.5 h-10 px-3 rounded-lg border border-[#cbd5e1] bg-white font-semibold"
+                      >
+                        <ImageIcon className="w-3.5 h-3.5" />
+                        <span>Pick</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setForm({
+                            ...form,
+                            editorial_gallery: form.editorial_gallery.filter((_, i) => i !== idx),
+                          })
+                        }
+                        aria-label={`Remove gallery item ${idx + 1}`}
+                        className="h-10 px-2.5 rounded-lg border border-[#fecaca] text-[#dc2626] bg-white"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <input
+                        type="text"
+                        value={item.caption}
+                        onChange={(e) => {
+                          const next = [...form.editorial_gallery];
+                          next[idx] = { ...next[idx], caption: e.target.value };
+                          setForm({ ...form, editorial_gallery: next });
+                        }}
+                        placeholder="Caption (e.g. Quiet morning desks in Indiranagar)"
+                        className="h-9 px-3 rounded-lg border border-[#cbd5e1] bg-white"
+                      />
+                      <input
+                        type="text"
+                        value={item.alt}
+                        onChange={(e) => {
+                          const next = [...form.editorial_gallery];
+                          next[idx] = { ...next[idx], alt: e.target.value };
+                          setForm({ ...form, editorial_gallery: next });
+                        }}
+                        placeholder="SEO Alt text"
+                        className="h-9 px-3 rounded-lg border border-[#cbd5e1] bg-white"
+                      />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -787,8 +909,22 @@ export function AdminContentTab({
         onMediaUploaded={onMediaUploaded}
         defaultCategory="Hero & Interiors"
         title="Select Feature Image"
-        onSelect={(url) => {
-          if (pickerTarget) setForm({ ...form, [pickerTarget]: url });
+        onSelect={(url, altText) => {
+          if (!pickerTarget) return;
+          if (typeof pickerTarget === 'string') {
+            setForm({ ...form, [pickerTarget]: url });
+          } else {
+            const next = [...form.editorial_gallery];
+            const existing = next[pickerTarget.galleryIdx];
+            if (existing) {
+              next[pickerTarget.galleryIdx] = {
+                ...existing,
+                url,
+                alt: existing.alt || altText || '',
+              };
+              setForm({ ...form, editorial_gallery: next });
+            }
+          }
         }}
       />
     </div>

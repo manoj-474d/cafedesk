@@ -103,6 +103,19 @@ export const DEFAULT_SITE_SETTINGS: SiteSettings = {
   twitter_url: 'https://x.com/cafedesk_space',
   linkedin_url: 'https://linkedin.com/company/cafedesk',
 
+  currency_code: 'INR',
+  currency_symbol: '₹',
+  bookings_enabled: true,
+  booking_lead_hours: 2,
+  booking_max_guests: 8,
+  booking_policy_note:
+    'Reserve a desk or meeting seat at listed cafes. Coffee and food orders are settled directly at the cafe.',
+  notify_new_booking: true,
+  notify_new_customer: true,
+  notify_new_payment: true,
+  notify_new_suggestion: true,
+  notification_email: SITE_CONFIG.contactEmail,
+
   hero_kicker: 'Bengaluru · Cafe & Workspace Discovery Platform',
   hero_tagline: 'Find Your Perfect Cafe in Bengaluru.',
   hero_subtitle:
@@ -589,12 +602,34 @@ export function getDb(): DatabaseSync {
       category TEXT NOT NULL DEFAULT 'Coffee',
       description TEXT NOT NULL DEFAULT '',
       price_inr INTEGER NOT NULL DEFAULT 0,
+      discount_price_inr INTEGER,
       photo_url TEXT NOT NULL DEFAULT '',
       available INTEGER NOT NULL DEFAULT 1,
       dietary TEXT NOT NULL DEFAULT 'na',
       is_bestseller INTEGER NOT NULL DEFAULT 0,
       is_featured INTEGER NOT NULL DEFAULT 0,
       sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS bookings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      booking_ref TEXT NOT NULL UNIQUE,
+      user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      customer_name TEXT NOT NULL,
+      customer_email TEXT NOT NULL DEFAULT '',
+      customer_phone TEXT NOT NULL DEFAULT '',
+      cafe_id TEXT NOT NULL,
+      cafe_name TEXT NOT NULL,
+      workspace_type TEXT NOT NULL DEFAULT 'Laptop Desk',
+      booking_date TEXT NOT NULL,
+      time_slot TEXT NOT NULL,
+      guests_count INTEGER NOT NULL DEFAULT 1,
+      amount_inr INTEGER NOT NULL DEFAULT 0,
+      payment_status TEXT NOT NULL DEFAULT 'pay_at_cafe',
+      status TEXT NOT NULL DEFAULT 'pending',
+      notes TEXT NOT NULL DEFAULT '',
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
@@ -609,7 +644,10 @@ export function getDb(): DatabaseSync {
   ensureColumn(db, 'users', 'last_login_at', 'INTEGER');
   ensureColumn(db, 'activity_logs', 'previous_value', "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'activity_logs', 'new_value', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'menu_items', 'discount_price_inr', 'INTEGER');
   ensureColumn(db, 'subscription_plans', 'promo_note', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'subscription_plans', 'usage_limits', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'subscription_plans', 'is_recommended', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'user_subscriptions', 'subscribed_price_inr', 'INTEGER');
   ensureColumn(db, 'cafes', 'slug', 'TEXT');
   ensureColumn(db, 'cafes', 'category', "TEXT NOT NULL DEFAULT 'Cafe'");
@@ -1307,6 +1345,14 @@ export function getDb(): DatabaseSync {
     now
   );
 
+  // Ensure at least one recommended plan highlight is set if none exists yet
+  const recCount = db
+    .prepare('SELECT COUNT(*) as cnt FROM subscription_plans WHERE is_recommended = 1')
+    .get() as { cnt: number };
+  if (recCount.cnt === 0) {
+    db.exec("UPDATE subscription_plans SET is_recommended = 1 WHERE id = 'plus'");
+  }
+
   db.exec('UPDATE cafes SET created_at = updated_at WHERE created_at IS NULL');
 
   // One-time backfill of structured menu_items from legacy menu_services_json where menu_items is empty for that cafe
@@ -1380,13 +1426,24 @@ export function listMenuItemsFromDb(cafeId?: string): MenuItemRecord[] {
     const d = String(r.dietary || 'na');
     const dietary: DietaryType =
       d === 'veg' || d === 'non_veg' || d === 'vegan' ? d : 'na';
+    const rawDiscount = r.discount_price_inr;
+    const parsedDiscount =
+      rawDiscount !== null && rawDiscount !== undefined && rawDiscount !== ''
+        ? Number(rawDiscount)
+        : null;
+    const priceInr = Number(r.price_inr ?? 0);
+    const discountPriceInr =
+      parsedDiscount !== null && Number.isFinite(parsedDiscount) && parsedDiscount >= 0 && parsedDiscount < priceInr
+        ? parsedDiscount
+        : null;
     return {
       id: Number(r.id),
       cafe_id: String(r.cafe_id),
       name: String(r.name),
       category: String(r.category || 'Coffee'),
       description: String(r.description || ''),
-      price_inr: Number(r.price_inr ?? 0),
+      price_inr: priceInr,
+      discount_price_inr: discountPriceInr,
       photo_url: String(r.photo_url || ''),
       available: Boolean(r.available ?? 1),
       dietary,
@@ -1402,24 +1459,31 @@ export function listMenuItemsFromDb(cafeId?: string): MenuItemRecord[] {
 export function syncCafeMenuServicesFromItems(db: DatabaseSync, cafeId: string): void {
   const rows = db
     .prepare(
-      'SELECT name, category, description, price_inr, available FROM menu_items WHERE cafe_id = ? ORDER BY sort_order ASC, is_bestseller DESC, id ASC'
+      'SELECT name, category, description, price_inr, discount_price_inr, available FROM menu_items WHERE cafe_id = ? ORDER BY sort_order ASC, is_bestseller DESC, id ASC'
     )
     .all(cafeId) as Array<{
     name: string;
     category: string;
     description: string;
     price_inr: number;
+    discount_price_inr: number | null;
     available: number;
   }>;
   const serialized = JSON.stringify(
     rows
       .filter((r) => Boolean(r.available))
-      .map((r) => ({
-        name: r.name,
-        price: r.price_inr > 0 ? `₹${r.price_inr}` : '',
-        category: r.category,
-        description: r.description,
-      }))
+      .map((r) => {
+        const effPrice =
+          r.discount_price_inr !== null && r.discount_price_inr !== undefined && r.discount_price_inr < r.price_inr
+            ? r.discount_price_inr
+            : r.price_inr;
+        return {
+          name: r.name,
+          price: effPrice > 0 ? `₹${effPrice}` : '',
+          category: r.category,
+          description: r.description,
+        };
+      })
   );
   db.prepare('UPDATE cafes SET menu_services_json = ?, updated_at = ? WHERE id = ?').run(
     serialized,
@@ -1594,6 +1658,9 @@ export function getSiteSettingsFromDb(): SiteSettings {
     }
     if (typeof defVal === 'boolean') {
       out[k] = raw === 'true' || raw === '1';
+    } else if (typeof defVal === 'number') {
+      const n = Number(raw);
+      out[k] = Number.isFinite(n) ? n : defVal;
     } else if (typeof defVal === 'object') {
       out[k] = safeParseJson(raw, defVal);
     } else {
@@ -1691,6 +1758,8 @@ export function listPlansFromDb(includeInactive = false): SubscriptionPlan[] {
     interval_days: Number(r.interval_days),
     badge_text: String(r.badge_text || ''),
     promo_note: String(r.promo_note || ''),
+    usage_limits: String(r.usage_limits || ''),
+    is_recommended: Boolean(r.is_recommended),
     features: safeParseJson<string[]>(r.features_json, []),
     sort_order: Number(r.sort_order),
     active: Boolean(r.active),

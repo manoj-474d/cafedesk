@@ -83,7 +83,7 @@ export function AdminAuditTab() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-[#0f172a]">Admin Activity &amp; Audit Logs</h1>
+          <h1 className="text-2xl font-bold text-[#0f172a]">Owner Activity &amp; Audit Logs</h1>
           <p className="text-xs text-[#64748b]">
             Immutable trail of cafe edits, menu price changes, subscription overrides, refunds, and security events.
           </p>
@@ -143,8 +143,8 @@ export function AdminAuditTab() {
         </select>
       </div>
 
-      {/* Audit Table */}
-      <div className="rounded-xl border border-[#e2e8f0] bg-white overflow-x-auto">
+      {/* Audit Table & Mobile Cards */}
+      <div className="rounded-xl border border-[#e2e8f0] bg-white overflow-hidden">
         {loading && logs.length === 0 ? (
           <div className="p-8 text-center text-xs text-[#64748b]">Loading audit records...</div>
         ) : pagedLogs.length === 0 ? (
@@ -153,58 +153,99 @@ export function AdminAuditTab() {
             <p className="text-xs font-semibold text-[#0f172a]">No audit events match this filter</p>
           </div>
         ) : (
-          <table className="w-full text-left border-collapse text-xs">
-            <thead>
-              <tr className="border-b border-[#e2e8f0] bg-[#f8fafc] text-[#475569] font-semibold">
-                <th className="py-3 px-4">Timestamp</th>
-                <th className="py-3 px-4">Actor</th>
-                <th className="py-3 px-4">Action</th>
-                <th className="py-3 px-4">Target</th>
-                <th className="py-3 px-4">Change Diff (Previous → New)</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[#f1f5f9]">
+          <>
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="border-b border-[#e2e8f0] bg-[#f8fafc] text-[#475569] font-semibold">
+                    <th className="py-3 px-4">Timestamp</th>
+                    <th className="py-3 px-4">Actor</th>
+                    <th className="py-3 px-4">Action</th>
+                    <th className="py-3 px-4">Target</th>
+                    <th className="py-3 px-4">Change Diff (Previous → New)</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#f1f5f9]">
+                  {pagedLogs.map((log) => (
+                    <tr key={log.id} className="hover:bg-[#f8fafc]">
+                      <td className="py-3 px-4 font-mono-data text-[#64748b] whitespace-nowrap">
+                        {new Date(log.created_at).toLocaleString('en-IN', {
+                          day: '2-digit',
+                          month: 'short',
+                          year: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                      </td>
+                      <td className="py-3 px-4 font-semibold text-[#0f172a] whitespace-nowrap">
+                        {log.actor}
+                      </td>
+                      <td className="py-3 px-4 font-medium text-[#0f172a]">{log.action}</td>
+                      <td className="py-3 px-4 text-[#475569]">{log.target || '—'}</td>
+                      <td className="py-3 px-4">
+                        {log.previous_value || log.new_value ? (
+                          <div className="flex flex-wrap items-center gap-1.5 font-mono-data text-[11px]">
+                            {log.previous_value && (
+                              <span className="px-1.5 py-0.5 rounded bg-[#fef2f2] text-[#991b1b] border border-[#fecaca]">
+                                {log.previous_value}
+                              </span>
+                            )}
+                            {log.previous_value && log.new_value && (
+                              <span className="text-[#64748b]">→</span>
+                            )}
+                            {log.new_value && (
+                              <span className="px-1.5 py-0.5 rounded bg-[#ecfdf5] text-[#1b4d3e] border border-[#a7f3d0]">
+                                {log.new_value}
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-[#94a3b8]">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="md:hidden divide-y divide-[#e2e8f0]">
               {pagedLogs.map((log) => (
-                <tr key={log.id} className="hover:bg-[#f8fafc]">
-                  <td className="py-3 px-4 font-mono-data text-[#64748b] whitespace-nowrap">
-                    {new Date(log.created_at).toLocaleString('en-IN', {
-                      day: '2-digit',
-                      month: 'short',
-                      year: 'numeric',
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}
-                  </td>
-                  <td className="py-3 px-4 font-semibold text-[#0f172a] whitespace-nowrap">
-                    {log.actor}
-                  </td>
-                  <td className="py-3 px-4 font-medium text-[#0f172a]">{log.action}</td>
-                  <td className="py-3 px-4 text-[#475569]">{log.target || '—'}</td>
-                  <td className="py-3 px-4">
-                    {log.previous_value || log.new_value ? (
-                      <div className="flex flex-wrap items-center gap-1.5 font-mono-data text-[11px]">
-                        {log.previous_value && (
-                          <span className="px-1.5 py-0.5 rounded bg-[#fef2f2] text-[#991b1b] border border-[#fecaca]">
-                            {log.previous_value}
-                          </span>
-                        )}
-                        {log.previous_value && log.new_value && (
-                          <span className="text-[#64748b]">→</span>
-                        )}
-                        {log.new_value && (
-                          <span className="px-1.5 py-0.5 rounded bg-[#ecfdf5] text-[#1b4d3e] border border-[#a7f3d0]">
-                            {log.new_value}
-                          </span>
-                        )}
-                      </div>
-                    ) : (
-                      <span className="text-[#94a3b8]">—</span>
-                    )}
-                  </td>
-                </tr>
+                <div key={log.id} className="p-4 space-y-2 text-xs">
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="font-semibold text-[#0f172a]">{log.actor}</span>
+                    <span className="font-mono-data text-[11px] text-[#64748b] shrink-0">
+                      {new Date(log.created_at).toLocaleString('en-IN', {
+                        day: '2-digit',
+                        month: 'short',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </span>
+                  </div>
+                  <p className="font-medium text-[#0f172a]">{log.action}</p>
+                  {log.target && <p className="text-[#475569]">Target: {log.target}</p>}
+                  {(log.previous_value || log.new_value) && (
+                    <div className="flex flex-wrap items-center gap-1.5 font-mono-data text-[11px] pt-0.5">
+                      {log.previous_value && (
+                        <span className="px-1.5 py-0.5 rounded bg-[#fef2f2] text-[#991b1b] border border-[#fecaca] break-all">
+                          {log.previous_value}
+                        </span>
+                      )}
+                      {log.previous_value && log.new_value && (
+                        <span className="text-[#64748b]">→</span>
+                      )}
+                      {log.new_value && (
+                        <span className="px-1.5 py-0.5 rounded bg-[#ecfdf5] text-[#1b4d3e] border border-[#a7f3d0] break-all">
+                          {log.new_value}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
               ))}
-            </tbody>
-          </table>
+            </div>
+          </>
         )}
 
         {logs.length > PAGE_SIZE && (

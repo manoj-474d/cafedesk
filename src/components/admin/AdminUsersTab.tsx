@@ -1,11 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Bookmark,
+  CalendarCheck,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Eye,
   FolderHeart,
+  MessageSquare,
   RefreshCw,
   Search,
   ShieldAlert,
@@ -260,99 +262,165 @@ export function AdminUsersTab({ csrfToken }: { csrfToken: string }) {
         </select>
       </div>
 
-      {/* Users Table */}
-      <div className="rounded-xl border border-[#e2e8f0] bg-white overflow-x-auto">
-        <table className="w-full text-left border-collapse text-xs">
-          <thead>
-            <tr className="border-b border-[#e2e8f0] bg-[#f8fafc] text-[#475569] font-semibold">
-              <th className="py-3 px-4">ID</th>
-              <th className="py-3 px-4">User</th>
-              <th className="py-3 px-4">Registered</th>
-              <th className="py-3 px-4">Current Plan</th>
-              <th className="py-3 px-4">Last Login</th>
-              <th className="py-3 px-4">Account Status</th>
-              <th className="py-3 px-4 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-[#f1f5f9]">
-            {pagedUsers.length === 0 ? (
-              <tr>
-                <td colSpan={7} className="py-8 text-center text-[#64748b]">
-                  No user accounts match the current search.
-                </td>
+      {/* Users List: Desktop Table + Mobile Cards */}
+      <div className="rounded-xl border border-[#e2e8f0] bg-white overflow-hidden">
+        <div className="hidden md:block overflow-x-auto">
+          <table className="w-full text-left border-collapse text-xs">
+            <thead>
+              <tr className="border-b border-[#e2e8f0] bg-[#f8fafc] text-[#475569] font-semibold">
+                <th className="py-3 px-4">ID</th>
+                <th className="py-3 px-4">User</th>
+                <th className="py-3 px-4">Registered</th>
+                <th className="py-3 px-4">Current Plan</th>
+                <th className="py-3 px-4">Last Login</th>
+                <th className="py-3 px-4">Account Status</th>
+                <th className="py-3 px-4 text-right">Actions</th>
               </tr>
-            ) : (
-              pagedUsers.map((u) => (
-                <tr key={u.id} className="hover:bg-[#f8fafc]">
-                  <td className="py-3 px-4 font-mono-data text-[#64748b]">#{u.id}</td>
-                  <td className="py-3 px-4">
-                    <p className="font-semibold text-[#0f172a]">{u.name}</p>
-                    <p className="text-[#64748b]">
-                      {u.email}{' '}
-                      <span className="uppercase text-[10px] font-mono-data">
-                        ({u.auth_provider})
-                      </span>
-                    </p>
-                  </td>
-                  <td className="py-3 px-4 font-mono-data text-[#475569] whitespace-nowrap">
-                    {new Date(u.created_at).toLocaleDateString('en-IN')}
-                  </td>
-                  <td className="py-3 px-4 whitespace-nowrap">
-                    <p className="font-semibold text-[#0f172a]">{u.subscription.plan_name}</p>
-                    <p className="text-[11px] text-[#64748b] capitalize">
-                      Sub: {u.subscription.status}
-                    </p>
-                  </td>
-                  <td className="py-3 px-4 font-mono-data text-[#475569] whitespace-nowrap">
-                    {formatDateTime(u.last_login_at)}
-                  </td>
-                  <td className="py-3 px-4 whitespace-nowrap">
-                    <span
-                      className={`inline-block px-2 py-0.5 rounded border text-[11px] font-semibold capitalize ${
-                        u.status === 'suspended'
-                          ? 'bg-[#fef2f2] border-[#fecaca] text-[#991b1b]'
-                          : 'bg-[#ecfdf5] border-[#a7f3d0] text-[#1b4d3e]'
-                      }`}
-                    >
-                      {u.status}
-                    </span>
-                  </td>
-                  <td className="py-3 px-4 text-right whitespace-nowrap">
-                    <div className="inline-flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => void openDetails(u.id)}
-                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded border border-[#cbd5e1] bg-white hover:bg-[#f1f5f9] font-semibold"
-                      >
-                        <Eye className="w-3.5 h-3.5" />
-                        <span>Details</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void handleToggleSuspend(u)}
-                        className={`px-2.5 py-1.5 rounded font-semibold ${
-                          u.status === 'suspended'
-                            ? 'bg-[#ecfdf5] text-[#1b4d3e] hover:bg-[#d1fae5]'
-                            : 'bg-amber-50 text-amber-900 hover:bg-amber-100'
-                        }`}
-                      >
-                        {u.status === 'suspended' ? 'Reactivate' : 'Suspend'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setConfirmDeleteUser(u)}
-                        aria-label={`Delete user ${u.email}`}
-                        className="p-1.5 rounded border border-[#fecaca] text-[#dc2626] hover:bg-[#fef2f2]"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
+            </thead>
+            <tbody className="divide-y divide-[#f1f5f9]">
+              {pagedUsers.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="py-8 text-center text-[#64748b]">
+                    No user accounts match the current search.
                   </td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+              ) : (
+                pagedUsers.map((u) => (
+                  <tr key={u.id} className="hover:bg-[#f8fafc]">
+                    <td className="py-3 px-4 font-mono-data text-[#64748b]">#{u.id}</td>
+                    <td className="py-3 px-4">
+                      <p className="font-semibold text-[#0f172a]">{u.name}</p>
+                      <p className="text-[#64748b]">
+                        {u.email}{' '}
+                        <span className="uppercase text-[10px] font-mono-data">
+                          ({u.auth_provider})
+                        </span>
+                      </p>
+                    </td>
+                    <td className="py-3 px-4 font-mono-data text-[#475569] whitespace-nowrap">
+                      {new Date(u.created_at).toLocaleDateString('en-IN')}
+                    </td>
+                    <td className="py-3 px-4 whitespace-nowrap">
+                      <p className="font-semibold text-[#0f172a]">{u.subscription.plan_name}</p>
+                      <p className="text-[11px] text-[#64748b] capitalize">
+                        Sub: {u.subscription.status}
+                      </p>
+                    </td>
+                    <td className="py-3 px-4 font-mono-data text-[#475569] whitespace-nowrap">
+                      {formatDateTime(u.last_login_at)}
+                    </td>
+                    <td className="py-3 px-4 whitespace-nowrap">
+                      <span
+                        className={`inline-block px-2 py-0.5 rounded border text-[11px] font-semibold capitalize ${
+                          u.status === 'suspended'
+                            ? 'bg-[#fef2f2] border-[#fecaca] text-[#991b1b]'
+                            : 'bg-[#ecfdf5] border-[#a7f3d0] text-[#1b4d3e]'
+                        }`}
+                      >
+                        {u.status}
+                      </span>
+                    </td>
+                    <td className="py-3 px-4 text-right whitespace-nowrap">
+                      <div className="inline-flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => void openDetails(u.id)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded border border-[#cbd5e1] bg-white hover:bg-[#f1f5f9] font-semibold"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>Details</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleToggleSuspend(u)}
+                          className={`px-2.5 py-1.5 rounded font-semibold ${
+                            u.status === 'suspended'
+                              ? 'bg-[#ecfdf5] text-[#1b4d3e] hover:bg-[#d1fae5]'
+                              : 'bg-amber-50 text-amber-900 hover:bg-amber-100'
+                          }`}
+                        >
+                          {u.status === 'suspended' ? 'Reactivate' : 'Suspend'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteUser(u)}
+                          aria-label={`Delete user ${u.email}`}
+                          className="p-1.5 rounded border border-[#fecaca] text-[#dc2626] hover:bg-[#fef2f2]"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Mobile Stacked Cards */}
+        <div className="md:hidden divide-y divide-[#e2e8f0]">
+          {pagedUsers.length === 0 ? (
+            <p className="p-8 text-center text-xs text-[#64748b]">
+              No user accounts match the current search.
+            </p>
+          ) : (
+            pagedUsers.map((u) => (
+              <div key={u.id} className="p-4 space-y-3 text-xs">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="font-bold text-sm text-[#0f172a]">
+                      {u.name} <span className="font-mono-data text-xs text-[#64748b]">#{u.id}</span>
+                    </p>
+                    <p className="text-[#64748b] truncate">{u.email}</p>
+                  </div>
+                  <span
+                    className={`px-2 py-0.5 rounded border text-[11px] font-semibold capitalize shrink-0 ${
+                      u.status === 'suspended'
+                        ? 'bg-[#fef2f2] border-[#fecaca] text-[#991b1b]'
+                        : 'bg-[#ecfdf5] border-[#a7f3d0] text-[#1b4d3e]'
+                    }`}
+                  >
+                    {u.status}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-[#475569]">
+                  <span>Plan: <strong className="text-[#0f172a]">{u.subscription.plan_name}</strong></span>
+                  <span className="font-mono-data">{new Date(u.created_at).toLocaleDateString('en-IN')}</span>
+                </div>
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => void openDetails(u.id)}
+                    className="flex-1 min-h-[44px] px-3 rounded-lg border border-[#cbd5e1] bg-white font-semibold inline-flex items-center justify-center gap-1.5"
+                  >
+                    <Eye className="w-3.5 h-3.5" />
+                    <span>Details</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleToggleSuspend(u)}
+                    className={`flex-1 min-h-[44px] px-3 rounded-lg font-semibold ${
+                      u.status === 'suspended'
+                        ? 'bg-[#ecfdf5] text-[#1b4d3e]'
+                        : 'bg-amber-50 text-amber-900'
+                    }`}
+                  >
+                    {u.status === 'suspended' ? 'Reactivate' : 'Suspend'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDeleteUser(u)}
+                    aria-label={`Delete user ${u.email}`}
+                    className="min-h-[44px] min-w-[44px] rounded-lg border border-[#fecaca] text-[#dc2626] flex items-center justify-center"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
 
         {filtered.length > PAGE_SIZE && (
           <div className="px-4 py-3 border-t border-[#e2e8f0] bg-[#f8fafc] flex items-center justify-between text-xs">
@@ -498,6 +566,60 @@ export function AdminUsersTab({ csrfToken }: { csrfToken: string }) {
                       </ul>
                     )}
                   </div>
+                </div>
+
+                {/* Booking History */}
+                <div className="space-y-2">
+                  <h4 className="font-semibold text-[#0f172a] inline-flex items-center gap-1.5">
+                    <CalendarCheck className="w-3.5 h-3.5 text-[#1b4d3e]" />
+                    <span>Booking History ({detailPayload.bookings?.length ?? 0})</span>
+                  </h4>
+                  {!detailPayload.bookings || detailPayload.bookings.length === 0 ? (
+                    <p className="text-[#64748b]">No workspace bookings submitted by this user.</p>
+                  ) : (
+                    <div className="divide-y divide-[#f1f5f9] border border-[#e2e8f0] rounded-lg">
+                      {detailPayload.bookings.map((b) => (
+                        <div key={b.id} className="px-3 py-2 flex items-center justify-between gap-2">
+                          <div>
+                            <span className="font-mono-data font-semibold text-[#0f172a]">
+                              {b.booking_ref}
+                            </span>
+                            <span className="text-[#475569] ml-2">
+                              {b.cafe_name} · {b.workspace_type}
+                            </span>
+                          </div>
+                          <span className="font-mono-data text-[#475569] shrink-0">
+                            {b.booking_date} · <span className="capitalize font-semibold">{b.status}</span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Feedback & Suggestions */}
+                <div className="space-y-2">
+                  <h4 className="font-semibold text-[#0f172a] inline-flex items-center gap-1.5">
+                    <MessageSquare className="w-3.5 h-3.5 text-[#b45309]" />
+                    <span>Feedback &amp; Suggestions ({detailPayload.feedback?.length ?? 0})</span>
+                  </h4>
+                  {!detailPayload.feedback || detailPayload.feedback.length === 0 ? (
+                    <p className="text-[#64748b]">No suggestions or enquiries recorded for this email.</p>
+                  ) : (
+                    <div className="divide-y divide-[#f1f5f9] border border-[#e2e8f0] rounded-lg">
+                      {detailPayload.feedback.map((fb) => (
+                        <div key={`${fb.source}-${fb.id}`} className="px-3 py-2 space-y-0.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-semibold text-[#0f172a]">{fb.title}</span>
+                            <span className="capitalize text-[11px] font-semibold text-[#b45309]">
+                              {fb.category} · {fb.status.replace('_', ' ')}
+                            </span>
+                          </div>
+                          {fb.details && <p className="text-[#64748b] line-clamp-2">{fb.details}</p>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 {/* Payments */}

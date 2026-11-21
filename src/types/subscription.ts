@@ -10,6 +10,8 @@ export interface SubscriptionPlan {
   interval_days: number;
   badge_text: string;
   promo_note?: string;
+  usage_limits?: string;
+  is_recommended?: boolean;
   features: string[];
   sort_order: number;
   active: boolean;
@@ -157,6 +159,41 @@ export interface AuditLogEntry {
   created_at: number;
 }
 
+export type BookingStatus = 'pending' | 'confirmed' | 'cancelled' | 'completed';
+export type BookingPaymentStatus = 'unpaid' | 'paid' | 'refunded' | 'pay_at_cafe';
+
+export interface BookingRecord {
+  id: number;
+  booking_ref: string;
+  user_id: number | null;
+  customer_name: string;
+  customer_email: string;
+  customer_phone: string;
+  cafe_id: string;
+  cafe_name: string;
+  workspace_type: string;
+  booking_date: string;
+  time_slot: string;
+  guests_count: number;
+  amount_inr: number;
+  payment_status: BookingPaymentStatus;
+  status: BookingStatus;
+  notes: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface CustomerFeedbackItem {
+  id: number;
+  source: 'suggestion' | 'submission';
+  category: string;
+  title: string;
+  details: string;
+  status: string;
+  admin_notes: string;
+  created_at: number;
+}
+
 export interface AdminUserDetailsPayload {
   user: UserProfile;
   subscription: UserSubscription | null;
@@ -164,6 +201,8 @@ export interface AdminUserDetailsPayload {
   history: SubscriptionHistoryItem[];
   savedCafes: SavedCafeRecord[];
   collections: UserCollection[];
+  bookings?: BookingRecord[];
+  feedback?: CustomerFeedbackItem[];
 }
 
 

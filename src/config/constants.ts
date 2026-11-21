@@ -9,11 +9,11 @@ export const SITE_CONFIG = {
   domain: 'cafedesk.space',
   tagline: 'Find Your Perfect Work Cafe.',
   city: 'Bengaluru',
-  whatsappNumber: '919845000000',
-  whatsappDisplay: '+91 98450 00000',
+  whatsappNumber: '918217379133',
+  whatsappDisplay: '+91 82173 79133',
   instagramUrl: 'https://instagram.com/cafedesk.space',
   instagramHandle: '@cafedesk.space',
-  contactEmail: 'hello@cafedesk.space',
+  contactEmail: 'hellocafedeskspace@gmail.com',
 } as const;
 
 export type CafeMode = 'work' | 'budget' | 'calm' | 'plan';

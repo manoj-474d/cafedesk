@@ -104,6 +104,17 @@ const FALLBACK_SETTINGS: SiteSettings = {
   seo_contact_description: 'Reach the Cafe Desk team or suggest cafe updates in Bengaluru.',
   seo_og_image: '/src/assets/images/hero_cafedesk_interior_1794976059561.jpg',
   seo_allow_indexing: true,
+  currency_code: 'INR',
+  currency_symbol: '₹',
+  bookings_enabled: true,
+  booking_lead_hours: 2,
+  booking_max_guests: 8,
+  booking_policy_note: 'Tables and power-socket desks are held for 15 minutes past arrival time.',
+  notify_new_booking: true,
+  notify_new_customer: true,
+  notify_new_payment: true,
+  notify_new_suggestion: true,
+  notification_email: '',
 };
 
 const FALLBACK_NAV: NavigationItem[] = [

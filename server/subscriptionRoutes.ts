@@ -1206,7 +1206,9 @@ export function registerSubscriptionRoutes(app: Express): void {
       const tagline = cleanStr(req.body?.tagline, 200);
       const badgeText = cleanStr(req.body?.badge_text, 40);
       const promoNote = cleanStr(req.body?.promo_note, 140);
-      const priceInr = Math.max(1, Math.round(Number(req.body?.price_inr ?? 0)));
+      const usageLimits = cleanStr(req.body?.usage_limits, 240);
+      const isRecommended = Boolean(req.body?.is_recommended);
+      const priceInr = Math.max(0, Math.round(Number(req.body?.price_inr ?? 0)));
       const intervalDays = Math.max(1, Math.min(3650, Math.round(Number(req.body?.interval_days ?? 30))));
       const features = Array.isArray(req.body?.features)
         ? req.body.features.map((f: unknown) => cleanStr(f, 160)).filter(Boolean)
@@ -1214,7 +1216,7 @@ export function registerSubscriptionRoutes(app: Express): void {
       const active = req.body?.active === undefined ? 1 : req.body.active ? 1 : 0;
 
       if (!rawId || !name || features.length === 0) {
-        res.status(400).json({ error: 'Plan name, valid ID, price > 0, and at least one feature are required.' });
+        res.status(400).json({ error: 'Plan name, valid ID, and at least one feature are required.' });
         return;
       }
 
@@ -1229,10 +1231,14 @@ export function registerSubscriptionRoutes(app: Express): void {
         m: number;
       };
 
+      if (isRecommended) {
+        db.exec('UPDATE subscription_plans SET is_recommended = 0');
+      }
+
       db.prepare(
         `INSERT INTO subscription_plans
-         (id, name, tagline, price_inr, interval_days, badge_text, promo_note, features_json, sort_order, active, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (id, name, tagline, price_inr, interval_days, badge_text, promo_note, usage_limits, is_recommended, features_json, sort_order, active, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         rawId,
         name,
@@ -1241,6 +1247,8 @@ export function registerSubscriptionRoutes(app: Express): void {
         intervalDays,
         badgeText,
         promoNote,
+        usageLimits,
+        isRecommended ? 1 : 0,
         JSON.stringify(features),
         Number(maxSortRow.m) + 1,
         active,
@@ -1277,6 +1285,11 @@ export function registerSubscriptionRoutes(app: Express): void {
       const tagline = cleanStr(req.body?.tagline, 200);
       const badgeText = cleanStr(req.body?.badge_text, 40);
       const promoNote = cleanStr(req.body?.promo_note, 140);
+      const usageLimits = cleanStr(req.body?.usage_limits, 240);
+      const isRecommended =
+        req.body?.is_recommended === undefined
+          ? Boolean(existing.is_recommended)
+          : Boolean(req.body.is_recommended);
       const priceInr = Math.max(0, Math.round(Number(req.body?.price_inr ?? 0)));
       const intervalDaysRaw = Number(req.body?.interval_days);
       const intervalDays =
@@ -1295,10 +1308,14 @@ export function registerSubscriptionRoutes(app: Express): void {
         return;
       }
 
+      if (isRecommended) {
+        db.prepare('UPDATE subscription_plans SET is_recommended = 0 WHERE id != ?').run(id);
+      }
+
       const nextPrice = id === 'free' ? 0 : priceInr;
       db.prepare(
         `UPDATE subscription_plans
-         SET name = ?, tagline = ?, price_inr = ?, interval_days = ?, badge_text = ?, promo_note = ?, features_json = ?, active = ?, updated_at = ?
+         SET name = ?, tagline = ?, price_inr = ?, interval_days = ?, badge_text = ?, promo_note = ?, usage_limits = ?, is_recommended = ?, features_json = ?, active = ?, updated_at = ?
          WHERE id = ?`
       ).run(
         name,
@@ -1307,6 +1324,8 @@ export function registerSubscriptionRoutes(app: Express): void {
         intervalDays,
         badgeText,
         promoNote,
+        usageLimits,
+        isRecommended ? 1 : 0,
         JSON.stringify(features),
         active,
         Date.now(),
@@ -1319,6 +1338,85 @@ export function registerSubscriptionRoutes(app: Express): void {
         name,
         `${String(existing.name)} · ₹${Number(existing.price_inr)}`,
         `${name} · ₹${nextPrice} (${active ? 'Active' : 'Inactive'})`
+      );
+      res.json({ ok: true, plans: listPlansFromDb(true) });
+    }
+  );
+
+  app.delete(
+    '/api/admin/subscriptions/plans/:id',
+    requireAdminAuth,
+    requireFullAdmin,
+    (req: Request, res: Response) => {
+      const id = cleanStr(req.params.id, 40) as PlanTier;
+      if (!id || id === 'free') {
+        res.status(400).json({ error: 'The default Free plan cannot be deleted.' });
+        return;
+      }
+
+      const db = getDb();
+      const existing = db.prepare('SELECT id, name, price_inr FROM subscription_plans WHERE id = ?').get(id) as
+        | { id: string; name: string; price_inr: number }
+        | undefined;
+      if (!existing) {
+        res.status(404).json({ error: 'Subscription plan not found.' });
+        return;
+      }
+
+      const payRef = db.prepare('SELECT COUNT(*) as cnt FROM payments WHERE plan_id = ?').get(id) as {
+        cnt: number;
+      };
+      if (Number(payRef?.cnt ?? 0) > 0) {
+        res.status(409).json({
+          error:
+            'This plan has recorded payment receipts and cannot be deleted. Disable it instead to keep financial audit records intact.',
+        });
+        return;
+      }
+
+      const now = Date.now();
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const affectedSubs = db
+          .prepare('SELECT user_id FROM user_subscriptions WHERE plan_id = ?')
+          .all(id) as Array<{ user_id: number }>;
+
+        if (affectedSubs.length > 0) {
+          db.prepare(
+            `UPDATE user_subscriptions
+             SET plan_id = 'free', subscribed_price_inr = 0, status = 'active', expires_at = NULL, auto_renew = 0, updated_at = ?
+             WHERE plan_id = ?`
+          ).run(now, id);
+
+          const insHist = db.prepare(
+            `INSERT INTO subscription_history (user_id, action, from_plan, to_plan, note, created_at)
+             VALUES (?, 'plan_removed', ?, 'free', ?, ?)`
+          );
+          for (const sub of affectedSubs) {
+            insHist.run(
+              sub.user_id,
+              id,
+              `Plan "${existing.name}" deleted by admin ${req.admin!.username}; reverted to Free Explorer`,
+              now
+            );
+          }
+        }
+
+        db.prepare('DELETE FROM subscription_plans WHERE id = ?').run(id);
+        db.exec('COMMIT');
+      } catch (err) {
+        db.exec('ROLLBACK');
+        console.error('Delete plan failed:', err);
+        res.status(500).json({ error: 'Failed to delete subscription plan.' });
+        return;
+      }
+
+      recordActivity(
+        req.admin!.username,
+        'Deleted subscription plan',
+        existing.name,
+        `${existing.name} · ₹${existing.price_inr}`,
+        'Deleted'
       );
       res.json({ ok: true, plans: listPlansFromDb(true) });
     }
@@ -1348,6 +1446,7 @@ export function registerSubscriptionRoutes(app: Express): void {
 
       const subscription = getUserEffectiveSubscription(userId);
       const library = getUserLibraryPayload(userId);
+      const userEmail = String(userRow.email || '').trim().toLowerCase();
 
       const paymentRows = db
         .prepare(
@@ -1391,6 +1490,76 @@ export function registerSubscriptionRoutes(app: Express): void {
         created_at: Number(h.created_at),
       }));
 
+      const bookingRows = db
+        .prepare(
+          `SELECT * FROM bookings
+           WHERE user_id = ? OR (? != '' AND LOWER(customer_email) = ?)
+           ORDER BY created_at DESC LIMIT 50`
+        )
+        .all(userId, userEmail, userEmail) as Array<Record<string, unknown>>;
+
+      const bookings = bookingRows.map((b) => ({
+        id: Number(b.id),
+        booking_ref: String(b.booking_ref),
+        user_id: b.user_id !== null && b.user_id !== undefined ? Number(b.user_id) : null,
+        customer_name: String(b.customer_name),
+        customer_email: String(b.customer_email || ''),
+        customer_phone: String(b.customer_phone || ''),
+        cafe_id: String(b.cafe_id),
+        cafe_name: String(b.cafe_name),
+        workspace_type: String(b.workspace_type || 'Laptop Desk'),
+        booking_date: String(b.booking_date),
+        time_slot: String(b.time_slot),
+        guests_count: Number(b.guests_count ?? 1),
+        amount_inr: Number(b.amount_inr ?? 0),
+        payment_status: String(b.payment_status || 'pay_at_cafe'),
+        status: String(b.status || 'pending'),
+        notes: String(b.notes || ''),
+        created_at: Number(b.created_at),
+        updated_at: Number(b.updated_at),
+      }));
+
+      const suggestionRows = userEmail
+        ? (db
+            .prepare(
+              'SELECT * FROM feature_suggestions WHERE LOWER(email) = ? ORDER BY created_at DESC LIMIT 30'
+            )
+            .all(userEmail) as Array<Record<string, unknown>>)
+        : [];
+      const submissionRows = userEmail
+        ? (db
+            .prepare(
+              'SELECT * FROM submissions WHERE LOWER(contact_info) = ? ORDER BY created_at DESC LIMIT 30'
+            )
+            .all(userEmail) as Array<Record<string, unknown>>)
+        : [];
+
+      const feedback = [
+        ...suggestionRows.map((s) => ({
+          id: Number(s.id),
+          source: 'suggestion' as const,
+          category: String(s.category || 'Suggestion'),
+          title: String(s.title),
+          details: String(s.details || ''),
+          status: String(s.status || 'new'),
+          admin_notes: String(s.admin_notes || ''),
+          created_at: Number(s.created_at),
+        })),
+        ...submissionRows.map((sub) => {
+          const payload = safeJson<Record<string, unknown>>(sub.payload_json, {});
+          return {
+            id: Number(sub.id),
+            source: 'submission' as const,
+            category: String(sub.type || 'enquiry'),
+            title: String(sub.cafe_name || sub.type || 'Enquiry'),
+            details: String(payload.notes || ''),
+            status: String(sub.status || 'new'),
+            admin_notes: '',
+            created_at: Number(sub.created_at),
+          };
+        }),
+      ].sort((a, b) => b.created_at - a.created_at);
+
       res.json({
         user: formatUserProfile(userRow),
         subscription,
@@ -1398,6 +1567,8 @@ export function registerSubscriptionRoutes(app: Express): void {
         history,
         savedCafes: library.savedCafes,
         collections: library.collections,
+        bookings,
+        feedback,
       });
     }
   );

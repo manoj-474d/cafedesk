@@ -356,76 +356,132 @@ export function AdminRevenueTab({ csrfToken }: { csrfToken: string }) {
         />
       </div>
 
-      {/* Transactions Table */}
-      <div className="rounded-xl border border-[#e2e8f0] bg-white overflow-x-auto">
+      {/* Transactions Table & Mobile Cards */}
+      <div className="rounded-xl border border-[#e2e8f0] bg-white overflow-hidden">
         {pagedPayments.length === 0 ? (
           <p className="text-xs text-[#64748b] py-8 text-center">
             No payment transactions match this filter.
           </p>
         ) : (
-          <table className="w-full text-left border-collapse text-xs">
-            <thead>
-              <tr className="border-b border-[#e2e8f0] bg-[#f8fafc] text-[#475569] font-semibold">
-                <th className="py-3 px-4">Receipt</th>
-                <th className="py-3 px-4">Customer</th>
-                <th className="py-3 px-4">Plan</th>
-                <th className="py-3 px-4">Amount</th>
-                <th className="py-3 px-4">Method</th>
-                <th className="py-3 px-4">Status</th>
-                <th className="py-3 px-4">Date</th>
-                <th className="py-3 px-4 text-right">Action</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[#f1f5f9]">
+          <>
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="border-b border-[#e2e8f0] bg-[#f8fafc] text-[#475569] font-semibold">
+                    <th className="py-3 px-4">Receipt</th>
+                    <th className="py-3 px-4">Customer</th>
+                    <th className="py-3 px-4">Plan</th>
+                    <th className="py-3 px-4">Amount</th>
+                    <th className="py-3 px-4">Method</th>
+                    <th className="py-3 px-4">Status</th>
+                    <th className="py-3 px-4">Date</th>
+                    <th className="py-3 px-4 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#f1f5f9]">
+                  {pagedPayments.map((p) => (
+                    <tr key={p.id} className="hover:bg-[#f8fafc]">
+                      <td className="py-3 px-4 font-mono-data font-semibold text-[#0f172a]">
+                        {p.receipt_number}
+                      </td>
+                      <td className="py-3 px-4">
+                        <p className="font-semibold text-[#0f172a]">{p.user_name}</p>
+                        <p className="text-[#64748b]">{p.user_email}</p>
+                      </td>
+                      <td className="py-3 px-4">{p.plan_name || p.plan_id}</td>
+                      <td className="py-3 px-4 font-mono-data tabular-nums font-bold">
+                        ₹{p.amount_inr}
+                      </td>
+                      <td className="py-3 px-4 uppercase font-mono-data">{p.method}</td>
+                      <td className="py-3 px-4">
+                        <span
+                          className={`inline-block px-2 py-0.5 rounded border text-[11px] font-semibold capitalize ${
+                            p.status === 'paid'
+                              ? 'bg-[#ecfdf5] border-[#a7f3d0] text-[#16a34a]'
+                              : p.status === 'refunded'
+                              ? 'bg-amber-50 border-amber-200 text-amber-800'
+                              : p.status === 'failed'
+                              ? 'bg-[#fef2f2] border-[#fecaca] text-[#b91c1c]'
+                              : 'bg-[#f1f5f9] border-[#cbd5e1] text-[#475569]'
+                          }`}
+                        >
+                          {p.status}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 font-mono-data text-[#64748b] whitespace-nowrap">
+                        {new Date(p.created_at).toLocaleDateString('en-IN')}
+                      </td>
+                      <td className="py-3 px-4 text-right whitespace-nowrap">
+                        {p.status === 'paid' ? (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmRefundPayment(p)}
+                            className="px-2.5 py-1 rounded bg-amber-50 border border-amber-200 text-amber-900 hover:bg-amber-100 font-semibold"
+                          >
+                            Issue Refund
+                          </button>
+                        ) : (
+                          <span className="text-[#94a3b8]">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="md:hidden divide-y divide-[#e2e8f0]">
               {pagedPayments.map((p) => (
-                <tr key={p.id} className="hover:bg-[#f8fafc]">
-                  <td className="py-3 px-4 font-mono-data font-semibold text-[#0f172a]">
-                    {p.receipt_number}
-                  </td>
-                  <td className="py-3 px-4">
-                    <p className="font-semibold text-[#0f172a]">{p.user_name}</p>
-                    <p className="text-[#64748b]">{p.user_email}</p>
-                  </td>
-                  <td className="py-3 px-4">{p.plan_name || p.plan_id}</td>
-                  <td className="py-3 px-4 font-mono-data tabular-nums font-bold">
-                    ₹{p.amount_inr}
-                  </td>
-                  <td className="py-3 px-4 uppercase font-mono-data">{p.method}</td>
-                  <td className="py-3 px-4">
-                    <span
-                      className={`inline-block px-2 py-0.5 rounded border text-[11px] font-semibold capitalize ${
-                        p.status === 'paid'
-                          ? 'bg-[#ecfdf5] border-[#a7f3d0] text-[#16a34a]'
-                          : p.status === 'refunded'
-                          ? 'bg-amber-50 border-amber-200 text-amber-800'
-                          : p.status === 'failed'
-                          ? 'bg-[#fef2f2] border-[#fecaca] text-[#b91c1c]'
-                          : 'bg-[#f1f5f9] border-[#cbd5e1] text-[#475569]'
-                      }`}
-                    >
-                      {p.status}
-                    </span>
-                  </td>
-                  <td className="py-3 px-4 font-mono-data text-[#64748b] whitespace-nowrap">
-                    {new Date(p.created_at).toLocaleDateString('en-IN')}
-                  </td>
-                  <td className="py-3 px-4 text-right whitespace-nowrap">
-                    {p.status === 'paid' ? (
-                      <button
-                        type="button"
-                        onClick={() => setConfirmRefundPayment(p)}
-                        className="px-2.5 py-1 rounded bg-amber-50 border border-amber-200 text-amber-900 hover:bg-amber-100 font-semibold"
+                <div key={p.id} className="p-4 space-y-2.5 text-xs">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="font-mono-data font-bold text-[#0f172a]">
+                        {p.receipt_number}
+                      </p>
+                      <p className="font-semibold text-[#0f172a] truncate">{p.user_name}</p>
+                      <p className="text-[#64748b] truncate">{p.user_email}</p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className="font-mono-data tabular-nums text-sm font-bold text-[#0f172a]">
+                        ₹{p.amount_inr}
+                      </p>
+                      <span
+                        className={`inline-block mt-1 px-2 py-0.5 rounded border text-[11px] font-semibold capitalize ${
+                          p.status === 'paid'
+                            ? 'bg-[#ecfdf5] border-[#a7f3d0] text-[#16a34a]'
+                            : p.status === 'refunded'
+                            ? 'bg-amber-50 border-amber-200 text-amber-800'
+                            : p.status === 'failed'
+                            ? 'bg-[#fef2f2] border-[#fecaca] text-[#b91c1c]'
+                            : 'bg-[#f1f5f9] border-[#cbd5e1] text-[#475569]'
+                        }`}
                       >
-                        Issue Refund
-                      </button>
-                    ) : (
-                      <span className="text-[#94a3b8]">—</span>
-                    )}
-                  </td>
-                </tr>
+                        {p.status}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#475569]">
+                    <span>
+                      {p.plan_name || p.plan_id} ·{' '}
+                      <span className="uppercase font-mono-data">{p.method}</span>
+                    </span>
+                    <span className="font-mono-data text-[#64748b]">
+                      {new Date(p.created_at).toLocaleDateString('en-IN')}
+                    </span>
+                  </div>
+                  {p.status === 'paid' && (
+                    <button
+                      type="button"
+                      onClick={() => setConfirmRefundPayment(p)}
+                      className="w-full min-h-[44px] px-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 hover:bg-amber-100 font-semibold"
+                    >
+                      Issue Refund
+                    </button>
+                  )}
+                </div>
               ))}
-            </tbody>
-          </table>
+            </div>
+          </>
         )}
 
         {filteredPayments.length > PAGE_SIZE && (

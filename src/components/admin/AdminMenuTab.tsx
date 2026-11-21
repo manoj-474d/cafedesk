@@ -43,6 +43,7 @@ interface MenuDraftForm {
   category: string;
   description: string;
   price_inr: number;
+  discount_price_inr: number | '';
   photo_url: string;
   available: boolean;
   dietary: DietaryType;
@@ -57,6 +58,7 @@ const EMPTY_MENU_FORM: MenuDraftForm = {
   category: 'Coffee',
   description: '',
   price_inr: 150,
+  discount_price_inr: '',
   photo_url: '',
   available: true,
   dietary: 'veg',
@@ -164,6 +166,14 @@ export function AdminMenuTab({
       const isEdit = Boolean(editing.id);
       const url = isEdit ? `/api/admin/menu/${editing.id}` : '/api/admin/menu';
       const method = isEdit ? 'PUT' : 'POST';
+      const payload = {
+        ...editing,
+        cafe_id: selectedCafeId,
+        discount_price_inr:
+          editing.discount_price_inr === '' || editing.discount_price_inr === null
+            ? null
+            : Number(editing.discount_price_inr),
+      };
       const res = await fetch(url, {
         method,
         headers: {
@@ -171,7 +181,7 @@ export function AdminMenuTab({
           'x-csrf-token': csrfToken,
         },
         credentials: 'include',
-        body: JSON.stringify({ ...editing, cafe_id: selectedCafeId }),
+        body: JSON.stringify(payload),
       });
       const data = (await res.json()) as { error?: string; items?: MenuItemRecord[] };
       if (!res.ok) {
@@ -401,8 +411,8 @@ export function AdminMenuTab({
         </div>
       </div>
 
-      {/* Menu Table */}
-      <div className="bg-white rounded-xl border border-[#e2e8f0] overflow-x-auto">
+      {/* Menu List: Desktop Table + Mobile Stacked Cards */}
+      <div className="bg-white rounded-xl border border-[#e2e8f0] overflow-hidden">
         {loading ? (
           <p className="p-8 text-center text-xs text-[#64748b]">Loading menu items...</p>
         ) : filteredItems.length === 0 ? (
@@ -414,139 +424,275 @@ export function AdminMenuTab({
             </p>
           </div>
         ) : (
-          <table className="w-full text-left border-collapse text-xs">
-            <thead>
-              <tr className="border-b border-[#e2e8f0] bg-[#f8fafc] text-[#475569] font-semibold">
-                <th className="py-3 px-4">Item</th>
-                <th className="py-3 px-4">Category &amp; Dietary</th>
-                <th className="py-3 px-4">Price (₹ INR)</th>
-                <th className="py-3 px-4">Highlights</th>
-                <th className="py-3 px-4">Availability</th>
-                <th className="py-3 px-4 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[#f1f5f9]">
+          <>
+            {/* Desktop Table */}
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="border-b border-[#e2e8f0] bg-[#f8fafc] text-[#475569] font-semibold">
+                    <th className="py-3 px-4">Item</th>
+                    <th className="py-3 px-4">Category &amp; Dietary</th>
+                    <th className="py-3 px-4">Price / Offer (₹ INR)</th>
+                    <th className="py-3 px-4">Highlights</th>
+                    <th className="py-3 px-4">Availability</th>
+                    <th className="py-3 px-4 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#f1f5f9]">
+                  {filteredItems.map((item) => {
+                    const draftPrice = inlinePrices[item.id] ?? item.price_inr;
+                    const dirtyPrice = draftPrice !== item.price_inr;
+                    const hasDiscount =
+                      item.discount_price_inr !== null &&
+                      item.discount_price_inr !== undefined &&
+                      item.discount_price_inr < item.price_inr;
+                    return (
+                      <tr key={item.id} className="hover:bg-[#f8fafc]">
+                        <td className="py-3 px-4">
+                          <div className="flex items-center gap-3">
+                            {item.photo_url ? (
+                              <img
+                                src={item.photo_url}
+                                alt={item.name}
+                                referrerPolicy="no-referrer"
+                                className="w-10 h-10 rounded-md object-cover border border-[#e2e8f0] shrink-0"
+                              />
+                            ) : null}
+                            <div>
+                              <p className="font-semibold text-[#0f172a] text-sm">{item.name}</p>
+                              {item.description && (
+                                <p className="text-[11px] text-[#64748b] max-w-xs truncate">
+                                  {item.description}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                        <td className="py-3 px-4 whitespace-nowrap">
+                          <span className="font-semibold text-[#0f172a]">{item.category}</span>
+                          {item.dietary !== 'na' && (
+                            <span className="text-[#64748b]">
+                              {' '}
+                              · {item.dietary === 'non_veg' ? 'Non-Veg' : item.dietary === 'vegan' ? 'Vegan' : 'Veg'}
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4">
+                          <div className="inline-flex items-center gap-1.5">
+                            <input
+                              type="number"
+                              min={0}
+                              value={draftPrice}
+                              onChange={(e) =>
+                                setInlinePrices((prev) => ({
+                                  ...prev,
+                                  [item.id]: Number(e.target.value),
+                                }))
+                              }
+                              aria-label={`Price for ${item.name}`}
+                              className="w-20 h-8 px-2 rounded border border-[#cbd5e1] bg-white font-mono-data tabular-nums text-xs font-bold"
+                            />
+                            {dirtyPrice && (
+                              <button
+                                type="button"
+                                onClick={() => void handleQuickPriceSave(item)}
+                                className="h-8 px-2.5 rounded bg-[#0f172a] text-white text-[11px] font-semibold"
+                              >
+                                Save
+                              </button>
+                            )}
+                          </div>
+                          {hasDiscount && (
+                            <p className="font-mono-data text-[11px] font-semibold text-[#1b4d3e] mt-1">
+                              Offer: ₹{item.discount_price_inr}{' '}
+                              <del className="text-[#94a3b8] font-normal">₹{item.price_inr}</del>
+                            </p>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 text-[#475569] whitespace-nowrap">
+                          {[
+                            item.is_bestseller ? 'Bestseller' : null,
+                            item.is_featured ? 'Featured' : null,
+                          ]
+                            .filter(Boolean)
+                            .join(' · ') || 'Standard'}
+                        </td>
+                        <td className="py-3 px-4">
+                          <button
+                            type="button"
+                            onClick={() => void handleToggleAvailable(item)}
+                            className={`px-2.5 py-1 rounded text-[11px] font-semibold border ${
+                              item.available
+                                ? 'bg-[#ecfdf5] border-[#a7f3d0] text-[#16a34a]'
+                                : 'bg-[#fef2f2] border-[#fecaca] text-[#991b1b]'
+                            }`}
+                          >
+                            {item.available ? 'Available' : 'Unavailable'}
+                          </button>
+                        </td>
+                        <td className="py-3 px-4 text-right whitespace-nowrap">
+                          <div className="inline-flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setEditing({
+                                  id: item.id,
+                                  cafe_id: item.cafe_id,
+                                  name: item.name,
+                                  category: item.category,
+                                  description: item.description,
+                                  price_inr: item.price_inr,
+                                  discount_price_inr:
+                                    item.discount_price_inr !== null &&
+                                    item.discount_price_inr !== undefined
+                                      ? item.discount_price_inr
+                                      : '',
+                                  photo_url: item.photo_url,
+                                  available: item.available,
+                                  dietary: item.dietary,
+                                  is_bestseller: item.is_bestseller,
+                                  is_featured: item.is_featured,
+                                  sort_order: item.sort_order,
+                                })
+                              }
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-[#cbd5e1] bg-white hover:bg-[#f1f5f9] text-[#0f172a] font-semibold"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                              <span>Edit</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteItem(item)}
+                              aria-label={`Delete ${item.name}`}
+                              className="p-1.5 rounded-md border border-[#fecaca] text-[#dc2626] hover:bg-[#fef2f2]"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Mobile Stacked Cards */}
+            <div className="md:hidden divide-y divide-[#e2e8f0]">
               {filteredItems.map((item) => {
                 const draftPrice = inlinePrices[item.id] ?? item.price_inr;
                 const dirtyPrice = draftPrice !== item.price_inr;
+                const hasDiscount =
+                  item.discount_price_inr !== null &&
+                  item.discount_price_inr !== undefined &&
+                  item.discount_price_inr < item.price_inr;
                 return (
-                  <tr key={item.id} className="hover:bg-[#f8fafc]">
-                    <td className="py-3 px-4">
-                      <div className="flex items-center gap-3">
-                        {item.photo_url ? (
+                  <div key={item.id} className="p-4 space-y-3 text-xs">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-start gap-2.5 min-w-0">
+                        {item.photo_url && (
                           <img
                             src={item.photo_url}
                             alt={item.name}
                             referrerPolicy="no-referrer"
-                            className="w-10 h-10 rounded-md object-cover border border-[#e2e8f0] shrink-0"
+                            className="w-12 h-12 rounded-lg object-cover border border-[#e2e8f0] shrink-0"
                           />
-                        ) : null}
-                        <div>
-                          <p className="font-semibold text-[#0f172a] text-sm">{item.name}</p>
-                          {item.description && (
-                            <p className="text-[11px] text-[#64748b] max-w-xs truncate">
-                              {item.description}
+                        )}
+                        <div className="min-w-0">
+                          <p className="font-bold text-sm text-[#0f172a]">{item.name}</p>
+                          <p className="text-[#64748b]">
+                            {item.category}
+                            {item.dietary !== 'na'
+                              ? ` · ${item.dietary === 'non_veg' ? 'Non-Veg' : item.dietary === 'vegan' ? 'Vegan' : 'Veg'}`
+                              : ''}
+                          </p>
+                          {hasDiscount && (
+                            <p className="font-mono-data text-[#1b4d3e] font-semibold mt-0.5">
+                              Offer: ₹{item.discount_price_inr}{' '}
+                              <del className="text-[#94a3b8] font-normal">₹{item.price_inr}</del>
                             </p>
                           )}
                         </div>
                       </div>
-                    </td>
-                    <td className="py-3 px-4 whitespace-nowrap">
-                      <span className="font-semibold text-[#0f172a]">{item.category}</span>
-                      {item.dietary !== 'na' && (
-                        <span className="text-[#64748b]">
-                          {' '}
-                          · {item.dietary === 'non_veg' ? 'Non-Veg' : item.dietary === 'vegan' ? 'Vegan' : 'Veg'}
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-3 px-4">
-                      <div className="inline-flex items-center gap-1.5">
-                        <input
-                          type="number"
-                          min={0}
-                          value={draftPrice}
-                          onChange={(e) =>
-                            setInlinePrices((prev) => ({
-                              ...prev,
-                              [item.id]: Number(e.target.value),
-                            }))
-                          }
-                          aria-label={`Price for ${item.name}`}
-                          className="w-20 h-8 px-2 rounded border border-[#cbd5e1] bg-white font-mono-data tabular-nums text-xs font-bold"
-                        />
-                        {dirtyPrice && (
-                          <button
-                            type="button"
-                            onClick={() => void handleQuickPriceSave(item)}
-                            className="h-8 px-2.5 rounded bg-[#0f172a] text-white text-[11px] font-semibold"
-                          >
-                            Save
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                    <td className="py-3 px-4 text-[#475569] whitespace-nowrap">
-                      {[
-                        item.is_bestseller ? 'Bestseller' : null,
-                        item.is_featured ? 'Featured' : null,
-                      ]
-                        .filter(Boolean)
-                        .join(' · ') || 'Standard'}
-                    </td>
-                    <td className="py-3 px-4">
                       <button
                         type="button"
                         onClick={() => void handleToggleAvailable(item)}
-                        className={`px-2.5 py-1 rounded text-[11px] font-semibold border ${
+                        className={`min-h-[36px] px-2.5 py-1 rounded text-[11px] font-semibold border shrink-0 ${
                           item.available
                             ? 'bg-[#ecfdf5] border-[#a7f3d0] text-[#16a34a]'
                             : 'bg-[#fef2f2] border-[#fecaca] text-[#991b1b]'
                         }`}
                       >
-                        {item.available ? 'Available' : 'Unavailable'}
+                        {item.available ? 'Available' : 'Out'}
                       </button>
-                    </td>
-                    <td className="py-3 px-4 text-right whitespace-nowrap">
-                      <div className="inline-flex items-center gap-2">
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <span className="text-[#475569] font-semibold">Regular ₹</span>
+                      <input
+                        type="number"
+                        min={0}
+                        value={draftPrice}
+                        onChange={(e) =>
+                          setInlinePrices((prev) => ({
+                            ...prev,
+                            [item.id]: Number(e.target.value),
+                          }))
+                        }
+                        aria-label={`Price for ${item.name}`}
+                        className="w-24 h-11 px-2.5 rounded-lg border border-[#cbd5e1] bg-[#f8fafc] font-mono-data font-bold"
+                      />
+                      {dirtyPrice && (
                         <button
                           type="button"
-                          onClick={() =>
-                            setEditing({
-                              id: item.id,
-                              cafe_id: item.cafe_id,
-                              name: item.name,
-                              category: item.category,
-                              description: item.description,
-                              price_inr: item.price_inr,
-                              photo_url: item.photo_url,
-                              available: item.available,
-                              dietary: item.dietary,
-                              is_bestseller: item.is_bestseller,
-                              is_featured: item.is_featured,
-                              sort_order: item.sort_order,
-                            })
-                          }
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-[#cbd5e1] bg-white hover:bg-[#f1f5f9] text-[#0f172a] font-semibold"
+                          onClick={() => void handleQuickPriceSave(item)}
+                          className="min-h-[44px] px-3 rounded-lg bg-[#0f172a] text-white font-semibold"
                         >
-                          <Edit3 className="w-3.5 h-3.5" />
-                          <span>Edit</span>
+                          Save
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => setConfirmDeleteItem(item)}
-                          aria-label={`Delete ${item.name}`}
-                          className="p-1.5 rounded-md border border-[#fecaca] text-[#dc2626] hover:bg-[#fef2f2]"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setEditing({
+                            id: item.id,
+                            cafe_id: item.cafe_id,
+                            name: item.name,
+                            category: item.category,
+                            description: item.description,
+                            price_inr: item.price_inr,
+                            discount_price_inr:
+                              item.discount_price_inr !== null &&
+                              item.discount_price_inr !== undefined
+                                ? item.discount_price_inr
+                                : '',
+                            photo_url: item.photo_url,
+                            available: item.available,
+                            dietary: item.dietary,
+                            is_bestseller: item.is_bestseller,
+                            is_featured: item.is_featured,
+                            sort_order: item.sort_order,
+                          })
+                        }
+                        className="ml-auto min-h-[44px] px-3.5 rounded-lg border border-[#cbd5e1] bg-white font-semibold text-[#0f172a] inline-flex items-center gap-1"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                        <span>Edit</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteItem(item)}
+                        aria-label={`Delete ${item.name}`}
+                        className="min-h-[44px] min-w-[44px] rounded-lg border border-[#fecaca] text-[#dc2626] flex items-center justify-center"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
                 );
               })}
-            </tbody>
-          </table>
+            </div>
+          </>
         )}
       </div>
 
@@ -604,13 +750,31 @@ export function AdminMenuTab({
                   </select>
                 </div>
                 <div>
-                  <label className="block font-semibold text-[#475569] mb-1">Price (₹ INR) *</label>
+                  <label className="block font-semibold text-[#475569] mb-1">Regular Price (₹ INR) *</label>
                   <input
                     type="number"
                     required
                     min={0}
                     value={editing.price_inr}
                     onChange={(e) => setEditing({ ...editing, price_inr: Number(e.target.value) })}
+                    className="w-full h-10 px-3 rounded-lg border border-[#cbd5e1] bg-[#f8fafc] font-mono-data"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold text-[#475569] mb-1">
+                    Discounted Price (₹ INR · optional)
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    placeholder="Leave empty for no discount"
+                    value={editing.discount_price_inr}
+                    onChange={(e) =>
+                      setEditing({
+                        ...editing,
+                        discount_price_inr: e.target.value === '' ? '' : Number(e.target.value),
+                      })
+                    }
                     className="w-full h-10 px-3 rounded-lg border border-[#cbd5e1] bg-[#f8fafc] font-mono-data"
                   />
                 </div>

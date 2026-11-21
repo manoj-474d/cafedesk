@@ -607,6 +607,152 @@ export function AdminSettingsTab({
             </div>
           </div>
         </div>
+
+        {/* Currency, Bookings & Notification Preferences */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="p-6 rounded-xl border border-[#e2e8f0] bg-white space-y-4 text-xs">
+            <h3 className="text-sm font-semibold text-[#0f172a]">
+              Currency &amp; Seat Booking Settings
+            </h3>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block font-semibold text-[#475569] mb-1">Currency Code</label>
+                <input
+                  type="text"
+                  value={form.currency_code}
+                  onChange={(e) => setForm({ ...form, currency_code: e.target.value.toUpperCase() })}
+                  placeholder="INR"
+                  className="w-full h-10 px-3 rounded-lg border border-[#cbd5e1] bg-[#f8fafc] font-mono-data"
+                />
+              </div>
+              <div>
+                <label className="block font-semibold text-[#475569] mb-1">Currency Symbol</label>
+                <input
+                  type="text"
+                  value={form.currency_symbol}
+                  onChange={(e) => setForm({ ...form, currency_symbol: e.target.value })}
+                  placeholder="₹"
+                  className="w-full h-10 px-3 rounded-lg border border-[#cbd5e1] bg-[#f8fafc] font-mono-data"
+                />
+              </div>
+            </div>
+
+            <label className="inline-flex items-center gap-2.5 font-semibold text-[#0f172a] cursor-pointer pt-1">
+              <input
+                type="checkbox"
+                checked={Boolean(form.bookings_enabled)}
+                onChange={(e) => setForm({ ...form, bookings_enabled: e.target.checked })}
+                className="w-4 h-4 accent-[#1b4d3e]"
+              />
+              <span>Enable &ldquo;Reserve a Workspace / Seat&rdquo; on public cafe pages</span>
+            </label>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block font-semibold text-[#475569] mb-1">
+                  Advance Lead Time (Hours)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={72}
+                  value={form.booking_lead_hours}
+                  onChange={(e) =>
+                    setForm({ ...form, booking_lead_hours: Number(e.target.value) })
+                  }
+                  className="w-full h-10 px-3 rounded-lg border border-[#cbd5e1] bg-[#f8fafc] font-mono-data"
+                />
+              </div>
+              <div>
+                <label className="block font-semibold text-[#475569] mb-1">
+                  Max Seats Per Booking
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={form.booking_max_guests}
+                  onChange={(e) =>
+                    setForm({ ...form, booking_max_guests: Number(e.target.value) })
+                  }
+                  className="w-full h-10 px-3 rounded-lg border border-[#cbd5e1] bg-[#f8fafc] font-mono-data"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block font-semibold text-[#475569] mb-1">
+                Public Booking Policy Note
+              </label>
+              <input
+                type="text"
+                value={form.booking_policy_note}
+                onChange={(e) => setForm({ ...form, booking_policy_note: e.target.value })}
+                placeholder="No prepayment required. Seats held for 20 minutes past slot start."
+                className="w-full h-10 px-3 rounded-lg border border-[#cbd5e1] bg-[#f8fafc]"
+              />
+            </div>
+          </div>
+
+          <div className="p-6 rounded-xl border border-[#e2e8f0] bg-white space-y-4 text-xs">
+            <h3 className="text-sm font-semibold text-[#0f172a]">
+              Admin Alert &amp; Notification Preferences
+            </h3>
+
+            <div>
+              <label className="block font-semibold text-[#475569] mb-1">
+                Notification Recipient Email
+              </label>
+              <input
+                type="email"
+                value={form.notification_email}
+                onChange={(e) => setForm({ ...form, notification_email: e.target.value })}
+                placeholder="alerts@cafedesk.in"
+                className="w-full h-10 px-3 rounded-lg border border-[#cbd5e1] bg-[#f8fafc]"
+              />
+            </div>
+
+            <div className="space-y-2.5 pt-1">
+              <label className="flex items-center gap-2.5 font-semibold text-[#0f172a] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={Boolean(form.notify_new_booking)}
+                  onChange={(e) => setForm({ ...form, notify_new_booking: e.target.checked })}
+                  className="w-4 h-4 accent-[#b45309]"
+                />
+                <span>Notify on new workspace / seat booking requests</span>
+              </label>
+              <label className="flex items-center gap-2.5 font-semibold text-[#0f172a] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={Boolean(form.notify_new_customer)}
+                  onChange={(e) => setForm({ ...form, notify_new_customer: e.target.checked })}
+                  className="w-4 h-4 accent-[#b45309]"
+                />
+                <span>Notify on new customer sign-ups</span>
+              </label>
+              <label className="flex items-center gap-2.5 font-semibold text-[#0f172a] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={Boolean(form.notify_new_payment)}
+                  onChange={(e) => setForm({ ...form, notify_new_payment: e.target.checked })}
+                  className="w-4 h-4 accent-[#b45309]"
+                />
+                <span>Notify on successful subscription payments &amp; refunds</span>
+              </label>
+              <label className="flex items-center gap-2.5 font-semibold text-[#0f172a] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={Boolean(form.notify_new_suggestion)}
+                  onChange={(e) => setForm({ ...form, notify_new_suggestion: e.target.checked })}
+                  className="w-4 h-4 accent-[#b45309]"
+                />
+                <span>Notify on new cafe suggestions &amp; enquiries</span>
+              </label>
+            </div>
+          </div>
+        </div>
       </form>
 
       {/* Own Account Security & Password Change */}
