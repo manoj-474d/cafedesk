@@ -23,6 +23,8 @@ export interface AuthResponsePayload {
 
 interface AuthContextValue {
   loading: boolean;
+  authError: string;
+  clearAuthError: () => void;
   authenticated: boolean;
   user: UserProfile | null;
   subscription: UserSubscription | null;
@@ -61,6 +63,8 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue>({
   loading: true,
+  authError: '',
+  clearAuthError: () => {},
   authenticated: false,
   user: null,
   subscription: null,
@@ -121,6 +125,7 @@ export function locationToLibrarySnapshot(
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
+  const [authError, setAuthError] = useState('');
   const [user, setUser] = useState<UserProfile | null>(null);
   const [subscription, setSubscription] = useState<UserSubscription | null>(null);
   const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
@@ -135,6 +140,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const lastAuthedRef = useRef<boolean | null>(null);
   const exchangedTokenRef = useRef<string>('');
+  const inFlightExchangeRef = useRef<{ token: string; promise: Promise<void> } | null>(null);
+
+  const clearAuthError = useCallback(() => setAuthError(''), []);
 
   const tier: PlanTier =
     user && subscription && subscription.status !== 'expired' ? subscription.plan_id : 'free';
@@ -182,30 +190,52 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const exchangeSupabaseSession = useCallback(
     async (accessToken: string, extra?: { fullName?: string; phone?: string; eventType?: string }) => {
       if (!accessToken || exchangedTokenRef.current === accessToken) return;
-      exchangedTokenRef.current = accessToken;
-      try {
-        const res = await fetch('/api/auth/supabase-exchange', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${accessToken}`,
-          },
-          credentials: 'include',
-          body: JSON.stringify({
-            accessToken,
-            ...(extra || {}),
-          }),
-        });
-        if (res.ok) {
-          const data = (await res.json()) as AuthResponsePayload;
-          applyAuthPayload(data);
-        } else if (res.status === 403 && supabase) {
-          await supabase.auth.signOut().catch(() => {});
-          applyAuthPayload({ authenticated: false });
-        }
-      } catch {
-        // Fallback silently; regular refreshAuth covers local session
+      if (inFlightExchangeRef.current?.token === accessToken) {
+        await inFlightExchangeRef.current.promise;
+        return;
       }
+
+      const promise = (async () => {
+        try {
+          const res = await fetch('/api/auth/supabase-exchange', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${accessToken}`,
+            },
+            credentials: 'include',
+            body: JSON.stringify({
+              accessToken,
+              ...(extra || {}),
+            }),
+          });
+          if (res.ok) {
+            exchangedTokenRef.current = accessToken;
+            setAuthError('');
+            const data = (await res.json()) as AuthResponsePayload;
+            applyAuthPayload(data);
+          } else {
+            const errBody = (await res.json().catch(() => ({}))) as { error?: string };
+            if (res.status === 403 || res.status === 401) {
+              exchangedTokenRef.current = accessToken;
+              if (errBody.error) setAuthError(errBody.error);
+              if (supabase) await supabase.auth.signOut().catch(() => {});
+              applyAuthPayload({ authenticated: false });
+            } else if (errBody.error) {
+              setAuthError(errBody.error);
+            }
+          }
+        } catch {
+          // Allow future retries on transient network failure
+        } finally {
+          if (inFlightExchangeRef.current?.token === accessToken) {
+            inFlightExchangeRef.current = null;
+          }
+        }
+      })();
+
+      inFlightExchangeRef.current = { token: accessToken, promise };
+      await promise;
     },
     [applyAuthPayload]
   );
@@ -477,6 +507,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     <AuthContext.Provider
       value={{
         loading,
+        authError,
+        clearAuthError,
         authenticated: Boolean(user),
         user,
         subscription,

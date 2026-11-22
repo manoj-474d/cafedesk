@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   AlertCircle,
   ArrowRight,
@@ -35,11 +35,25 @@ function validatePasswordClient(pw: string): string | null {
 
 export function AuthPage() {
   const navigate = useNavigate();
+  const routerLocation = useLocation();
   const [searchParams] = useSearchParams();
   const { settings } = useCms();
-  const { authenticated, applyAuthPayload, openCheckout } = useAuth();
+  const {
+    loading: authLoading,
+    authError,
+    clearAuthError,
+    authenticated,
+    applyAuthPayload,
+    openCheckout,
+  } = useAuth();
 
-  const initialMode = (searchParams.get('mode') as AuthMode) || 'login';
+  const pathDefaultMode: AuthMode =
+    routerLocation.pathname === '/signup'
+      ? 'signup'
+      : routerLocation.pathname === '/forgot-password'
+      ? 'forgot'
+      : 'login';
+  const initialMode = (searchParams.get('mode') as AuthMode) || pathDefaultMode;
   const upgradeTarget = searchParams.get('upgrade');
   const rawNext = searchParams.get('next') || sessionStorage.getItem(PENDING_NEXT_KEY) || '';
   const nextPath = rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/account';
@@ -64,10 +78,14 @@ export function AuthPage() {
   const [supabaseRecoveryActive, setSupabaseRecoveryActive] = useState(false);
 
   const [submitting, setSubmitting] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const [resendingEmail, setResendingEmail] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const googleBtnRef = useRef<HTMLDivElement>(null);
+
+  const oauthReturning =
+    Boolean(searchParams.get('code')) || window.location.hash.includes('access_token=');
 
   useDocumentMeta(
     mode === 'signup'
@@ -77,9 +95,34 @@ export function AuthPage() {
     { allowIndexing: false }
   );
 
-  // Detect Supabase PASSWORD_RECOVERY event or URL hash/query recovery params
+  // Detect Supabase PASSWORD_RECOVERY event, OAuth errors/cancellations, or URL recovery params
   useEffect(() => {
     const hash = window.location.hash || '';
+    const hashParams = new URLSearchParams(hash.replace(/^#/, ''));
+    const oauthErr = searchParams.get('error') || hashParams.get('error') || '';
+    const oauthErrDesc =
+      searchParams.get('error_description') || hashParams.get('error_description') || '';
+
+    if (oauthErr || oauthErrDesc) {
+      setGoogleLoading(false);
+      setSubmitting(false);
+      if (oauthErr === 'access_denied') {
+        setError('Google sign-in was cancelled. You can try again or sign in with email.');
+      } else {
+        setError(oauthErrDesc || 'Google sign-in could not be completed. Please try again.');
+      }
+      const cleanedSearch = new URLSearchParams(searchParams);
+      cleanedSearch.delete('error');
+      cleanedSearch.delete('error_code');
+      cleanedSearch.delete('error_description');
+      const qs = cleanedSearch.toString();
+      window.history.replaceState(
+        null,
+        '',
+        `${routerLocation.pathname}${qs ? `?${qs}` : ''}`
+      );
+    }
+
     const isRecoveryParam =
       searchParams.get('type') === 'recovery' ||
       hash.includes('type=recovery') ||
@@ -102,7 +145,16 @@ export function AuthPage() {
       }
     });
     return () => subscription.unsubscribe();
-  }, [searchParams]);
+  }, [searchParams, routerLocation.pathname]);
+
+  useEffect(() => {
+    if (authError) {
+      setError(authError);
+      setGoogleLoading(false);
+      setSubmitting(false);
+      clearAuthError();
+    }
+  }, [authError, clearAuthError]);
 
   // If already logged in and not in verification prompt or recovery step, redirect cleanly
   useEffect(() => {
@@ -230,24 +282,26 @@ export function AuthPage() {
   };
 
   const handleSupabaseGoogleSignIn = async () => {
-    if (!isSupabaseConfigured || !supabase) return;
+    if (!isSupabaseConfigured || !supabase || submitting || googleLoading) return;
     setError('');
-    setSubmitting(true);
+    setNotice('');
+    clearAuthError();
+    setGoogleLoading(true);
     sessionStorage.setItem(PENDING_NEXT_KEY, nextPath);
     try {
       const { error: oauthErr } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          redirectTo: `${window.location.origin}/login?next=${encodeURIComponent(nextPath)}`,
+          redirectTo: `${window.location.origin}/login`,
         },
       });
       if (oauthErr) {
         setError(oauthErr.message || 'Google sign-in could not be started.');
-        setSubmitting(false);
+        setGoogleLoading(false);
       }
     } catch {
-      setError('Failed to start Google sign-in.');
-      setSubmitting(false);
+      setError('Failed to start Google sign-in. Please try again.');
+      setGoogleLoading(false);
     }
   };
 
@@ -925,7 +979,7 @@ export function AuthPage() {
 
           <button
             type="submit"
-            disabled={submitting}
+            disabled={submitting || googleLoading || (authLoading && oauthReturning)}
             className="w-full min-h-[46px] px-5 py-2.5 rounded-lg bg-[#b45309] hover:bg-[#92400e] disabled:opacity-60 text-white text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors"
           >
             {submitting ? (
@@ -958,29 +1012,42 @@ export function AuthPage() {
             {isSupabaseConfigured ? (
               <button
                 type="button"
-                disabled={submitting}
+                disabled={submitting || googleLoading || (authLoading && oauthReturning)}
                 onClick={() => void handleSupabaseGoogleSignIn()}
-                className="w-full min-h-[44px] px-4 rounded-lg border border-[#d6cbba] bg-[#faf7f2] hover:border-[#b45309] text-xs font-semibold text-[#1c1613] inline-flex items-center justify-center gap-2 transition-colors"
+                className="w-full min-h-[44px] px-4 rounded-lg border border-[#d6cbba] bg-[#faf7f2] hover:border-[#b45309] disabled:opacity-60 text-xs font-semibold text-[#1c1613] inline-flex items-center justify-center gap-2 transition-colors"
               >
-                <svg className="w-4 h-4" viewBox="0 0 24 24" aria-hidden="true">
-                  <path
-                    fill="#EA4335"
-                    d="M12 10.2v3.9h5.4c-.2 1.2-.9 2.3-2 3l3.2 2.5c1.9-1.7 3-4.3 3-7.4 0-.7-.1-1.4-.2-2H12z"
-                  />
-                  <path
-                    fill="#34A853"
-                    d="M12 21c2.7 0 5-.9 6.6-2.4l-3.2-2.5c-.9.6-2 .9-3.4.9-2.6 0-4.9-1.8-5.7-4.2H3v2.6C4.6 18.7 8 21 12 21z"
-                  />
-                  <path
-                    fill="#4A90E2"
-                    d="M6.3 12.8c-.2-.6-.3-1.2-.3-1.8s.1-1.2.3-1.8V6.6H3C2.4 7.9 2 9.4 2 11s.4 3.1 1 4.4l3.3-2.6z"
-                  />
-                  <path
-                    fill="#FBBC05"
-                    d="M12 5.1c1.5 0 2.8.5 3.9 1.5l2.9-2.9C17 2 14.7 1 12 1 8 1 4.6 3.3 3 6.6l3.3 2.6c.8-2.4 3.1-4.1 5.7-4.1z"
-                  />
-                </svg>
-                <span>Continue with Google</span>
+                {googleLoading || (authLoading && oauthReturning) ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin text-[#b45309]" aria-hidden="true" />
+                    <span>
+                      {authLoading && oauthReturning
+                        ? 'Completing Google sign-in...'
+                        : 'Connecting to Google...'}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-4 h-4" viewBox="0 0 24 24" aria-hidden="true">
+                      <path
+                        fill="#EA4335"
+                        d="M12 10.2v3.9h5.4c-.2 1.2-.9 2.3-2 3l3.2 2.5c1.9-1.7 3-4.3 3-7.4 0-.7-.1-1.4-.2-2H12z"
+                      />
+                      <path
+                        fill="#34A853"
+                        d="M12 21c2.7 0 5-.9 6.6-2.4l-3.2-2.5c-.9.6-2 .9-3.4.9-2.6 0-4.9-1.8-5.7-4.2H3v2.6C4.6 18.7 8 21 12 21z"
+                      />
+                      <path
+                        fill="#4A90E2"
+                        d="M6.3 12.8c-.2-.6-.3-1.2-.3-1.8s.1-1.2.3-1.8V6.6H3C2.4 7.9 2 9.4 2 11s.4 3.1 1 4.4l3.3-2.6z"
+                      />
+                      <path
+                        fill="#FBBC05"
+                        d="M12 5.1c1.5 0 2.8.5 3.9 1.5l2.9-2.9C17 2 14.7 1 12 1 8 1 4.6 3.3 3 6.6l3.3 2.6c.8-2.4 3.1-4.1 5.7-4.1z"
+                      />
+                    </svg>
+                    <span>Continue with Google</span>
+                  </>
+                )}
               </button>
             ) : (
               <div ref={googleBtnRef} className="flex justify-center" />
