@@ -12,6 +12,17 @@ import type {
   UserSubscription,
 } from '../types/subscription';
 
+const SESSION_TOKEN_STORAGE_KEY = 'cafedesk_user_session_token';
+
+export function getUserSessionHeaders(): Record<string, string> {
+  try {
+    const token = localStorage.getItem(SESSION_TOKEN_STORAGE_KEY) || '';
+    return token ? { 'X-CafeDesk-Session': token } : {};
+  } catch {
+    return {};
+  }
+}
+
 export interface AuthResponsePayload {
   authenticated?: boolean;
   user?: UserProfile;
@@ -19,6 +30,7 @@ export interface AuthResponsePayload {
   savedCafes?: SavedCafeRecord[];
   collections?: UserCollection[];
   csrfToken?: string;
+  sessionToken?: string;
 }
 
 interface AuthContextValue {
@@ -140,7 +152,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const lastAuthedRef = useRef<boolean | null>(null);
   const exchangedTokenRef = useRef<string>('');
-  const inFlightExchangeRef = useRef<{ token: string; promise: Promise<void> } | null>(null);
+  const inFlightExchangeRef = useRef<{ token: string; promise: Promise<boolean> } | null>(null);
 
   const clearAuthError = useCallback(() => setAuthError(''), []);
 
@@ -153,11 +165,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const applyAuthPayload = useCallback((payload: AuthResponsePayload) => {
     const nextAuthed = Boolean(payload.authenticated && payload.user);
     if (nextAuthed && payload.user) {
+      if (payload.sessionToken) {
+        try {
+          localStorage.setItem(SESSION_TOKEN_STORAGE_KEY, payload.sessionToken);
+        } catch {
+          // Ignore storage quota errors
+        }
+      }
       setUser(payload.user);
       setSubscription(payload.subscription ?? null);
       setSavedCafes(Array.isArray(payload.savedCafes) ? payload.savedCafes : []);
       setCollections(Array.isArray(payload.collections) ? payload.collections : []);
     } else {
+      try {
+        localStorage.removeItem(SESSION_TOKEN_STORAGE_KEY);
+      } catch {
+        // Ignore storage errors
+      }
       setUser(null);
       setSubscription(null);
       setSavedCafes([]);
@@ -188,14 +212,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const exchangeSupabaseSession = useCallback(
-    async (accessToken: string, extra?: { fullName?: string; phone?: string; eventType?: string }) => {
-      if (!accessToken || exchangedTokenRef.current === accessToken) return;
+    async (
+      accessToken: string,
+      extra?: { fullName?: string; phone?: string; eventType?: string }
+    ): Promise<boolean> => {
+      if (!accessToken) return false;
+      if (exchangedTokenRef.current === accessToken) return true;
       if (inFlightExchangeRef.current?.token === accessToken) {
-        await inFlightExchangeRef.current.promise;
-        return;
+        return await inFlightExchangeRef.current.promise;
       }
 
-      const promise = (async () => {
+      const promise = (async (): Promise<boolean> => {
         try {
           const res = await fetch('/api/auth/supabase-exchange', {
             method: 'POST',
@@ -214,19 +241,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setAuthError('');
             const data = (await res.json()) as AuthResponsePayload;
             applyAuthPayload(data);
-          } else {
-            const errBody = (await res.json().catch(() => ({}))) as { error?: string };
-            if (res.status === 403 || res.status === 401) {
-              exchangedTokenRef.current = accessToken;
-              if (errBody.error) setAuthError(errBody.error);
-              if (supabase) await supabase.auth.signOut().catch(() => {});
-              applyAuthPayload({ authenticated: false });
-            } else if (errBody.error) {
-              setAuthError(errBody.error);
-            }
+            return Boolean(data.authenticated && data.user);
           }
+          const errBody = (await res.json().catch(() => ({}))) as { error?: string };
+          if (res.status === 403 || res.status === 401) {
+            exchangedTokenRef.current = accessToken;
+            setAuthError(
+              errBody.error || 'Google authentication session could not be verified.'
+            );
+            if (supabase) await supabase.auth.signOut().catch(() => {});
+            applyAuthPayload({ authenticated: false });
+          } else {
+            setAuthError(
+              errBody.error || 'Could not complete Google sign-in. Please try again.'
+            );
+          }
+          return false;
         } catch {
-          // Allow future retries on transient network failure
+          setAuthError('Network error while completing sign-in. Please try again.');
+          return false;
         } finally {
           if (inFlightExchangeRef.current?.token === accessToken) {
             inFlightExchangeRef.current = null;
@@ -235,7 +268,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       })();
 
       inFlightExchangeRef.current = { token: accessToken, promise };
-      await promise;
+      return await promise;
     },
     [applyAuthPayload]
   );
@@ -243,14 +276,40 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const refreshAuth = useCallback(async () => {
     try {
       if (isSupabaseConfigured && supabase) {
+        const initResult = await supabase.auth.initialize();
+        if (initResult?.error) {
+          setAuthError(
+            initResult.error.message || 'Google sign-in could not be completed. Please try again.'
+          );
+        }
         const { data: sessionData } = await supabase.auth.getSession();
         if (sessionData.session?.access_token) {
-          await exchangeSupabaseSession(sessionData.session.access_token, {
+          const ok = await exchangeSupabaseSession(sessionData.session.access_token, {
             eventType: 'session_resume',
           });
+          if (ok) {
+            if (
+              window.location.search.includes('code=') ||
+              window.location.hash.includes('access_token=')
+            ) {
+              const cleaned = new URLSearchParams(window.location.search);
+              cleaned.delete('code');
+              cleaned.delete('state');
+              const qs = cleaned.toString();
+              window.history.replaceState(
+                null,
+                '',
+                `${window.location.pathname}${qs ? `?${qs}` : ''}`
+              );
+            }
+            return;
+          }
         }
       }
-      const res = await fetch('/api/auth/me', { credentials: 'include' });
+      const res = await fetch('/api/auth/me', {
+        credentials: 'include',
+        headers: getUserSessionHeaders(),
+      });
       if (res.ok) {
         const data = (await res.json()) as AuthResponsePayload;
         applyAuthPayload(data);
@@ -279,6 +338,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       ) {
         void exchangeSupabaseSession(session.access_token, {
           eventType: event === 'SIGNED_IN' ? 'login' : 'token_refresh',
+        }).then((ok) => {
+          if (
+            ok &&
+            (window.location.search.includes('code=') ||
+              window.location.hash.includes('access_token='))
+          ) {
+            const cleaned = new URLSearchParams(window.location.search);
+            cleaned.delete('code');
+            cleaned.delete('state');
+            const qs = cleaned.toString();
+            window.history.replaceState(
+              null,
+              '',
+              `${window.location.pathname}${qs ? `?${qs}` : ''}`
+            );
+          }
         });
       } else if (event === 'SIGNED_OUT') {
         exchangedTokenRef.current = '';
@@ -291,12 +366,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = useCallback(async () => {
     exchangedTokenRef.current = '';
+    const sessionHeaders = getUserSessionHeaders();
     if (isSupabaseConfigured && supabase) {
       await supabase.auth.signOut().catch(() => {});
     }
     await fetch('/api/auth/logout', {
       method: 'POST',
       credentials: 'include',
+      headers: sessionHeaders,
     }).catch(() => {});
     applyAuthPayload({ authenticated: false });
     setCompareList([]);
@@ -347,6 +424,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const res = await fetch(`/api/user/saved/${encodeURIComponent(snapshot.key)}`, {
           method: 'DELETE',
           credentials: 'include',
+          headers: getUserSessionHeaders(),
         });
         if (res.ok) {
           const data = (await res.json()) as {
@@ -361,7 +439,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       const res = await fetch('/api/user/saved', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
         credentials: 'include',
         body: JSON.stringify({
           cafeKey: snapshot.key,
@@ -394,7 +472,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       const res = await fetch('/api/user/collections', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
         credentials: 'include',
         body: JSON.stringify({ name, description }),
       });
@@ -414,6 +492,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const res = await fetch(`/api/user/collections/${id}`, {
       method: 'DELETE',
       credentials: 'include',
+      headers: getUserSessionHeaders(),
     });
     if (res.ok) {
       const data = (await res.json()) as {
@@ -436,7 +515,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       const res = await fetch(`/api/user/collections/${collectionId}/items`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
         credentials: 'include',
         body: JSON.stringify({ cafeKey: snapshot.key, snapshot }),
       });
@@ -459,6 +538,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         {
           method: 'DELETE',
           credentials: 'include',
+          headers: getUserSessionHeaders(),
         }
       );
       if (res.ok) {

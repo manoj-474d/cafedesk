@@ -10,7 +10,11 @@ import {
   Smartphone,
   X,
 } from 'lucide-react';
-import { useAuth, type AuthResponsePayload } from '../context/AuthContext';
+import {
+  getUserSessionHeaders,
+  useAuth,
+  type AuthResponsePayload,
+} from '../context/AuthContext';
 
 declare global {
   interface Window {
@@ -87,7 +91,7 @@ export function RazorpayCheckoutModal() {
     try {
       const orderRes = await fetch('/api/billing/checkout/create-order', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
         credentials: 'include',
         body: JSON.stringify({ planId: checkoutPlan, method }),
       });
@@ -112,7 +116,7 @@ export function RazorpayCheckoutModal() {
       if (simulateFailure) {
         await fetch('/api/billing/checkout/fail', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
           credentials: 'include',
           body: JSON.stringify({
             paymentId: orderData.paymentId,
@@ -153,7 +157,7 @@ export function RazorpayCheckoutModal() {
           }) => {
             const verRes = await fetch('/api/billing/checkout/verify', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
               credentials: 'include',
               body: JSON.stringify({
                 orderId: response.razorpay_order_id,
@@ -186,7 +190,7 @@ export function RazorpayCheckoutModal() {
             ondismiss: async () => {
               await fetch('/api/billing/checkout/fail', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
                 credentials: 'include',
                 body: JSON.stringify({
                   paymentId: orderData.paymentId,
@@ -204,7 +208,7 @@ export function RazorpayCheckoutModal() {
       // Server-signed Razorpay-compatible test verification flow
       const verifyRes = await fetch('/api/billing/checkout/verify', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
         credentials: 'include',
         body: JSON.stringify({
           orderId: orderData.orderId,

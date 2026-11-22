@@ -413,7 +413,11 @@ export function clearUserSessionCookie(req: Request, res: Response): void {
 
 export function resolveUserFromRequest(req: Request, res?: Response): AuthenticatedUser | null {
   const cookies = parseCookies(req.headers.cookie);
-  const rawToken = cookies[USER_SESSION_COOKIE_NAME];
+  const headerToken =
+    typeof req.headers['x-cafedesk-session'] === 'string'
+      ? req.headers['x-cafedesk-session'].trim()
+      : '';
+  const rawToken = cookies[USER_SESSION_COOKIE_NAME] || headerToken;
   if (!rawToken) return null;
 
   const db = getDb();

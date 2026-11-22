@@ -17,7 +17,7 @@ import {
   UserCheck,
   X,
 } from 'lucide-react';
-import { useAuth, type AuthResponsePayload } from '../context/AuthContext';
+import { getUserSessionHeaders, useAuth, type AuthResponsePayload } from '../context/AuthContext';
 import { useCms } from '../context/CmsContext';
 import { useDiscovery } from '../context/DiscoveryContext';
 import { isSupabaseConfigured, supabase, syncOwnSupabaseProfile } from '../lib/supabase';
@@ -89,7 +89,10 @@ export function AccountPage() {
   }, [user]);
 
   const loadBillingHistory = async () => {
-    const res = await fetch('/api/billing/history', { credentials: 'include' });
+    const res = await fetch('/api/billing/history', {
+      credentials: 'include',
+      headers: getUserSessionHeaders(),
+    });
     if (res.ok) {
       const data = (await res.json()) as {
         payments?: PaymentRecord[];
@@ -136,6 +139,7 @@ export function AccountPage() {
     const res = await fetch('/api/auth/verify-email/request', {
       method: 'POST',
       credentials: 'include',
+      headers: getUserSessionHeaders(),
     });
     const data = (await res.json()) as { devVerificationCode?: string; error?: string };
     if (res.ok) {
@@ -150,7 +154,7 @@ export function AccountPage() {
     setVerifyError('');
     const res = await fetch('/api/auth/verify-email/confirm', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
       credentials: 'include',
       body: JSON.stringify({ code: verifyCodeInput }),
     });
@@ -170,7 +174,7 @@ export function AccountPage() {
     setProfileErrorMsg('');
     const res = await fetch('/api/auth/profile', {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
       credentials: 'include',
       body: JSON.stringify({ name: editName, phone: editPhone }),
     });
@@ -215,7 +219,7 @@ export function AccountPage() {
     }
     const res = await fetch('/api/auth/profile', {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
       credentials: 'include',
       body: JSON.stringify({
         name: user.name,
@@ -241,6 +245,7 @@ export function AccountPage() {
     const res = await fetch('/api/billing/cancel', {
       method: 'POST',
       credentials: 'include',
+      headers: getUserSessionHeaders(),
     });
     if (res.ok) {
       applyAuthPayload((await res.json()) as AuthResponsePayload);
@@ -254,6 +259,7 @@ export function AccountPage() {
     const res = await fetch('/api/billing/renew', {
       method: 'POST',
       credentials: 'include',
+      headers: getUserSessionHeaders(),
     });
     if (res.ok) {
       applyAuthPayload((await res.json()) as AuthResponsePayload);

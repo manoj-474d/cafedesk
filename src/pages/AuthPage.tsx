@@ -12,7 +12,11 @@ import {
   ShieldCheck,
   UserPlus,
 } from 'lucide-react';
-import { useAuth, type AuthResponsePayload } from '../context/AuthContext';
+import {
+  getUserSessionHeaders,
+  useAuth,
+  type AuthResponsePayload,
+} from '../context/AuthContext';
 import { useCms } from '../context/CmsContext';
 import { isSupabaseConfigured, supabase, syncOwnSupabaseProfile } from '../lib/supabase';
 import { useDocumentMeta } from '../utils/cafeHelpers';
@@ -56,7 +60,7 @@ export function AuthPage() {
   const initialMode = (searchParams.get('mode') as AuthMode) || pathDefaultMode;
   const upgradeTarget = searchParams.get('upgrade');
   const rawNext = searchParams.get('next') || sessionStorage.getItem(PENDING_NEXT_KEY) || '';
-  const nextPath = rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/account';
+  const nextPath = rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/';
   const isCafeRedirect = nextPath.startsWith('/locations/') || nextPath.startsWith('/cafe/');
 
   const [mode, setMode] = useState<AuthMode>(
@@ -167,6 +171,29 @@ export function AuthPage() {
       clearAuthError();
     }
   }, [authError, clearAuthError]);
+
+  // Surface a clear error if returning from OAuth callback without an established session
+  useEffect(() => {
+    if (!authLoading && oauthReturning && !authenticated && !supabaseRecoveryActive) {
+      setGoogleLoading(false);
+      setSubmitting(false);
+      setError((prev) =>
+        prev || 'Google sign-in could not be completed. Please try again.'
+      );
+      const cleaned = new URLSearchParams(searchParams);
+      cleaned.delete('code');
+      cleaned.delete('state');
+      const qs = cleaned.toString();
+      window.history.replaceState(null, '', `${routerLocation.pathname}${qs ? `?${qs}` : ''}`);
+    }
+  }, [
+    authLoading,
+    oauthReturning,
+    authenticated,
+    supabaseRecoveryActive,
+    searchParams,
+    routerLocation.pathname,
+  ]);
 
   // If already logged in and not in verification prompt or recovery step, redirect cleanly
   useEffect(() => {
@@ -630,7 +657,7 @@ export function AuthPage() {
     try {
       const res = await fetch('/api/auth/verify-email/confirm', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
         credentials: 'include',
         body: JSON.stringify({ code: verifyCode }),
       });

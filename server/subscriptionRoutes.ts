@@ -211,7 +211,7 @@ function getIstStartOfTodayMs(now = Date.now()): number {
   return istDate.getTime() - istOffsetMs;
 }
 
-function buildAuthPayload(userId: number, csrfToken: string) {
+function buildAuthPayload(userId: number, csrfToken: string, sessionToken?: string) {
   const db = getDb();
   const userRow = db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as Record<
     string,
@@ -226,6 +226,7 @@ function buildAuthPayload(userId: number, csrfToken: string) {
     savedCafes: library.savedCafes,
     collections: library.collections,
     csrfToken,
+    ...(sessionToken ? { sessionToken } : {}),
   };
 }
 
@@ -278,13 +279,14 @@ export function registerSubscriptionRoutes(app: Express): void {
     }
 
     const sbUser = await verifySupabaseAccessToken(accessToken);
-    if (!sbUser || !sbUser.email) {
+    const sbMeta = (sbUser?.user_metadata || {}) as Record<string, unknown>;
+    const resolvedEmail = String(sbUser?.email || sbMeta.email || '').trim().toLowerCase();
+    if (!sbUser || !resolvedEmail) {
       res.status(401).json({ error: 'Invalid or expired Supabase authentication session.' });
       return;
     }
 
-    const email = sbUser.email.toLowerCase();
-    const sbMeta = (sbUser.user_metadata || {}) as Record<string, unknown>;
+    const email = resolvedEmail;
     const sbAppMeta = (sbUser.app_metadata || {}) as Record<string, unknown>;
     const requestedName = cleanStr(req.body?.fullName, 80);
     const requestedPhone = cleanPhone(req.body?.phone);
@@ -297,7 +299,7 @@ export function registerSubscriptionRoutes(app: Express): void {
     const phone = requestedPhone || cleanPhone(sbMeta.phone || sbUser.phone || '');
     const avatarUrl = cleanStr(sbMeta.avatar_url || sbMeta.picture || '', 400);
     const provider: 'email' | 'google' = sbAppMeta.provider === 'google' ? 'google' : 'email';
-    const emailVerified = Boolean(sbUser.email_confirmed_at);
+    const emailVerified = Boolean(sbUser.email_confirmed_at || provider === 'google');
 
     // Check if banned or suspended in Supabase profiles
     const sbBannedUntil = (sbUser as unknown as { banned_until?: string | null }).banned_until;
@@ -417,7 +419,7 @@ export function registerSubscriptionRoutes(app: Express): void {
 
     const { rawToken, csrfToken } = createUserSession(userId, req);
     setUserSessionCookie(req, res, rawToken);
-    res.json(buildAuthPayload(userId, csrfToken));
+    res.json(buildAuthPayload(userId, csrfToken, rawToken));
   });
 
   app.post('/api/auth/signup', async (req: Request, res: Response) => {
@@ -517,7 +519,7 @@ export function registerSubscriptionRoutes(app: Express): void {
     setUserSessionCookie(req, res, rawToken);
 
     res.status(201).json({
-      ...buildAuthPayload(userId, csrfToken),
+      ...buildAuthPayload(userId, csrfToken, rawToken),
       devVerificationCode: verifyCode,
     });
   });
@@ -583,7 +585,7 @@ export function registerSubscriptionRoutes(app: Express): void {
 
     const { rawToken, csrfToken } = createUserSession(userId, req);
     setUserSessionCookie(req, res, rawToken);
-    res.json(buildAuthPayload(userId, csrfToken));
+    res.json(buildAuthPayload(userId, csrfToken, rawToken));
   });
 
   app.post('/api/auth/google', async (req: Request, res: Response) => {
@@ -669,7 +671,7 @@ export function registerSubscriptionRoutes(app: Express): void {
 
       const { rawToken, csrfToken } = createUserSession(userId, req);
       setUserSessionCookie(req, res, rawToken);
-      res.json(buildAuthPayload(userId, csrfToken));
+      res.json(buildAuthPayload(userId, csrfToken, rawToken));
     } catch (err) {
       console.error('Google auth verification failed:', err);
       res.status(500).json({ error: 'Failed to verify Google Sign-In.' });

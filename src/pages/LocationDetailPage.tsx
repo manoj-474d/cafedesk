@@ -43,7 +43,7 @@ import {
   X,
 } from 'lucide-react';
 import { getNoiseSummary, NOISE_LABELS } from '../config/constants';
-import { locationToLibrarySnapshot, useAuth } from '../context/AuthContext';
+import { getUserSessionHeaders, locationToLibrarySnapshot, useAuth } from '../context/AuthContext';
 import { useCms } from '../context/CmsContext';
 import {
   googleDiscoveryToLocationItem,
@@ -160,7 +160,10 @@ export function LocationDetailPage() {
     setServerLoading(true);
     setAuthDenied(false);
 
-    void fetch(`/api/cafes/${encodeURIComponent(lookupKey)}`, { credentials: 'include' })
+    void fetch(`/api/cafes/${encodeURIComponent(lookupKey)}`, {
+      credentials: 'include',
+      headers: getUserSessionHeaders(),
+    })
       .then(async (res) => {
         if (cancelled) return;
         if (res.status === 401) {

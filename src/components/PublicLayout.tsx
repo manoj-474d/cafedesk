@@ -125,18 +125,27 @@ export function PublicLayout() {
             {authenticated && user ? (
               <Link
                 to="/account"
-                className="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-[#d6cbba] bg-white hover:border-[#b45309] text-xs font-semibold text-[#1c1613] transition-colors whitespace-nowrap"
+                className="inline-flex items-center gap-2 px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-lg border border-[#d6cbba] bg-white hover:border-[#b45309] text-xs font-semibold text-[#1c1613] transition-colors whitespace-nowrap"
               >
-                {tier === 'premium' ? (
+                {user.avatar_url ? (
+                  <img
+                    src={user.avatar_url}
+                    alt={user.name}
+                    referrerPolicy="no-referrer"
+                    className="w-5 h-5 rounded-full object-cover border border-[#e6ddd0] shrink-0"
+                  />
+                ) : tier === 'premium' ? (
                   <Crown className="w-3.5 h-3.5 text-[#b45309]" aria-hidden="true" />
                 ) : tier === 'plus' ? (
                   <Sparkles className="w-3.5 h-3.5 text-[#1b4d3e]" aria-hidden="true" />
                 ) : (
                   <User className="w-3.5 h-3.5 text-[#5c4e45]" aria-hidden="true" />
                 )}
-                <span className="max-w-[100px] truncate">{user.name.split(' ')[0]}</span>
+                <span className="max-w-[90px] sm:max-w-[110px] truncate">
+                  {user.name.split(' ')[0]}
+                </span>
                 {tier === 'premium' || tier === 'plus' ? (
-                  <span className="text-[11px] font-bold text-[#b45309] whitespace-nowrap">
+                  <span className="hidden sm:inline text-[11px] font-bold text-[#b45309] whitespace-nowrap">
                     Plus
                   </span>
                 ) : null}

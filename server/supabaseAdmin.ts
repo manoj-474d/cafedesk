@@ -109,9 +109,13 @@ export async function verifySupabaseAccessToken(accessToken: string): Promise<Us
   if (!client || !accessToken) return null;
   try {
     const { data, error } = await client.auth.getUser(accessToken);
-    if (error || !data?.user) return null;
+    if (error || !data?.user) {
+      if (error) console.warn('verifySupabaseAccessToken failed:', error.message);
+      return null;
+    }
     return data.user;
-  } catch {
+  } catch (err) {
+    console.warn('verifySupabaseAccessToken exception:', err);
     return null;
   }
 }
