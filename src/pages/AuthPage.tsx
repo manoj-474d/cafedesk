@@ -148,6 +148,18 @@ export function AuthPage() {
   }, [searchParams, routerLocation.pathname]);
 
   useEffect(() => {
+    const queryMode = searchParams.get('mode');
+    if (supabaseRecoveryActive) return;
+    if (routerLocation.pathname === '/signup' || queryMode === 'signup') {
+      setMode('signup');
+    } else if (routerLocation.pathname === '/forgot-password' || queryMode === 'forgot') {
+      setMode('forgot');
+    } else if (queryMode === 'login') {
+      setMode('login');
+    }
+  }, [routerLocation.pathname, searchParams, supabaseRecoveryActive]);
+
+  useEffect(() => {
     if (authError) {
       setError(authError);
       setGoogleLoading(false);
@@ -282,7 +294,11 @@ export function AuthPage() {
   };
 
   const handleSupabaseGoogleSignIn = async () => {
-    if (!isSupabaseConfigured || !supabase || submitting || googleLoading) return;
+    if (submitting || googleLoading) return;
+    if (!isSupabaseConfigured || !supabase) {
+      setError('Google Sign-In is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY to your environment.');
+      return;
+    }
     setError('');
     setNotice('');
     clearAuthError();
@@ -1003,22 +1019,29 @@ export function AuthPage() {
           </button>
         </form>
 
-        {/* Google OAuth via Supabase (or GIS fallback when Google Client ID configured without Supabase) */}
-        {(isSupabaseConfigured || GOOGLE_CLIENT_ID) && (mode === 'login' || mode === 'signup') && (
-          <div className="space-y-3 pt-2 border-t border-[#e6ddd0]">
-            <p className="text-[11px] font-semibold text-center uppercase tracking-wider text-[#5c4e45]">
-              Or continue with Google
-            </p>
-            {isSupabaseConfigured ? (
+        {/* Google OAuth via Supabase (visible on both Login and Register views) */}
+        {(mode === 'login' || mode === 'signup') && (
+          <div className="space-y-4 pt-1">
+            <div className="relative flex items-center justify-center" aria-hidden="true">
+              <div className="w-full border-t border-[#e6ddd0]" />
+              <span className="px-3 bg-white text-[11px] font-semibold uppercase tracking-[0.14em] text-[#78685c] whitespace-nowrap">
+                OR CONTINUE WITH
+              </span>
+              <div className="w-full border-t border-[#e6ddd0]" />
+            </div>
+
+            {!isSupabaseConfigured && GOOGLE_CLIENT_ID ? (
+              <div ref={googleBtnRef} className="flex justify-center" />
+            ) : (
               <button
                 type="button"
                 disabled={submitting || googleLoading || (authLoading && oauthReturning)}
                 onClick={() => void handleSupabaseGoogleSignIn()}
-                className="w-full min-h-[44px] px-4 rounded-lg border border-[#d6cbba] bg-[#faf7f2] hover:border-[#b45309] disabled:opacity-60 text-xs font-semibold text-[#1c1613] inline-flex items-center justify-center gap-2 transition-colors"
+                className="w-full min-h-[46px] px-4 py-2.5 rounded-xl border border-[#d6cbba] bg-white hover:bg-[#faf7f2] hover:border-[#b45309]/50 active:bg-[#f3ede3] active:scale-[0.99] shadow-sm hover:shadow disabled:opacity-60 disabled:cursor-not-allowed text-sm font-semibold text-[#1c1613] inline-flex items-center justify-center gap-3 transition-all"
               >
                 {googleLoading || (authLoading && oauthReturning) ? (
                   <>
-                    <Loader2 className="w-4 h-4 animate-spin text-[#b45309]" aria-hidden="true" />
+                    <Loader2 className="w-5 h-5 animate-spin text-[#b45309] shrink-0" aria-hidden="true" />
                     <span>
                       {authLoading && oauthReturning
                         ? 'Completing Google sign-in...'
@@ -1027,7 +1050,7 @@ export function AuthPage() {
                   </>
                 ) : (
                   <>
-                    <svg className="w-4 h-4" viewBox="0 0 24 24" aria-hidden="true">
+                    <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
                       <path
                         fill="#EA4335"
                         d="M12 10.2v3.9h5.4c-.2 1.2-.9 2.3-2 3l3.2 2.5c1.9-1.7 3-4.3 3-7.4 0-.7-.1-1.4-.2-2H12z"
@@ -1049,8 +1072,6 @@ export function AuthPage() {
                   </>
                 )}
               </button>
-            ) : (
-              <div ref={googleBtnRef} className="flex justify-center" />
             )}
           </div>
         )}
