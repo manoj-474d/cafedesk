@@ -48,6 +48,7 @@ export function AuthPage() {
     clearAuthError,
     authenticated,
     applyAuthPayload,
+    exchangeSupabaseSession,
     openCheckout,
   } = useAuth();
 
@@ -301,23 +302,11 @@ export function AuthPage() {
     accessToken: string,
     extra?: { fullName?: string; phone?: string; eventType?: string }
   ): Promise<boolean> => {
-    const res = await fetch('/api/auth/supabase-exchange', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${accessToken}`,
-      },
-      credentials: 'include',
-      body: JSON.stringify({ accessToken, ...(extra || {}) }),
-    });
-    const data = (await res.json()) as AuthResponsePayload & { error?: string };
-    if (!res.ok) {
-      setError(data.error || 'Could not synchronize your Cafe Desk session.');
-      if (supabase) await supabase.auth.signOut().catch(() => {});
-      return false;
+    const ok = await exchangeSupabaseSession(accessToken, extra);
+    if (!ok) {
+      setError('Could not complete sign-in. Please try again.');
     }
-    applyAuthPayload(data);
-    return true;
+    return ok;
   };
 
   const handleSupabaseGoogleSignIn = async () => {

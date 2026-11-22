@@ -1,5 +1,11 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { isSupabaseConfigured, supabase } from '../lib/supabase';
+import type { Session } from '@supabase/supabase-js';
+import {
+  fetchOwnSupabaseProfile,
+  isSupabaseConfigured,
+  supabase,
+  syncOwnSupabaseProfile,
+} from '../lib/supabase';
 import type { LocationItem } from '../types/cms';
 import type {
   CafeLibrarySnapshot,
@@ -11,6 +17,66 @@ import type {
   UserProfile,
   UserSubscription,
 } from '../types/subscription';
+
+const STATIC_SAVED_KEY_PREFIX = 'cafedesk_static_saved_';
+const DEFAULT_FALLBACK_PLANS: SubscriptionPlan[] = [
+  {
+    id: 'free',
+    name: 'Free Explorer',
+    tagline: 'Discover Bengaluru cafes, map views, and cafe basics',
+    price_inr: 0,
+    interval_days: 30,
+    badge_text: 'Included Free',
+    features: ['Browse curated cafes', 'Interactive Bengaluru map', 'Save favourite cafes'],
+    sort_order: 1,
+    active: true,
+    updated_at: 0,
+  },
+  {
+    id: 'plus',
+    name: 'Cafe Desk Plus',
+    tagline: 'Unlock custom collections & side-by-side comparison',
+    price_inr: 79,
+    interval_days: 30,
+    badge_text: 'Monthly',
+    features: ['Personal cafe collections', 'Compare up to 4 cafes', 'Priority booking'],
+    sort_order: 2,
+    active: true,
+    updated_at: 0,
+  },
+  {
+    id: 'premium',
+    name: 'Cafe Desk Plus Annual',
+    tagline: 'Full year access at best value',
+    price_inr: 499,
+    interval_days: 365,
+    badge_text: 'Best Value',
+    is_recommended: true,
+    features: ['All Plus features for 365 days', 'Unlimited collections', 'Cafe comparison'],
+    sort_order: 3,
+    active: true,
+    updated_at: 0,
+  },
+];
+
+function loadStaticSavedCafes(userKey: string): SavedCafeRecord[] {
+  try {
+    const raw = localStorage.getItem(`${STATIC_SAVED_KEY_PREFIX}${userKey}`);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as SavedCafeRecord[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveStaticSavedCafes(userKey: string, items: SavedCafeRecord[]): void {
+  try {
+    localStorage.setItem(`${STATIC_SAVED_KEY_PREFIX}${userKey}`, JSON.stringify(items));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
 
 const SESSION_TOKEN_STORAGE_KEY = 'cafedesk_user_session_token';
 
@@ -61,6 +127,10 @@ interface AuthContextValue {
   openCheckout: (planId: PlanTier) => void;
   closeCheckout: () => void;
   applyAuthPayload: (payload: AuthResponsePayload) => void;
+  exchangeSupabaseSession: (
+    accessToken: string,
+    extra?: { fullName?: string; phone?: string; eventType?: string; session?: Session | null }
+  ) => Promise<boolean>;
   refreshAuth: () => Promise<void>;
   refreshPlans: () => Promise<void>;
   logout: () => Promise<void>;
@@ -101,6 +171,7 @@ const AuthContext = createContext<AuthContextValue>({
   openCheckout: () => {},
   closeCheckout: () => {},
   applyAuthPayload: () => {},
+  exchangeSupabaseSession: async () => false,
   refreshAuth: async () => {},
   refreshPlans: async () => {},
   logout: async () => {},
@@ -196,7 +267,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const refreshPlans = useCallback(async () => {
     try {
       const res = await fetch('/api/plans');
-      if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
         const data = (await res.json()) as {
           plans?: SubscriptionPlan[];
           razorpayEnabled?: boolean;
@@ -205,16 +277,106 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (Array.isArray(data.plans)) setPlans(data.plans);
         setRazorpayEnabled(Boolean(data.razorpayEnabled));
         setRazorpayKeyId(data.razorpayKeyId || '');
+        return;
       }
+      setPlans((prev) => (prev.length > 0 ? prev : DEFAULT_FALLBACK_PLANS));
     } catch {
-      // Keep existing plans
+      setPlans((prev) => (prev.length > 0 ? prev : DEFAULT_FALLBACK_PLANS));
     }
   }, []);
+
+  const buildPayloadFromSupabaseSession = useCallback(
+    async (
+      session: Session,
+      extra?: { fullName?: string; phone?: string }
+    ): Promise<{ payload: AuthResponsePayload | null; suspendedError?: string }> => {
+      const sbUser = session.user;
+      const meta = (sbUser?.user_metadata || {}) as Record<string, unknown>;
+      const appMeta = (sbUser?.app_metadata || {}) as Record<string, unknown>;
+      const email = String(sbUser?.email || meta.email || '').trim().toLowerCase();
+      if (!sbUser?.id || !email) {
+        return { payload: null };
+      }
+
+      const provider: 'email' | 'google' = appMeta.provider === 'google' ? 'google' : 'email';
+      const baseName =
+        (extra?.fullName || '').trim() ||
+        String(meta.full_name || meta.name || email.split('@')[0] || 'Cafe Desk Member').trim();
+      const basePhone = (extra?.phone || '').trim() || String(meta.phone || sbUser.phone || '').trim();
+      const baseAvatar = String(meta.avatar_url || meta.picture || '').trim();
+
+      await syncOwnSupabaseProfile({
+        id: sbUser.id,
+        fullName: baseName,
+        email,
+        phone: basePhone,
+        avatarUrl: baseAvatar,
+        authProvider: provider,
+      });
+
+      const remoteProfile = await fetchOwnSupabaseProfile(sbUser.id);
+      if (remoteProfile?.account_status === 'suspended') {
+        return {
+          payload: null,
+          suspendedError: 'Your account has been suspended by an administrator. Please contact support.',
+        };
+      }
+
+      const now = Date.now();
+      const createdAtMs = sbUser.created_at ? new Date(sbUser.created_at).getTime() || now : now;
+      const resolvedName = String(remoteProfile?.full_name || baseName).trim() || 'Cafe Desk Member';
+      const resolvedPhone = String(remoteProfile?.phone || basePhone).trim();
+      const resolvedAvatar = String(remoteProfile?.avatar_url || baseAvatar).trim();
+
+      return {
+        payload: {
+          authenticated: true,
+          user: {
+            id: 0,
+            supabase_id: sbUser.id,
+            name: resolvedName,
+            email,
+            phone: resolvedPhone,
+            avatar_url: resolvedAvatar,
+            auth_provider: provider,
+            email_verified: Boolean(
+              remoteProfile?.email_verified || sbUser.email_confirmed_at || provider === 'google'
+            ),
+            status: 'active',
+            last_login_at: now,
+            created_at: createdAtMs,
+          },
+          subscription: {
+            id: 0,
+            user_id: 0,
+            plan_id: 'free',
+            plan_name: 'Free Explorer',
+            price_inr: 0,
+            subscribed_price_inr: 0,
+            status: 'active',
+            started_at: createdAtMs,
+            expires_at: null,
+            auto_renew: false,
+            cancelled_at: null,
+            updated_at: now,
+          },
+          savedCafes: loadStaticSavedCafes(sbUser.id),
+          collections: [],
+        },
+      };
+    },
+    []
+  );
 
   const exchangeSupabaseSession = useCallback(
     async (
       accessToken: string,
-      extra?: { fullName?: string; phone?: string; eventType?: string }
+      extra?: {
+        fullName?: string;
+        phone?: string;
+        eventType?: string;
+        session?: Session | null;
+      }
     ): Promise<boolean> => {
       if (!accessToken) return false;
       if (exchangedTokenRef.current === accessToken) return true;
@@ -223,6 +385,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       const promise = (async (): Promise<boolean> => {
+        const tryDirectSupabaseFallback = async (): Promise<boolean> => {
+          if (!supabase) return false;
+          let activeSession = extra?.session ?? null;
+          if (!activeSession || activeSession.access_token !== accessToken) {
+            const { data } = await supabase.auth.getSession();
+            activeSession = data.session;
+          }
+          if (!activeSession?.user) return false;
+
+          const { payload, suspendedError } = await buildPayloadFromSupabaseSession(
+            activeSession,
+            extra
+          );
+          if (suspendedError) {
+            exchangedTokenRef.current = accessToken;
+            setAuthError(suspendedError);
+            await supabase.auth.signOut().catch(() => {});
+            applyAuthPayload({ authenticated: false });
+            return false;
+          }
+          if (payload?.authenticated && payload.user) {
+            exchangedTokenRef.current = accessToken;
+            setAuthError('');
+            applyAuthPayload(payload);
+            return true;
+          }
+          return false;
+        };
+
         try {
           const res = await fetch('/api/auth/supabase-exchange', {
             method: 'POST',
@@ -233,31 +424,48 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             credentials: 'include',
             body: JSON.stringify({
               accessToken,
-              ...(extra || {}),
+              fullName: extra?.fullName,
+              phone: extra?.phone,
+              eventType: extra?.eventType,
             }),
           });
-          if (res.ok) {
+          const contentType = res.headers.get('content-type') || '';
+          if (res.ok && contentType.includes('application/json')) {
             exchangedTokenRef.current = accessToken;
             setAuthError('');
             const data = (await res.json()) as AuthResponsePayload;
             applyAuthPayload(data);
             return Boolean(data.authenticated && data.user);
           }
-          const errBody = (await res.json().catch(() => ({}))) as { error?: string };
-          if (res.status === 403 || res.status === 401) {
+
+          if (res.status === 401 || res.status === 403) {
+            const errBody = contentType.includes('application/json')
+              ? ((await res.json().catch(() => ({}))) as { error?: string })
+              : {};
             exchangedTokenRef.current = accessToken;
             setAuthError(
               errBody.error || 'Google authentication session could not be verified.'
             );
             if (supabase) await supabase.auth.signOut().catch(() => {});
             applyAuthPayload({ authenticated: false });
-          } else {
-            setAuthError(
-              errBody.error || 'Could not complete Google sign-in. Please try again.'
-            );
+            return false;
           }
+
+          // When deployed as static frontend (e.g. Cloudflare Pages returning 404/405/text/html for /api/*)
+          // or transient gateway failure, complete sign-in directly from the verified Supabase session.
+          const fallbackOk = await tryDirectSupabaseFallback();
+          if (fallbackOk) return true;
+
+          const errBody = contentType.includes('application/json')
+            ? ((await res.json().catch(() => ({}))) as { error?: string })
+            : {};
+          setAuthError(
+            errBody.error || 'Could not complete Google sign-in. Please try again.'
+          );
           return false;
         } catch {
+          const fallbackOk = await tryDirectSupabaseFallback();
+          if (fallbackOk) return true;
           setAuthError('Network error while completing sign-in. Please try again.');
           return false;
         } finally {
@@ -270,7 +478,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       inFlightExchangeRef.current = { token: accessToken, promise };
       return await promise;
     },
-    [applyAuthPayload]
+    [applyAuthPayload, buildPayloadFromSupabaseSession]
   );
 
   const refreshAuth = useCallback(async () => {
@@ -286,6 +494,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (sessionData.session?.access_token) {
           const ok = await exchangeSupabaseSession(sessionData.session.access_token, {
             eventType: 'session_resume',
+            session: sessionData.session,
           });
           if (ok) {
             if (
@@ -310,7 +519,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         credentials: 'include',
         headers: getUserSessionHeaders(),
       });
-      if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
         const data = (await res.json()) as AuthResponsePayload;
         applyAuthPayload(data);
       } else {
@@ -338,6 +548,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       ) {
         void exchangeSupabaseSession(session.access_token, {
           eventType: event === 'SIGNED_IN' ? 'login' : 'token_refresh',
+          session,
         }).then((ok) => {
           if (
             ok &&
@@ -420,41 +631,76 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       const existing = savedCafes.find((s) => s.cafe_key === snapshot.key);
+      const staticUserKey = user.supabase_id || String(user.id || '');
       if (existing && (!asFavourite || existing.is_favourite)) {
-        const res = await fetch(`/api/user/saved/${encodeURIComponent(snapshot.key)}`, {
-          method: 'DELETE',
+        try {
+          const res = await fetch(`/api/user/saved/${encodeURIComponent(snapshot.key)}`, {
+            method: 'DELETE',
+            credentials: 'include',
+            headers: getUserSessionHeaders(),
+          });
+          const ct = res.headers.get('content-type') || '';
+          if (res.ok && ct.includes('application/json')) {
+            const data = (await res.json()) as {
+              savedCafes: SavedCafeRecord[];
+              collections: UserCollection[];
+            };
+            setSavedCafes(data.savedCafes);
+            setCollections(data.collections);
+            return;
+          }
+        } catch {
+          // Fall through to static storage update
+        }
+        const nextSaved = savedCafes.filter((s) => s.cafe_key !== snapshot.key);
+        setSavedCafes(nextSaved);
+        if (staticUserKey) saveStaticSavedCafes(staticUserKey, nextSaved);
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/user/saved', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
           credentials: 'include',
-          headers: getUserSessionHeaders(),
+          body: JSON.stringify({
+            cafeKey: snapshot.key,
+            snapshot,
+            isFavourite: asFavourite ? true : Boolean(existing?.is_favourite),
+          }),
         });
-        if (res.ok) {
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.includes('application/json')) {
           const data = (await res.json()) as {
             savedCafes: SavedCafeRecord[];
             collections: UserCollection[];
           };
           setSavedCafes(data.savedCafes);
           setCollections(data.collections);
+          return;
         }
-        return;
+      } catch {
+        // Fall through to static storage update
       }
-
-      const res = await fetch('/api/user/saved', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
-        credentials: 'include',
-        body: JSON.stringify({
-          cafeKey: snapshot.key,
-          snapshot,
-          isFavourite: asFavourite ? true : Boolean(existing?.is_favourite),
-        }),
-      });
-      if (res.ok) {
-        const data = (await res.json()) as {
-          savedCafes: SavedCafeRecord[];
-          collections: UserCollection[];
-        };
-        setSavedCafes(data.savedCafes);
-        setCollections(data.collections);
-      }
+      const nextFav = asFavourite ? true : Boolean(existing?.is_favourite);
+      const nextSaved: SavedCafeRecord[] = existing
+        ? savedCafes.map((s) =>
+            s.cafe_key === snapshot.key ? { ...s, snapshot, is_favourite: nextFav } : s
+          )
+        : [
+            {
+              id: Date.now(),
+              user_id: user.id,
+              cafe_key: snapshot.key,
+              cafe_source: snapshot.source,
+              snapshot,
+              is_favourite: nextFav,
+              created_at: Date.now(),
+            },
+            ...savedCafes,
+          ];
+      setSavedCafes(nextSaved);
+      if (staticUserKey) saveStaticSavedCafes(staticUserKey, nextSaved);
     },
     [user, savedCafes, openUpgradeModal]
   );
@@ -613,6 +859,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         openCheckout,
         closeCheckout,
         applyAuthPayload,
+        exchangeSupabaseSession,
         refreshAuth,
         refreshPlans,
         logout,

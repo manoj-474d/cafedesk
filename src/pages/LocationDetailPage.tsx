@@ -172,6 +172,8 @@ export function LocationDetailPage() {
           return;
         }
         if (res.ok) {
+          const ct = res.headers.get('content-type') || '';
+          if (!ct.includes('application/json')) return;
           const data = (await res.json()) as { cafe?: LocationItem };
           if (!cancelled && data.cafe) {
             setServerCafe(data.cafe);

@@ -222,7 +222,8 @@ export function CmsProvider({ children }: { children: React.ReactNode }) {
   const refreshCms = useCallback(async () => {
     try {
       const res = await fetch('/api/public/bootstrap', { credentials: 'include' });
-      if (!res.ok) return;
+      const ct = res.headers.get('content-type') || '';
+      if (!res.ok || !ct.includes('application/json')) return;
       const data = (await res.json()) as PublicBootstrapResponse;
       if (Array.isArray(data.locations)) setLocations(data.locations);
       if (data.settings) setSettings({ ...FALLBACK_SETTINGS, ...data.settings });

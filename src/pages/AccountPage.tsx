@@ -89,17 +89,22 @@ export function AccountPage() {
   }, [user]);
 
   const loadBillingHistory = async () => {
-    const res = await fetch('/api/billing/history', {
-      credentials: 'include',
-      headers: getUserSessionHeaders(),
-    });
-    if (res.ok) {
-      const data = (await res.json()) as {
-        payments?: PaymentRecord[];
-        history?: SubscriptionHistoryItem[];
-      };
-      if (Array.isArray(data.payments)) setPayments(data.payments);
-      if (Array.isArray(data.history)) setHistory(data.history);
+    try {
+      const res = await fetch('/api/billing/history', {
+        credentials: 'include',
+        headers: getUserSessionHeaders(),
+      });
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        const data = (await res.json()) as {
+          payments?: PaymentRecord[];
+          history?: SubscriptionHistoryItem[];
+        };
+        if (Array.isArray(data.payments)) setPayments(data.payments);
+        if (Array.isArray(data.history)) setHistory(data.history);
+      }
+    } catch {
+      // Non-blocking when billing backend is unavailable
     }
   };
 
@@ -172,29 +177,58 @@ export function AccountPage() {
     e.preventDefault();
     setProfileSavedMsg('');
     setProfileErrorMsg('');
-    const res = await fetch('/api/auth/profile', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
-      credentials: 'include',
-      body: JSON.stringify({ name: editName, phone: editPhone }),
-    });
-    if (res.ok) {
-      const data = (await res.json()) as AuthResponsePayload;
-      if (isSupabaseConfigured && supabase && user?.supabase_id) {
-        await supabase.auth.updateUser({
+    if (isSupabaseConfigured && supabase && user?.supabase_id) {
+      await supabase.auth
+        .updateUser({
           data: { full_name: editName.trim(), phone: editPhone.trim() },
-        }).catch(() => {});
-        await syncOwnSupabaseProfile({
-          id: user.supabase_id,
-          fullName: editName.trim(),
-          phone: editPhone.trim(),
-        });
+        })
+        .catch(() => {});
+      await syncOwnSupabaseProfile({
+        id: user.supabase_id,
+        fullName: editName.trim(),
+        phone: editPhone.trim(),
+      });
+    }
+    try {
+      const res = await fetch('/api/auth/profile', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
+        credentials: 'include',
+        body: JSON.stringify({ name: editName, phone: editPhone }),
+      });
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        const data = (await res.json()) as AuthResponsePayload;
+        applyAuthPayload(data);
+        setProfileSavedMsg('Profile details updated.');
+        return;
       }
-      applyAuthPayload(data);
-      setProfileSavedMsg('Profile details updated.');
-    } else {
+      if (!ct.includes('application/json') || res.status === 404 || res.status === 405) {
+        applyAuthPayload({
+          authenticated: true,
+          user: { ...user, name: editName.trim(), phone: editPhone.trim() },
+          subscription: subscription ?? undefined,
+          savedCafes,
+          collections,
+        });
+        setProfileSavedMsg('Profile details updated.');
+        return;
+      }
       const err = (await res.json().catch(() => ({}))) as { error?: string };
       setProfileErrorMsg(err.error || 'Could not update profile.');
+    } catch {
+      if (user?.supabase_id) {
+        applyAuthPayload({
+          authenticated: true,
+          user: { ...user, name: editName.trim(), phone: editPhone.trim() },
+          subscription: subscription ?? undefined,
+          savedCafes,
+          collections,
+        });
+        setProfileSavedMsg('Profile details updated.');
+      } else {
+        setProfileErrorMsg('Could not update profile.');
+      }
     }
   };
 
