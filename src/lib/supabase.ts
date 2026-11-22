@@ -1,10 +1,13 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || '').trim();
+const DEFAULT_PUBLIC_SUPABASE_URL = 'https://avsdaviludflfedkxzys.supabase.co';
+const DEFAULT_PUBLIC_SUPABASE_KEY = 'sb_publishable_UAlk63CEsWWL1rFOhJi6aA_ntkz9FqV';
+
+const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || DEFAULT_PUBLIC_SUPABASE_URL).trim();
 const supabasePublicKey = (
   import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
   import.meta.env.VITE_SUPABASE_ANON_KEY ||
-  ''
+  DEFAULT_PUBLIC_SUPABASE_KEY
 ).trim();
 
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabasePublicKey);

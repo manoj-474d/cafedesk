@@ -1,13 +1,20 @@
 import { EventEmitter } from 'node:events';
 import { createClient, type RealtimeChannel, type SupabaseClient, type User } from '@supabase/supabase-js';
 
-const SUPABASE_URL = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').trim();
+const DEFAULT_PUBLIC_SUPABASE_URL = 'https://avsdaviludflfedkxzys.supabase.co';
+const DEFAULT_PUBLIC_SUPABASE_KEY = 'sb_publishable_UAlk63CEsWWL1rFOhJi6aA_ntkz9FqV';
+
+const SUPABASE_URL = (
+  process.env.SUPABASE_URL ||
+  process.env.VITE_SUPABASE_URL ||
+  DEFAULT_PUBLIC_SUPABASE_URL
+).trim();
 const SUPABASE_PUBLIC_KEY = (
   process.env.SUPABASE_PUBLISHABLE_KEY ||
   process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
   process.env.SUPABASE_ANON_KEY ||
   process.env.VITE_SUPABASE_ANON_KEY ||
-  ''
+  DEFAULT_PUBLIC_SUPABASE_KEY
 ).trim();
 const SUPABASE_SERVICE_ROLE_KEY = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
 
