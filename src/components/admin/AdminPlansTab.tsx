@@ -9,8 +9,52 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import type { PlanTier, SubscriptionPlan } from '../../types/subscription';
+import type {
+  PlanPermissionKey,
+  PlanPermissions,
+  PlanTier,
+  SubscriptionPlan,
+} from '../../types/subscription';
 import type { AdminSubscriptionOverviewPayload } from './AdminSubscriptionsTab';
+
+const PERMISSION_FIELDS: Array<{ key: PlanPermissionKey; label: string }> = [
+  { key: 'wifi_details', label: 'Wi-Fi & Password' },
+  { key: 'power_sockets', label: 'Power Sockets' },
+  { key: 'workspace_details', label: 'Workspace Specs' },
+  { key: 'food_menu', label: 'Food Menu' },
+  { key: 'menu_pricing', label: 'Menu Prices' },
+  { key: 'amenities', label: 'Amenities & Best For' },
+  { key: 'subscriber_benefits', label: 'Subscriber Perks' },
+  { key: 'booking', label: 'Seat Booking' },
+  { key: 'collections', label: 'Custom Collections' },
+  { key: 'compare', label: 'Compare Cafes' },
+];
+
+const DEFAULT_PAID_PERMS: PlanPermissions = {
+  wifi_details: true,
+  power_sockets: true,
+  workspace_details: true,
+  food_menu: true,
+  menu_pricing: true,
+  amenities: true,
+  subscriber_benefits: true,
+  booking: true,
+  collections: true,
+  compare: true,
+};
+
+const DEFAULT_FREE_PERMS: PlanPermissions = {
+  wifi_details: false,
+  power_sockets: false,
+  workspace_details: false,
+  food_menu: false,
+  menu_pricing: false,
+  amenities: false,
+  subscriber_benefits: false,
+  booking: false,
+  collections: false,
+  compare: false,
+};
 
 const PLAN_PRESETS = [
   {
@@ -96,6 +140,8 @@ export function AdminPlansTab({ csrfToken }: { csrfToken: string }) {
   const [newPlanFeatures, setNewPlanFeatures] = useState(
     'Unlimited cafe comparisons\nPriority Wi-Fi speed insights\nSaved collections across Bengaluru'
   );
+  const [newPlanCafeScope, setNewPlanCafeScope] = useState<'all' | 'specific'>('all');
+  const [newPlanPermissions, setNewPlanPermissions] = useState<PlanPermissions>(DEFAULT_PAID_PERMS);
   const [creating, setCreating] = useState(false);
 
   // Delete plan confirmation modal
@@ -179,6 +225,8 @@ export function AdminPlansTab({ csrfToken }: { csrfToken: string }) {
           is_recommended: newPlanRecommended,
           tagline: newPlanTagline,
           features,
+          cafe_access_scope: newPlanCafeScope,
+          permissions: newPlanPermissions,
           active: true,
         }),
       });
@@ -485,7 +533,7 @@ export function AdminPlansTab({ csrfToken }: { csrfToken: string }) {
                     Features (one per line)
                   </label>
                   <textarea
-                    rows={5}
+                    rows={4}
                     value={draft.features.join('\n')}
                     onChange={(e) =>
                       setEditingPlans((prev) => ({
@@ -498,6 +546,69 @@ export function AdminPlansTab({ csrfToken }: { csrfToken: string }) {
                     }
                     className="w-full p-2.5 rounded-lg border border-[#cbd5e1] text-xs"
                   />
+                </div>
+
+                <div className="pt-2 border-t border-[#e2e8f0] space-y-2.5">
+                  <div>
+                    <label className="block text-xs font-semibold text-[#475569] mb-1">
+                      Cafe Access Scope
+                    </label>
+                    <select
+                      disabled={pid === 'free'}
+                      value={draft.cafe_access_scope ?? 'all'}
+                      onChange={(e) =>
+                        setEditingPlans((prev) => ({
+                          ...prev,
+                          [pid]: {
+                            ...draft,
+                            cafe_access_scope: e.target.value as 'all' | 'specific',
+                          },
+                        }))
+                      }
+                      className="w-full h-9 px-2.5 rounded-lg border border-[#cbd5e1] text-xs font-semibold disabled:bg-[#f1f5f9]"
+                    >
+                      <option value="all">All Subscription Cafes</option>
+                      <option value="specific">Specific Assigned Cafes Only</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <p className="text-xs font-semibold text-[#475569] mb-1.5">
+                      Unlocked Permissions
+                    </p>
+                    <div className="grid grid-cols-2 gap-1.5 text-[11px]">
+                      {PERMISSION_FIELDS.map(({ key, label }) => {
+                        const perms =
+                          draft.permissions ??
+                          (pid === 'free' ? DEFAULT_FREE_PERMS : DEFAULT_PAID_PERMS);
+                        return (
+                          <label
+                            key={key}
+                            className="inline-flex items-center gap-1.5 cursor-pointer text-[#0f172a]"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={Boolean(perms[key])}
+                              onChange={(e) =>
+                                setEditingPlans((prev) => ({
+                                  ...prev,
+                                  [pid]: {
+                                    ...draft,
+                                    permissions: {
+                                      ...perms,
+                                      [key]: e.target.checked,
+                                    },
+                                  },
+                                }))
+                              }
+                              className="w-3.5 h-3.5 accent-[#1b4d3e]"
+                            />
+                            <span>{label}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -671,6 +782,46 @@ export function AdminPlansTab({ csrfToken }: { csrfToken: string }) {
                   onChange={(e) => setNewPlanFeatures(e.target.value)}
                   className="w-full p-3 rounded-lg border border-[#cbd5e1] bg-[#f8fafc]"
                 />
+              </div>
+
+              <div className="pt-2 border-t border-[#e2e8f0] space-y-2.5">
+                <div>
+                  <label className="block font-semibold text-[#475569] mb-1">
+                    Cafe Access Scope
+                  </label>
+                  <select
+                    value={newPlanCafeScope}
+                    onChange={(e) => setNewPlanCafeScope(e.target.value as 'all' | 'specific')}
+                    className="w-full h-10 px-3 rounded-lg border border-[#cbd5e1] bg-[#f8fafc] font-semibold"
+                  >
+                    <option value="all">All Subscription Cafes</option>
+                    <option value="specific">Specific Assigned Cafes Only</option>
+                  </select>
+                </div>
+                <div>
+                  <p className="font-semibold text-[#475569] mb-1.5">Plan Permissions</p>
+                  <div className="grid grid-cols-2 gap-1.5 text-[11px]">
+                    {PERMISSION_FIELDS.map(({ key, label }) => (
+                      <label
+                        key={key}
+                        className="inline-flex items-center gap-1.5 cursor-pointer text-[#0f172a]"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={Boolean(newPlanPermissions[key])}
+                          onChange={(e) =>
+                            setNewPlanPermissions((prev) => ({
+                              ...prev,
+                              [key]: e.target.checked,
+                            }))
+                          }
+                          className="w-3.5 h-3.5 accent-[#1b4d3e]"
+                        />
+                        <span>{label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
 

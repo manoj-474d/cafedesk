@@ -40,6 +40,7 @@ export interface AdminSubscriptionOverviewPayload {
     activeSubs: number;
     cancelledSubs: number;
     expiredSubs: number;
+    suspendedSubs?: number;
     countsByPlan: Record<string, number>;
     totalRevenueInr: number;
     monthRevenueInr: number;
@@ -119,6 +120,47 @@ export function AdminSubscriptionsTab({ csrfToken }: { csrfToken: string }) {
     }
   };
 
+  const handleSubscriptionAction = async (
+    userId: number,
+    action: 'activate' | 'suspend' | 'revoke' | 'extend',
+    extra?: { planId?: PlanTier; durationDays?: number; note?: string }
+  ) => {
+    setStatusMsg('');
+    setErrorMsg('');
+    const res = await fetch(`/api/admin/subscriptions/users/${userId}/subscription-status`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-csrf-token': csrfToken,
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        action,
+        planId: extra?.planId,
+        durationDays: extra?.durationDays ?? 30,
+        note: extra?.note,
+      }),
+    });
+    if (res.ok) {
+      const actionLabel =
+        action === 'activate'
+          ? 'Activated'
+          : action === 'extend'
+          ? 'Extended'
+          : action === 'suspend'
+          ? 'Suspended'
+          : 'Revoked / Expired';
+      setStatusMsg(`${actionLabel} subscription for user #${userId}.`);
+      await loadData();
+      if (detailPayload?.user.id === userId) {
+        await openDetails(userId);
+      }
+    } else {
+      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      setErrorMsg(err.error || 'Failed to update subscription status.');
+    }
+  };
+
   const handleChangeUserPlan = async (userId: number, planId: PlanTier) => {
     setStatusMsg('');
     setErrorMsg('');
@@ -138,6 +180,9 @@ export function AdminSubscriptionsTab({ csrfToken }: { csrfToken: string }) {
     if (res.ok) {
       setStatusMsg(`Updated user #${userId} subscription to ${targetPlan?.name || planId}.`);
       await loadData();
+      if (detailPayload?.user.id === userId) {
+        await openDetails(userId);
+      }
     } else {
       const err = (await res.json().catch(() => ({}))) as { error?: string };
       setErrorMsg(err.error || 'Failed to update user plan.');
@@ -272,7 +317,7 @@ export function AdminSubscriptionsTab({ csrfToken }: { csrfToken: string }) {
           </p>
           <p className="text-xs text-[#64748b] font-mono-data tabular-nums">
             MRR: ₹{data.metrics.mrrInr} · {data.metrics.cancelledSubs} cancelled ·{' '}
-            {data.metrics.expiredSubs} expired
+            {data.metrics.expiredSubs} expired · {data.metrics.suspendedSubs ?? 0} suspended
           </p>
         </div>
 
@@ -354,6 +399,7 @@ export function AdminSubscriptionsTab({ csrfToken }: { csrfToken: string }) {
           <option value="active">Active</option>
           <option value="cancelled">Cancelled</option>
           <option value="expired">Expired</option>
+          <option value="suspended">Suspended</option>
           <option value="past_due">Past Due</option>
         </select>
 
@@ -452,6 +498,10 @@ export function AdminSubscriptionsTab({ csrfToken }: { csrfToken: string }) {
                           className={`inline-block px-2 py-0.5 rounded border text-[11px] font-semibold capitalize ${
                             u.subscription.status === 'active'
                               ? 'bg-[#ecfdf5] border-[#a7f3d0] text-[#16a34a]'
+                              : u.subscription.status === 'suspended'
+                              ? 'bg-[#fef2f2] border-[#fecaca] text-[#991b1b]'
+                              : u.subscription.status === 'expired'
+                              ? 'bg-amber-50 border-amber-200 text-[#92400e]'
                               : u.subscription.status === 'cancelled'
                               ? 'bg-[#fef2f2] border-[#fecaca] text-[#b91c1c]'
                               : 'bg-[#f1f5f9] border-[#cbd5e1] text-[#475569]'
@@ -462,6 +512,10 @@ export function AdminSubscriptionsTab({ csrfToken }: { csrfToken: string }) {
                         <p className="text-[11px] text-[#64748b] mt-1">
                           {u.subscription.plan_id === 'free'
                             ? 'Free tier'
+                            : u.subscription.status === 'expired'
+                            ? 'Expired · locked'
+                            : u.subscription.status === 'suspended'
+                            ? 'Suspended · locked'
                             : u.subscription.auto_renew
                             ? `Auto-renew · ${formatDate(u.subscription.expires_at)}`
                             : 'Auto-renew off'}
@@ -484,14 +538,38 @@ export function AdminSubscriptionsTab({ csrfToken }: { csrfToken: string }) {
                         </select>
                       </td>
                       <td className="py-3 px-4 text-right whitespace-nowrap">
-                        <button
-                          type="button"
-                          onClick={() => void openDetails(u.id)}
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-[#cbd5e1] bg-white hover:bg-[#f1f5f9] font-semibold text-[#0f172a]"
-                        >
-                          <Eye className="w-3.5 h-3.5" />
-                          <span>Inspect</span>
-                        </button>
+                        <div className="inline-flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void handleSubscriptionAction(
+                                u.id,
+                                u.subscription.effective_active ? 'extend' : 'activate',
+                                { durationDays: 30 }
+                              )
+                            }
+                            className="px-2 py-1 rounded border border-[#a7f3d0] bg-[#ecfdf5] text-[#16a34a] font-semibold"
+                          >
+                            {u.subscription.effective_active ? '+30d' : 'Activate'}
+                          </button>
+                          {u.subscription.effective_active && (
+                            <button
+                              type="button"
+                              onClick={() => void handleSubscriptionAction(u.id, 'suspend')}
+                              className="px-2 py-1 rounded border border-[#fecaca] bg-[#fef2f2] text-[#b91c1c] font-semibold"
+                            >
+                              Suspend
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => void openDetails(u.id)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-[#cbd5e1] bg-white hover:bg-[#f1f5f9] font-semibold text-[#0f172a]"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                            <span>Inspect</span>
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -667,6 +745,55 @@ export function AdminSubscriptionsTab({ csrfToken }: { csrfToken: string }) {
                         ? formatDate(detailPayload.subscription.expires_at)
                         : 'No expiry'}
                     </p>
+                  </div>
+                </div>
+
+                {/* Admin Subscription Controls */}
+                <div className="p-3.5 rounded-xl bg-[#f8fafc] border border-[#e2e8f0] flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-semibold text-[#0f172a]">
+                    Manual Access Controls (Status: <span className="capitalize">{detailPayload.subscription?.status || 'free'}</span>)
+                  </span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void handleSubscriptionAction(detailPayload.user.id, 'activate', {
+                          durationDays: 30,
+                        })
+                      }
+                      className="px-3 py-1.5 rounded-lg bg-[#16a34a] text-white font-semibold"
+                    >
+                      Activate (+30d)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void handleSubscriptionAction(detailPayload.user.id, 'extend', {
+                          durationDays: 30,
+                        })
+                      }
+                      className="px-3 py-1.5 rounded-lg bg-[#0f172a] text-white font-semibold"
+                    >
+                      Extend (+30d)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void handleSubscriptionAction(detailPayload.user.id, 'suspend')
+                      }
+                      className="px-3 py-1.5 rounded-lg bg-[#dc2626] text-white font-semibold"
+                    >
+                      Suspend
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void handleSubscriptionAction(detailPayload.user.id, 'revoke')
+                      }
+                      className="px-3 py-1.5 rounded-lg border border-amber-300 bg-amber-50 text-[#92400e] font-semibold"
+                    >
+                      Expire Now
+                    </button>
                   </div>
                 </div>
 

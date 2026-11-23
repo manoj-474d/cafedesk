@@ -9,6 +9,8 @@ import {
 import type { LocationItem } from '../types/cms';
 import type {
   CafeLibrarySnapshot,
+  PlanPermissionKey,
+  PlanPermissions,
   PlanTier,
   SavedCafeRecord,
   SubscriptionPlan,
@@ -17,6 +19,19 @@ import type {
   UserProfile,
   UserSubscription,
 } from '../types/subscription';
+
+const FREE_PERMISSIONS: PlanPermissions = {
+  wifi_details: false,
+  power_sockets: false,
+  workspace_details: false,
+  food_menu: false,
+  menu_pricing: false,
+  amenities: false,
+  subscriber_benefits: false,
+  booking: false,
+  collections: false,
+  compare: false,
+};
 
 const STATIC_SAVED_KEY_PREFIX = 'cafedesk_static_saved_';
 const DEFAULT_FALLBACK_PLANS: SubscriptionPlan[] = [
@@ -107,8 +122,13 @@ interface AuthContextValue {
   user: UserProfile | null;
   subscription: UserSubscription | null;
   tier: PlanTier;
+  isSubscribed: boolean;
+  isExpired: boolean;
+  isSuspended: boolean;
+  expiredPlanName: string | null;
   hasPlus: boolean;
   hasPremium: boolean;
+  hasPermission: (key: PlanPermissionKey) => boolean;
   plans: SubscriptionPlan[];
   razorpayEnabled: boolean;
   razorpayKeyId: string;
@@ -151,8 +171,13 @@ const AuthContext = createContext<AuthContextValue>({
   user: null,
   subscription: null,
   tier: 'free',
+  isSubscribed: false,
+  isExpired: false,
+  isSuspended: false,
+  expiredPlanName: null,
   hasPlus: false,
   hasPremium: false,
+  hasPermission: () => false,
   plans: [],
   razorpayEnabled: false,
   razorpayKeyId: '',
@@ -221,17 +246,54 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [upgradePrompt, setUpgradePrompt] = useState<UpgradePromptState | null>(null);
   const [checkoutPlan, setCheckoutPlan] = useState<PlanTier | null>(null);
 
-  const lastAuthedRef = useRef<boolean | null>(null);
+  const lastAuthSigRef = useRef<string | null>(null);
   const exchangedTokenRef = useRef<string>('');
   const inFlightExchangeRef = useRef<{ token: string; promise: Promise<boolean> } | null>(null);
 
   const clearAuthError = useCallback(() => setAuthError(''), []);
 
-  const tier: PlanTier =
-    user && subscription && subscription.status !== 'expired' ? subscription.plan_id : 'free';
-  // Unified Cafe Desk Plus access: any active non-free plan (Monthly, Annual, or custom paid plan) unlocks Plus features
-  const hasPlus = tier !== 'free';
-  const hasPremium = hasPlus;
+  const nowMs = Date.now();
+  const isExpired = Boolean(
+    user &&
+      subscription &&
+      (subscription.expired ||
+        subscription.status === 'expired' ||
+        (subscription.plan_id !== 'free' &&
+          subscription.expires_at !== null &&
+          subscription.expires_at <= nowMs))
+  );
+  const isSuspended = Boolean(
+    user && (user.status === 'suspended' || subscription?.status === 'suspended')
+  );
+  const isSubscribed = Boolean(
+    user &&
+      subscription &&
+      subscription.plan_id !== 'free' &&
+      !isExpired &&
+      !isSuspended &&
+      (subscription.effective_active !== undefined
+        ? subscription.effective_active
+        : (subscription.status === 'active' || subscription.status === 'cancelled') &&
+          (!subscription.expires_at || subscription.expires_at > nowMs))
+  );
+
+  const tier: PlanTier = isSubscribed && subscription ? subscription.plan_id : 'free';
+  const hasPlus = isSubscribed;
+  const hasPremium = isSubscribed;
+  const expiredPlanName = isExpired
+    ? subscription?.expired_from_plan_name || subscription?.plan_name || null
+    : null;
+
+  const hasPermission = useCallback(
+    (key: PlanPermissionKey): boolean => {
+      if (!isSubscribed || !subscription) return false;
+      if (subscription.permissions) {
+        return Boolean(subscription.permissions[key]);
+      }
+      return true;
+    },
+    [isSubscribed, subscription]
+  );
 
   const applyAuthPayload = useCallback((payload: AuthResponsePayload) => {
     const nextAuthed = Boolean(payload.authenticated && payload.user);
@@ -258,10 +320,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setSavedCafes([]);
       setCollections([]);
     }
-    if (lastAuthedRef.current !== null && lastAuthedRef.current !== nextAuthed) {
+    const nextSig = nextAuthed
+      ? `1|${payload.subscription?.plan_id || 'free'}|${payload.subscription?.status || 'active'}|${payload.subscription?.effective_active ? 1 : 0}|${payload.subscription?.expires_at ?? 'null'}`
+      : '0';
+    if (lastAuthSigRef.current !== null && lastAuthSigRef.current !== nextSig) {
       window.dispatchEvent(new Event('cafedesk:auth-changed'));
     }
-    lastAuthedRef.current = nextAuthed;
+    lastAuthSigRef.current = nextSig;
   }, []);
 
   const refreshPlans = useCallback(async () => {
@@ -328,6 +393,84 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const resolvedPhone = String(remoteProfile?.phone || basePhone).trim();
       const resolvedAvatar = String(remoteProfile?.avatar_url || baseAvatar).trim();
 
+      let resolvedSub: UserSubscription = {
+        id: 0,
+        user_id: 0,
+        plan_id: 'free',
+        plan_name: 'Free Explorer',
+        price_inr: 0,
+        subscribed_price_inr: 0,
+        status: 'active',
+        started_at: createdAtMs,
+        expires_at: null,
+        auto_renew: false,
+        cancelled_at: null,
+        expired: false,
+        effective_active: false,
+        permissions: { ...FREE_PERMISSIONS },
+        updated_at: now,
+      };
+
+      if (supabase) {
+        try {
+          const { data: sbSub } = await supabase
+            .from('user_subscriptions')
+            .select('plan_id, subscribed_price_inr, status, started_at, expires_at, auto_renew, cancelled_at, expired_at, expired_from_plan, suspended_at, updated_at')
+            .eq('user_id', sbUser.id)
+            .maybeSingle();
+          if (sbSub) {
+            const subPlanId = String(sbSub.plan_id || 'free') as PlanTier;
+            const subExpiresMs = sbSub.expires_at ? new Date(sbSub.expires_at).getTime() : null;
+            const rawStatus = String(sbSub.status || 'active') as UserSubscription['status'];
+            const subExpired =
+              rawStatus === 'expired' ||
+              (subPlanId !== 'free' && subExpiresMs !== null && subExpiresMs <= now);
+            const subSuspended = rawStatus === 'suspended';
+            const subActive =
+              subPlanId !== 'free' &&
+              !subExpired &&
+              !subSuspended &&
+              (rawStatus === 'active' || rawStatus === 'cancelled') &&
+              (subExpiresMs === null || subExpiresMs > now);
+            resolvedSub = {
+              id: 0,
+              user_id: 0,
+              plan_id: subPlanId,
+              plan_name: subPlanId === 'free' ? 'Free Explorer' : subPlanId,
+              price_inr: Number(sbSub.subscribed_price_inr ?? 0),
+              subscribed_price_inr: Number(sbSub.subscribed_price_inr ?? 0),
+              status: subExpired ? 'expired' : rawStatus,
+              started_at: sbSub.started_at ? new Date(sbSub.started_at).getTime() : createdAtMs,
+              expires_at: subExpiresMs,
+              auto_renew: Boolean(sbSub.auto_renew),
+              cancelled_at: sbSub.cancelled_at ? new Date(sbSub.cancelled_at).getTime() : null,
+              expired: subExpired,
+              expired_from_plan: sbSub.expired_from_plan ? String(sbSub.expired_from_plan) : null,
+              expired_at: sbSub.expired_at ? new Date(sbSub.expired_at).getTime() : null,
+              suspended_at: sbSub.suspended_at ? new Date(sbSub.suspended_at).getTime() : null,
+              effective_active: subActive,
+              permissions: subActive
+                ? {
+                    wifi_details: true,
+                    power_sockets: true,
+                    workspace_details: true,
+                    food_menu: true,
+                    menu_pricing: true,
+                    amenities: true,
+                    subscriber_benefits: true,
+                    booking: true,
+                    collections: true,
+                    compare: true,
+                  }
+                : { ...FREE_PERMISSIONS },
+              updated_at: sbSub.updated_at ? new Date(sbSub.updated_at).getTime() : now,
+            };
+          }
+        } catch {
+          // Migration 002 table may not exist yet — keep strict Free Explorer defaults
+        }
+      }
+
       return {
         payload: {
           authenticated: true,
@@ -346,20 +489,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             last_login_at: now,
             created_at: createdAtMs,
           },
-          subscription: {
-            id: 0,
-            user_id: 0,
-            plan_id: 'free',
-            plan_name: 'Free Explorer',
-            price_inr: 0,
-            subscribed_price_inr: 0,
-            status: 'active',
-            started_at: createdAtMs,
-            expires_at: null,
-            auto_renew: false,
-            cancelled_at: null,
-            updated_at: now,
-          },
+          subscription: resolvedSub,
           savedCafes: loadStaticSavedCafes(sbUser.id),
           collections: [],
         },
@@ -707,12 +837,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const createCollection = useCallback(
     async (name: string, description = ''): Promise<UserCollection | null> => {
-      if (!hasPlus) {
+      if (!hasPermission('collections')) {
         openUpgradeModal({
           featureName: 'Personal Cafe Collections',
           requiredPlan: 'plus',
-          description:
-            'Organize Bengaluru cafes into custom lists like "Indiranagar Deep Work" or "Budget Chai Spots" with Cafe Desk Plus.',
+          description: isExpired
+            ? 'Your subscription has expired. Renew your plan to create and manage personal cafe collections.'
+            : 'Organize Bengaluru cafes into custom lists like "Indiranagar Deep Work" or "Budget Chai Spots" with an active Cafe Desk Plus subscription.',
         });
         return null;
       }
@@ -731,7 +862,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setCollections(data.collections);
       return data.collections[0] ?? null;
     },
-    [hasPlus, openUpgradeModal]
+    [hasPermission, isExpired, openUpgradeModal]
   );
 
   const deleteCollection = useCallback(async (id: number) => {
@@ -752,7 +883,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const addCafeToCollection = useCallback(
     async (collectionId: number, snapshot: CafeLibrarySnapshot) => {
-      if (!hasPlus) {
+      if (!hasPermission('collections')) {
         openUpgradeModal({
           featureName: 'Personal Cafe Collections',
           requiredPlan: 'plus',
@@ -774,7 +905,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setCollections(data.collections);
       }
     },
-    [hasPlus, openUpgradeModal]
+    [hasPermission, openUpgradeModal]
   );
 
   const removeCafeFromCollection = useCallback(
@@ -801,12 +932,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const toggleCompareCafe = useCallback(
     (cafe: LocationItem) => {
-      if (!hasPlus) {
+      if (!hasPermission('compare')) {
         openUpgradeModal({
           featureName: 'Compare Multiple Cafes Side-by-Side',
           requiredPlan: 'plus',
-          description:
-            'Compare menu prices, average budget, Wi-Fi speed, charging sockets, and noise level across up to 4 Bengaluru cafes with Cafe Desk Plus.',
+          description: isExpired
+            ? 'Your subscription has expired. Renew your plan to compare cafe prices, Wi-Fi speeds, and power sockets side-by-side.'
+            : 'Compare menu prices, average budget, Wi-Fi speed, charging sockets, and noise level across up to 4 Bengaluru cafes with Cafe Desk Plus.',
         });
         return;
       }
@@ -817,7 +949,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return [...prev, cafe];
       });
     },
-    [hasPlus, openUpgradeModal]
+    [hasPermission, isExpired, openUpgradeModal]
   );
 
   const removeCompareCafe = useCallback((id: string) => {
@@ -839,8 +971,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         user,
         subscription,
         tier,
+        isSubscribed,
+        isExpired,
+        isSuspended,
+        expiredPlanName,
         hasPlus,
         hasPremium,
+        hasPermission,
         plans,
         razorpayEnabled,
         razorpayKeyId,

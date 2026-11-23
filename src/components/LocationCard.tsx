@@ -44,7 +44,9 @@ export function LocationCard({ location, matchScore, matchReasons }: LocationCar
   const { getEffectiveLocation } = useDiscovery();
   const {
     authenticated,
-    hasPlus,
+    isSubscribed,
+    isExpired,
+    hasPermission,
     openUpgradeModal,
     isCafeSaved,
     isCafeFavourite,
@@ -54,8 +56,16 @@ export function LocationCard({ location, matchScore, matchReasons }: LocationCar
   } = useAuth();
   const loc = location.distanceKm !== undefined ? location : getEffectiveLocation(location);
 
+  const unlocked = loc.access?.unlockedSections;
+  const wifiUnlocked = unlocked ? unlocked.wifi_details : isSubscribed;
+  const socketsUnlocked = unlocked ? unlocked.power_sockets : isSubscribed;
+  const workspaceUnlocked = unlocked ? unlocked.workspace_details : isSubscribed;
+  const menuPricingUnlocked = unlocked ? unlocked.menu_pricing : isSubscribed;
+  const amenitiesUnlocked = unlocked ? unlocked.amenities : isSubscribed;
+  const compareAllowed = hasPermission('compare');
+
   const detailRoute = getCafeDetailRoute(loc.slug, authenticated);
-  const startingPrice = getStartingPriceLabel(loc);
+  const startingPrice = menuPricingUnlocked ? getStartingPriceLabel(loc) : 'Subscribers Only';
   const workspaceTypes = getWorkspaceTypesForCafe(loc);
   const openStatus = getCafeOpenStatus(loc.timings);
   const approvedPhoto =
@@ -96,6 +106,16 @@ export function LocationCard({ location, matchScore, matchReasons }: LocationCar
     : loc.avg_cost_per_person !== null
     ? `₹${loc.avg_cost_per_person} avg`
     : 'Budget unverified';
+
+  const promptSubscription = (featureName: string, description: string) => {
+    openUpgradeModal({
+      featureName,
+      requiredPlan: 'plus',
+      description: isExpired
+        ? `Your subscription has expired. Renew your Cafe Desk plan to unlock ${featureName.toLowerCase()}.`
+        : description,
+    });
+  };
 
   return (
     <article className="group bg-white rounded-2xl border border-[#e6ddd0] overflow-hidden flex flex-col transition-shadow hover:shadow-md">
@@ -138,7 +158,7 @@ export function LocationCard({ location, matchScore, matchReasons }: LocationCar
       </Link>
 
       <div className="p-5 flex-1 flex flex-col">
-        {/* Locality, Distance & Starting Price */}
+        {/* Locality, Distance & Starting Price / Lock Indicator */}
         <div className="flex items-center justify-between gap-2 text-xs text-[#5c4e45] mb-1.5">
           <span className="truncate font-medium">
             {loc.area} · {loc.city}
@@ -150,9 +170,16 @@ export function LocationCard({ location, matchScore, matchReasons }: LocationCar
                 {distText}
               </span>
             )}
-            <span className="font-mono-data font-semibold text-[#1c1613] whitespace-nowrap">
-              {startingPrice}
-            </span>
+            {menuPricingUnlocked ? (
+              <span className="font-mono-data font-semibold text-[#1c1613] whitespace-nowrap">
+                {startingPrice}
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#b45309] whitespace-nowrap">
+                <Lock className="w-3 h-3" aria-hidden="true" />
+                <span>{isExpired ? 'Expired' : 'Subscribers Only'}</span>
+              </span>
+            )}
           </div>
         </div>
 
@@ -163,7 +190,7 @@ export function LocationCard({ location, matchScore, matchReasons }: LocationCar
         </h3>
 
         <p className="text-xs text-[#5c4e45] truncate mb-2">
-          {authenticated && loc.address ? loc.address : `${loc.area}, ${loc.city}`}
+          {loc.address || `${loc.area}, ${loc.city}`}
         </p>
 
         {/* Rating, Verification & Featured Line */}
@@ -226,7 +253,7 @@ export function LocationCard({ location, matchScore, matchReasons }: LocationCar
           </div>
         )}
 
-        {/* Available Workspace Types & Tags */}
+        {/* Available Workspace Types & Tags (public workspace categories only when locked) */}
         <div className="flex flex-wrap gap-1.5 mb-3">
           {workspaceTypes.map((wt) => (
             <span
@@ -236,7 +263,7 @@ export function LocationCard({ location, matchScore, matchReasons }: LocationCar
               {wt}
             </span>
           ))}
-          {outdoorFriendly && (
+          {workspaceUnlocked && outdoorFriendly && (
             <span className="px-2 py-0.5 rounded-md bg-[#ecfdf5] border border-[#a7f3d0] text-[11px] font-semibold text-[#1b4d3e]">
               Outdoor Seating
             </span>
@@ -251,11 +278,11 @@ export function LocationCard({ location, matchScore, matchReasons }: LocationCar
           ))}
         </div>
 
-        {/* Tabular Discovery Spec Strip (Gated by Subscription Tier) */}
+        {/* Tabular Discovery Spec Strip (Strictly Gated by Active Subscription & Section Rules) */}
         <dl className="grid grid-cols-2 gap-y-2 gap-x-3 pt-3.5 border-t border-[#e6ddd0] text-xs mt-auto">
           <div className="flex items-center gap-1.5 text-[#1c1613]">
             <Wifi className="w-3.5 h-3.5 text-[#1b4d3e] shrink-0" aria-hidden="true" />
-            {hasPlus ? (
+            {wifiUnlocked ? (
               <dd
                 className={`font-medium truncate ${
                   loc.wifi_mbps === null && loc.wifi_available !== 'yes' ? 'text-[#5c4e45]' : ''
@@ -267,30 +294,46 @@ export function LocationCard({ location, matchScore, matchReasons }: LocationCar
               <button
                 type="button"
                 onClick={() =>
-                  openUpgradeModal({
-                    featureName: 'Wi-Fi Availability & Speeds',
-                    requiredPlan: 'plus',
-                  })
+                  promptSubscription(
+                    'Wi-Fi Availability & Speeds',
+                    'Unlock verified Wi-Fi availability, measured Mbps speeds, and Wi-Fi credentials with a Cafe Desk subscription.'
+                  )
                 }
                 className="inline-flex items-center gap-1 text-[#b45309] font-semibold hover:underline truncate"
               >
                 <Lock className="w-3 h-3 shrink-0" aria-hidden="true" />
-                <span>Wi-Fi · Plus ₹79</span>
+                <span>{isExpired ? 'Wi-Fi · Expired' : 'Wi-Fi · Subscribers'}</span>
               </button>
             )}
           </div>
 
           <div className="flex items-center gap-1.5 text-[#1c1613]">
             <Plug className="w-3.5 h-3.5 text-[#1b4d3e] shrink-0" aria-hidden="true" />
-            <dd
-              className={`font-medium truncate ${
-                loc.sockets_count === null && loc.charging_sockets !== 'yes' && !loc.sockets_claimed
-                  ? 'text-[#5c4e45]'
-                  : ''
-              }`}
-            >
-              {socketsDisplay}
-            </dd>
+            {socketsUnlocked ? (
+              <dd
+                className={`font-medium truncate ${
+                  loc.sockets_count === null && loc.charging_sockets !== 'yes' && !loc.sockets_claimed
+                    ? 'text-[#5c4e45]'
+                    : ''
+                }`}
+              >
+                {socketsDisplay}
+              </dd>
+            ) : (
+              <button
+                type="button"
+                onClick={() =>
+                  promptSubscription(
+                    'Power Socket Availability',
+                    'Unlock charging socket counts and plug desk locations with a Cafe Desk subscription.'
+                  )
+                }
+                className="inline-flex items-center gap-1 text-[#b45309] font-semibold hover:underline truncate"
+              >
+                <Lock className="w-3 h-3 shrink-0" aria-hidden="true" />
+                <span>{isExpired ? 'Sockets · Expired' : 'Sockets · Locked'}</span>
+              </button>
+            )}
           </div>
 
           <div className="flex items-center gap-1.5 text-[#1c1613]">
@@ -299,14 +342,30 @@ export function LocationCard({ location, matchScore, matchReasons }: LocationCar
             ) : (
               <Volume2 className="w-3.5 h-3.5 text-[#b45309] shrink-0" aria-hidden="true" />
             )}
-            <dd className="font-medium truncate">
-              {noiseDisplay}
-              {loc.laptop_friendly ? ' · Laptop-ok' : ''}
-            </dd>
+            {workspaceUnlocked ? (
+              <dd className="font-medium truncate">
+                {noiseDisplay}
+                {loc.laptop_friendly ? ' · Laptop-ok' : ''}
+              </dd>
+            ) : (
+              <button
+                type="button"
+                onClick={() =>
+                  promptSubscription(
+                    'Workspace & Acoustic Details',
+                    'Unlock noise ratings, seating details, and laptop work suitability with a Cafe Desk subscription.'
+                  )
+                }
+                className="inline-flex items-center gap-1 text-[#5c4e45] font-medium hover:text-[#b45309] truncate"
+              >
+                <Lock className="w-3 h-3 text-[#b45309] shrink-0" aria-hidden="true" />
+                <span>Workspace locked</span>
+              </button>
+            )}
           </div>
 
           <div className="flex items-center gap-1.5 text-[#1c1613]">
-            {hasPlus ? (
+            {menuPricingUnlocked ? (
               <dd
                 className={`font-mono-data font-semibold truncate ${
                   !loc.price_range && loc.avg_cost_per_person === null ? 'text-[#5c4e45]' : ''
@@ -315,14 +374,24 @@ export function LocationCard({ location, matchScore, matchReasons }: LocationCar
                 {costDisplay}
               </dd>
             ) : (
-              <dd className="font-mono-data font-semibold truncate text-[#1c1613]">
-                {startingPrice}
-              </dd>
+              <button
+                type="button"
+                onClick={() =>
+                  promptSubscription(
+                    'Menu & Budget Pricing',
+                    'Unlock coffee, tea, snacks, and average cost per person with a Cafe Desk subscription.'
+                  )
+                }
+                className="inline-flex items-center gap-1 text-[#b45309] font-semibold hover:underline truncate"
+              >
+                <Lock className="w-3 h-3 shrink-0" aria-hidden="true" />
+                <span>Menu &amp; prices locked</span>
+              </button>
             )}
           </div>
         </dl>
 
-        {/* Actions Bar: Free Save / Favourite + Plus Side-by-Side Compare */}
+        {/* Actions Bar: Free Save / Favourite + Subscription Side-by-Side Compare */}
         <div className="mt-3 pt-2.5 border-t border-[#f3ede3] flex items-center justify-between gap-2 text-[11px]">
           <div className="flex items-center gap-1.5">
             <button
@@ -361,7 +430,7 @@ export function LocationCard({ location, matchScore, matchReasons }: LocationCar
                 : 'bg-[#faf7f2] text-[#5c4e45] border-[#e6ddd0] hover:border-[#b45309] hover:text-[#1c1613]'
             }`}
           >
-            {!hasPlus ? (
+            {!compareAllowed ? (
               <Lock className="w-3 h-3 text-[#b45309]" aria-hidden="true" />
             ) : (
               <GitCompareArrows className="w-3 h-3" aria-hidden="true" />
@@ -372,7 +441,7 @@ export function LocationCard({ location, matchScore, matchReasons }: LocationCar
 
         {/* Footer CTA & Quick Links */}
         <div className="mt-3 pt-3 border-t border-[#e6ddd0] flex flex-wrap items-center justify-between gap-2 text-xs">
-          {authenticated ? (
+          {amenitiesUnlocked ? (
             <div className="flex flex-wrap items-center gap-2.5 text-[#5c4e45]">
               {openStatus !== 'unknown' && (
                 <span
@@ -429,7 +498,10 @@ export function LocationCard({ location, matchScore, matchReasons }: LocationCar
               )}
             </div>
           ) : (
-            <span className="text-[#5c4e45] font-medium">Menus, seats &amp; booking inside</span>
+            <span className="text-[#5c4e45] font-medium inline-flex items-center gap-1">
+              <Lock className="w-3 h-3 text-[#b45309]" aria-hidden="true" />
+              <span>Wi-Fi, menus &amp; perks locked</span>
+            </span>
           )}
 
           <Link

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link, Navigate, useLocation, useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -10,11 +10,13 @@ import {
   Bookmark,
   Briefcase,
   CalendarCheck,
+  Check,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Clock,
   Coffee,
+  Copy,
   Flag,
   FolderPlus,
   GitCompareArrows,
@@ -33,7 +35,9 @@ import {
   Navigation,
   Phone,
   Plug,
+  RefreshCw,
   Share2,
+  Sparkles,
   Star,
   Sun,
   Tag,
@@ -50,7 +54,7 @@ import {
   useDiscovery,
   type GoogleDiscoveryCafe,
 } from '../context/DiscoveryContext';
-import type { AmenityState, LocationItem } from '../types/cms';
+import type { AccessSectionKey, AmenityState, LocationItem } from '../types/cms';
 import {
   buildWhatsAppUrl,
   formatDistanceKm,
@@ -64,6 +68,7 @@ import {
   recordRecentlyViewedSlug,
 } from '../utils/cafeRecommendations';
 import { InteractiveCafeMap } from '../components/InteractiveCafeMap';
+import { PremiumLockCard } from '../components/PremiumLockCard';
 import { ResilientPhoto } from '../components/ResilientPhoto';
 
 function formatAmenityLabel(state: AmenityState, yesText: string, noText: string): string {
@@ -74,7 +79,6 @@ function formatAmenityLabel(state: AmenityState, yesText: string, noText: string
 
 export function LocationDetailPage() {
   const { id, slug } = useParams<{ id?: string; slug?: string }>();
-  const routerLocation = useLocation();
   const lookupKey = slug ?? id ?? '';
   const isGoogleRoute = lookupKey.startsWith('google:');
   const googlePlaceId = useMemo(
@@ -87,10 +91,15 @@ export function LocationDetailPage() {
     loading: authLoading,
     authenticated,
     user,
+    subscription,
     tier,
+    isSubscribed,
+    isExpired,
+    isSuspended,
+    expiredPlanName,
+    hasPermission,
     plans,
     openCheckout,
-    hasPlus,
     openUpgradeModal,
     isCafeSaved,
     isCafeFavourite,
@@ -112,7 +121,6 @@ export function LocationDetailPage() {
 
   const [serverCafe, setServerCafe] = useState<LocationItem | null>(null);
   const [serverLoading, setServerLoading] = useState<boolean>(() => !isGoogleRoute);
-  const [authDenied, setAuthDenied] = useState(false);
 
   const contextLocation = useMemo(
     () => (isGoogleRoute ? undefined : locations.find((l) => l.slug === lookupKey || l.id === lookupKey)),
@@ -126,6 +134,7 @@ export function LocationDetailPage() {
   const [collectionMenuOpen, setCollectionMenuOpen] = useState(false);
   const [collectionAddedNotice, setCollectionAddedNotice] = useState('');
   const [copiedShare, setCopiedShare] = useState(false);
+  const [copiedWifiPass, setCopiedWifiPass] = useState(false);
 
   // Optional workspace / seat reservation state
   const [bookingOpen, setBookingOpen] = useState(false);
@@ -148,7 +157,7 @@ export function LocationDetailPage() {
     }
   }, [user]);
 
-  // Fetch authoritative full cafe details from protected backend endpoint
+  // Fetch authoritative cafe details from backend endpoint (sanitized per viewer subscription state)
   useEffect(() => {
     if (isGoogleRoute) {
       setServerLoading(false);
@@ -158,7 +167,6 @@ export function LocationDetailPage() {
     if (!lookupKey) return;
     let cancelled = false;
     setServerLoading(true);
-    setAuthDenied(false);
 
     void fetch(`/api/cafes/${encodeURIComponent(lookupKey)}`, {
       credentials: 'include',
@@ -166,18 +174,12 @@ export function LocationDetailPage() {
     })
       .then(async (res) => {
         if (cancelled) return;
-        if (res.status === 401) {
-          setAuthDenied(true);
-          setServerCafe(null);
-          return;
-        }
         if (res.ok) {
           const ct = res.headers.get('content-type') || '';
           if (!ct.includes('application/json')) return;
           const data = (await res.json()) as { cafe?: LocationItem };
           if (!cancelled && data.cafe) {
             setServerCafe(data.cafe);
-            setAuthDenied(false);
           }
         }
       })
@@ -189,7 +191,7 @@ export function LocationDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [lookupKey, isGoogleRoute, authenticated]);
+  }, [lookupKey, isGoogleRoute, authenticated, isSubscribed, isExpired, isSuspended, tier]);
 
   // Lazy-enrich & record recently viewed once authenticated
   useEffect(() => {
@@ -288,12 +290,8 @@ export function LocationDetailPage() {
     }
   );
 
-  const loginRedirectUrl = `/login?next=${encodeURIComponent(
-    `${routerLocation.pathname}${routerLocation.search}`
-  )}`;
-
-  // Show loading screen while confirming member / owner authorization
-  if (authLoading || (!isGoogleRoute && serverLoading)) {
+  // Show loading screen while resolving cafe details
+  if (authLoading || (!isGoogleRoute && serverLoading && !location)) {
     return (
       <div className="max-w-3xl mx-auto px-4 sm:px-6 py-24 text-center space-y-4">
         <Loader2 className="w-8 h-8 animate-spin text-[#b45309] mx-auto" aria-hidden="true" />
@@ -304,9 +302,23 @@ export function LocationDetailPage() {
     );
   }
 
-  // Redirect unauthenticated visitors to sign in with return path preserved
-  if (authDenied || (isGoogleRoute && !authenticated) || (!authenticated && !serverCafe)) {
-    return <Navigate to={loginRedirectUrl} replace />;
+  if (isGoogleRoute && !authenticated && !activeGooglePlace) {
+    return (
+      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-16 space-y-6">
+        <Link
+          to="/locations"
+          className="inline-flex items-center gap-2 text-sm font-semibold text-[#5c4e45] hover:text-[#1c1613]"
+        >
+          <ArrowLeft className="w-4 h-4" aria-hidden="true" />
+          <span>Back to Bengaluru cafe explorer</span>
+        </Link>
+        <PremiumLockCard
+          title="Live Google Maps Cafe Details"
+          description="Sign in and activate a Cafe Desk subscription to view live Google Maps cafe details, hours, photos, and directions."
+          lockReason="guest"
+        />
+      </div>
+    );
   }
 
   if (!location && isGoogleRoute && (loadingGooglePlace || !placesReady)) {
@@ -364,13 +376,46 @@ export function LocationDetailPage() {
       ? location.openingHours
       : [];
 
+  const defaultUnlocked: Record<AccessSectionKey, boolean> = {
+    wifi_details: isSubscribed,
+    power_sockets: isSubscribed,
+    workspace_details: isSubscribed,
+    food_menu: isSubscribed,
+    menu_pricing: isSubscribed,
+    amenities: isSubscribed,
+    subscriber_benefits: isSubscribed,
+    booking: isSubscribed,
+  };
+  const accessInfo = location.access;
+  const unlocked = accessInfo?.unlockedSections ?? defaultUnlocked;
+  const lockReason =
+    accessInfo?.lockReason && accessInfo.lockReason !== 'none'
+      ? accessInfo.lockReason
+      : !authenticated
+      ? 'guest'
+      : isSuspended
+      ? 'suspended'
+      : isExpired
+      ? 'expired'
+      : 'no_subscription';
+  const allowedPlanIds = accessInfo?.allowedPlanIds ?? [];
+  const renewPlanId =
+    (subscription?.expired_from_plan &&
+    plans.some((p) => p.id === subscription.expired_from_plan && p.active)
+      ? subscription.expired_from_plan
+      : plans.find((p) => p.id !== 'free' && p.active && p.is_recommended)?.id ||
+        plans.find((p) => p.id !== 'free' && p.active)?.id) || 'plus';
+
+  const collectionsAllowed = hasPermission('collections');
+  const compareAllowed = hasPermission('compare');
+
   const cafeSnapshot = locationToLibrarySnapshot(location);
   const saved = isCafeSaved(cafeSnapshot.key);
   const favourited = isCafeFavourite(cafeSnapshot.key);
   const inCompare = compareList.some((c) => c.id === location.id);
   const outdoorFriendly = isOutdoorFriendly(location);
   const workspaceTypes = getWorkspaceTypesForCafe(location);
-  const startingPrice = getStartingPriceLabel(location);
+  const startingPrice = unlocked.menu_pricing ? getStartingPriceLabel(location) : 'Subscribers Only';
 
   const handleShareCafe = async () => {
     const shareUrl = window.location.href;
@@ -394,6 +439,17 @@ export function LocationDetailPage() {
     }
   };
 
+  const handleCopyWifiPassword = async () => {
+    if (!location.wifi_password) return;
+    try {
+      await navigator.clipboard.writeText(location.wifi_password);
+      setCopiedWifiPass(true);
+      window.setTimeout(() => setCopiedWifiPass(false), 2200);
+    } catch {
+      // ignore clipboard errors
+    }
+  };
+
   const waUrl = buildWhatsAppUrl(
     `Hi ${settings.brand_name}! Sharing feedback or asking a question about ${location.name} (${location.area}, ${location.city}).`,
     settings.whatsapp_number
@@ -410,6 +466,51 @@ export function LocationDetailPage() {
           <span>Back to Bengaluru cafe explorer</span>
         </Link>
       </nav>
+
+      {/* Expired or Suspended Subscription Alert Banner */}
+      {isExpired && (
+        <div className="rounded-2xl border border-[#fecaca] bg-[#fffaf9] p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-[#991b1b] shrink-0 mt-0.5" aria-hidden="true" />
+            <div className="space-y-0.5">
+              <p className="text-sm font-bold text-[#991b1b]">Your subscription has expired</p>
+              <p className="text-xs text-[#5c4e45]">
+                {expiredPlanName ? `Your ${expiredPlanName} plan has ended. ` : ''}
+                Renew your subscription to restore access to Wi-Fi speeds &amp; passwords, socket
+                locations, food menus, prices, and booking.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => openCheckout(renewPlanId)}
+            className="inline-flex items-center justify-center gap-1.5 min-h-[40px] px-4 py-2 rounded-lg bg-[#b45309] hover:bg-[#92400e] text-white text-xs font-semibold shrink-0 transition-colors"
+          >
+            <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>Renew Subscription</span>
+          </button>
+        </div>
+      )}
+
+      {isSuspended && (
+        <div className="rounded-2xl border border-[#fed7aa] bg-[#fffaf5] p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-[#b45309] shrink-0 mt-0.5" aria-hidden="true" />
+            <div className="space-y-0.5">
+              <p className="text-sm font-bold text-[#9a3412]">Subscription suspended</p>
+              <p className="text-xs text-[#5c4e45]">
+                Your subscription access is currently suspended. Protected cafe details are locked.
+              </p>
+            </div>
+          </div>
+          <Link
+            to="/contact"
+            className="inline-flex items-center justify-center min-h-[40px] px-4 py-2 rounded-lg bg-[#1c1613] text-white text-xs font-semibold shrink-0"
+          >
+            Contact Support
+          </Link>
+        </div>
+      )}
 
       {/* Branch Header */}
       <header className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
@@ -493,7 +594,7 @@ export function LocationDetailPage() {
             {location.description || location.verdict || location.claims[0]}
           </p>
 
-          {/* Direct Discovery & Cafe Platform Links (Zero Table Booking) */}
+          {/* Direct Discovery & Cafe Platform Links */}
           <div className="flex flex-wrap gap-3 pt-2">
             <a
               href={location.map_link}
@@ -507,7 +608,7 @@ export function LocationDetailPage() {
               <ArrowUpRight className="w-4 h-4" aria-hidden="true" />
             </a>
 
-            {location.website_url && (
+            {unlocked.amenities && location.website_url && (
               <a
                 href={location.website_url}
                 target="_blank"
@@ -520,7 +621,7 @@ export function LocationDetailPage() {
               </a>
             )}
 
-            {location.menu_url && (
+            {unlocked.food_menu && location.menu_url && (
               <a
                 href={location.menu_url}
                 target="_blank"
@@ -533,7 +634,7 @@ export function LocationDetailPage() {
               </a>
             )}
 
-            {location.instagram_url && (
+            {unlocked.amenities && location.instagram_url && (
               <a
                 href={location.instagram_url}
                 target="_blank"
@@ -546,7 +647,7 @@ export function LocationDetailPage() {
               </a>
             )}
 
-            {location.phone && (
+            {unlocked.amenities && location.phone && (
               <a
                 href={`tel:${location.phone.replace(/\s+/g, '')}`}
                 className="inline-flex items-center gap-2 min-h-[44px] px-4 py-2.5 rounded-lg bg-white border border-[#d6cbba] hover:bg-[#f3ede3] text-[#1c1613] text-sm font-semibold transition-colors"
@@ -557,7 +658,7 @@ export function LocationDetailPage() {
             )}
           </div>
 
-          {/* Free Save / Favourite / Share + Plus Collection / Compare Action Strip */}
+          {/* Free Save / Favourite / Share + Subscription Collection / Compare Action Strip */}
           <div className="flex flex-wrap items-center gap-2.5 pt-1 relative">
             <button
               type="button"
@@ -589,12 +690,13 @@ export function LocationDetailPage() {
               <button
                 type="button"
                 onClick={() => {
-                  if (!hasPlus) {
+                  if (!collectionsAllowed) {
                     openUpgradeModal({
                       featureName: 'Personal Cafe Collections',
                       requiredPlan: 'plus',
-                      description:
-                        'Organize Bengaluru cafes into custom lists like "Indiranagar Deep Work" or "Budget Study Spots".',
+                      description: isExpired
+                        ? 'Your subscription has expired. Renew your plan to organize cafes into custom collections.'
+                        : 'Organize Bengaluru cafes into custom lists like "Indiranagar Deep Work" or "Budget Study Spots".',
                     });
                     return;
                   }
@@ -602,7 +704,7 @@ export function LocationDetailPage() {
                 }}
                 className="inline-flex items-center gap-1.5 min-h-[38px] px-3.5 py-1.5 rounded-lg bg-white border border-[#d6cbba] hover:border-[#b45309] text-[#1c1613] text-xs font-semibold transition-colors"
               >
-                {!hasPlus ? (
+                {!collectionsAllowed ? (
                   <Lock className="w-3.5 h-3.5 text-[#b45309]" aria-hidden="true" />
                 ) : (
                   <FolderPlus className="w-3.5 h-3.5 text-[#1b4d3e]" aria-hidden="true" />
@@ -610,7 +712,7 @@ export function LocationDetailPage() {
                 <span>Add to Collection</span>
               </button>
 
-              {hasPlus && collectionMenuOpen && (
+              {collectionsAllowed && collectionMenuOpen && (
                 <div className="absolute left-0 mt-1.5 w-60 rounded-xl bg-white border border-[#e6ddd0] shadow-lg p-2 z-30 space-y-1">
                   {collections.length === 0 ? (
                     <div className="p-2 text-xs text-[#5c4e45] space-y-2">
@@ -654,7 +756,7 @@ export function LocationDetailPage() {
                   : 'bg-white border-[#d6cbba] text-[#1c1613] hover:border-[#b45309]'
               }`}
             >
-              {!hasPlus ? (
+              {!compareAllowed ? (
                 <Lock className="w-3.5 h-3.5 text-[#b45309]" aria-hidden="true" />
               ) : (
                 <GitCompareArrows className="w-3.5 h-3.5" aria-hidden="true" />
@@ -827,214 +929,305 @@ export function LocationDetailPage() {
           )}
         </div>
 
-        <dl className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="p-5 rounded-xl bg-white border border-[#e6ddd0] space-y-1">
-            <dt className="flex items-center gap-2 text-xs font-semibold text-[#5c4e45]">
-              <Wifi className="w-4 h-4 text-[#1b4d3e]" aria-hidden="true" />
-              <span>Wi-Fi Availability &amp; Speed</span>
-            </dt>
-            <dd className="text-sm font-bold text-[#1b4d3e]">
-              Wi-Fi Available:{' '}
-              {location.wifi_available === 'yes'
-                ? 'Yes'
-                : location.wifi_available === 'no'
-                ? 'No'
-                : 'Not verified'}
-            </dd>
-            <p
-              className={`font-mono-data text-base sm:text-lg font-bold ${
-                location.wifi_mbps === null ? 'text-[#5c4e45]' : 'text-[#1c1613]'
-              }`}
-            >
-              {location.wifi_mbps !== null
-                ? `Wi-Fi Speed: ${location.wifi_mbps} Mbps`
-                : 'Wi-Fi Speed: Not verified'}
-            </p>
-          </div>
-
-          <div className="p-5 rounded-xl bg-white border border-[#e6ddd0] space-y-1">
-            <dt className="flex items-center gap-2 text-xs font-semibold text-[#5c4e45]">
-              <Plug className="w-4 h-4 text-[#1b4d3e]" aria-hidden="true" />
-              <span>Charging Sockets</span>
-            </dt>
-            <dd
-              className={`font-mono-data text-lg sm:text-xl font-bold ${
-                location.sockets_count === null && location.charging_sockets !== 'yes'
-                  ? 'text-[#5c4e45]'
-                  : 'text-[#1c1613]'
-              }`}
-            >
-              {location.sockets_count !== null
-                ? `${location.sockets_count} available`
-                : location.charging_sockets === 'yes' || location.sockets_claimed
-                ? 'Sockets available'
-                : location.charging_sockets === 'no'
-                ? 'Not available'
-                : 'Not verified'}
-            </dd>
-          </div>
-
-          <div className="p-5 rounded-xl bg-white border border-[#e6ddd0] space-y-1">
-            <dt className="flex items-center gap-2 text-xs font-semibold text-[#5c4e45]">
-              <Volume2 className="w-4 h-4 text-[#b45309]" aria-hidden="true" />
-              <span>Noise Level</span>
-            </dt>
-            <dd
-              className={`text-base font-bold pt-1 ${
-                location.noise_level === null ? 'text-[#5c4e45]' : 'text-[#1c1613]'
-              }`}
-            >
-              {location.noise_level !== null
-                ? `${noiseSummary} · ${NOISE_LABELS[location.noise_level]}`
-                : 'Not measured yet'}
-            </dd>
-          </div>
-
-          <div className="p-5 rounded-xl bg-white border border-[#e6ddd0] space-y-1">
-            <dt className="text-xs font-semibold text-[#5c4e45]">Price Range &amp; Budget</dt>
-            <dd
-              className={`font-mono-data text-lg sm:text-xl font-bold ${
-                !location.price_range && location.avg_cost_per_person === null
-                  ? 'text-[#5c4e45]'
-                  : 'text-[#1c1613]'
-              }`}
-            >
-              {location.price_range ||
-                (location.avg_cost_per_person !== null
-                  ? `₹${location.avg_cost_per_person} avg`
-                  : startingPrice)}
-            </dd>
-            {location.price_range && location.avg_cost_per_person !== null && (
-              <p className="text-xs text-[#5c4e45] font-mono-data">
-                {startingPrice} · ~₹{location.avg_cost_per_person} per person
-              </p>
-            )}
-          </div>
-        </dl>
-
-        {/* Study & Work Readiness Row */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          <div className="p-4 rounded-xl bg-white border border-[#e6ddd0] space-y-1">
-            <p className="flex items-center gap-1.5 text-xs font-semibold text-[#5c4e45]">
-              <Briefcase className="w-3.5 h-3.5 text-[#1b4d3e]" aria-hidden="true" />
-              <span>Working</span>
-            </p>
-            <p className="text-sm font-semibold text-[#1c1613]">
-              {formatAmenityLabel(
-                location.suitable_for_working,
-                'Suitable for remote work',
-                'Better for casual visits'
-              )}
-            </p>
-          </div>
-
-          <div className="p-4 rounded-xl bg-white border border-[#e6ddd0] space-y-1">
-            <p className="flex items-center gap-1.5 text-xs font-semibold text-[#5c4e45]">
-              <BookOpen className="w-3.5 h-3.5 text-[#1b4d3e]" aria-hidden="true" />
-              <span>Studying</span>
-            </p>
-            <p className="text-sm font-semibold text-[#1c1613]">
-              {formatAmenityLabel(
-                location.suitable_for_studying,
-                'Good for focused study',
-                'Not ideal for study'
-              )}
-            </p>
-          </div>
-
-          <div className="p-4 rounded-xl bg-white border border-[#e6ddd0] space-y-1">
-            <p className="flex items-center gap-1.5 text-xs font-semibold text-[#5c4e45]">
-              <Armchair className="w-3.5 h-3.5 text-[#b45309]" aria-hidden="true" />
-              <span>Seating</span>
-            </p>
-            <p className="text-sm font-semibold text-[#1c1613]">
-              {location.seating_info
-                ? location.seating_info
-                : formatAmenityLabel(
-                    location.comfortable_seating,
-                    'Comfortable seating',
-                    'Compact seating'
+        {!unlocked.wifi_details &&
+        !unlocked.power_sockets &&
+        !unlocked.workspace_details &&
+        !unlocked.menu_pricing ? (
+          <PremiumLockCard
+            title="Wi-Fi, Power Sockets & Workspace Specs"
+            description="Verified Wi-Fi speeds, Wi-Fi passwords, charging socket availability, acoustic noise ratings, seating capacity, and average budget are reserved for active subscribers."
+            previewHints={[
+              'Wi-Fi speed & credentials',
+              'Power socket availability & locations',
+              'Acoustic noise & desk suitability',
+              'Average spend per person',
+            ]}
+            lockReason={lockReason}
+            allowedPlanIds={allowedPlanIds}
+          />
+        ) : (
+          <>
+            <dl className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {unlocked.wifi_details ? (
+                <div className="p-5 rounded-xl bg-white border border-[#e6ddd0] space-y-1.5">
+                  <dt className="flex items-center gap-2 text-xs font-semibold text-[#5c4e45]">
+                    <Wifi className="w-4 h-4 text-[#1b4d3e]" aria-hidden="true" />
+                    <span>Wi-Fi Availability &amp; Speed</span>
+                  </dt>
+                  <dd className="text-sm font-bold text-[#1b4d3e]">
+                    Wi-Fi Available:{' '}
+                    {location.wifi_available === 'yes'
+                      ? 'Yes'
+                      : location.wifi_available === 'no'
+                      ? 'No'
+                      : 'Not verified'}
+                  </dd>
+                  <p
+                    className={`font-mono-data text-base sm:text-lg font-bold ${
+                      location.wifi_mbps === null ? 'text-[#5c4e45]' : 'text-[#1c1613]'
+                    }`}
+                  >
+                    {location.wifi_mbps !== null
+                      ? `Wi-Fi Speed: ${location.wifi_mbps} Mbps`
+                      : 'Wi-Fi Speed: Not verified'}
+                  </p>
+                  {location.wifi_password && (
+                    <div className="pt-1.5 mt-1 border-t border-[#f3ede3] flex items-center justify-between gap-2 text-xs">
+                      <span className="text-[#5c4e45]">
+                        Password:{' '}
+                        <code className="font-mono-data font-bold text-[#1c1613]">
+                          {location.wifi_password}
+                        </code>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void handleCopyWifiPassword()}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#faf7f2] border border-[#e6ddd0] hover:border-[#b45309] text-[11px] font-semibold text-[#1c1613]"
+                      >
+                        {copiedWifiPass ? (
+                          <Check className="w-3 h-3 text-[#1b4d3e]" aria-hidden="true" />
+                        ) : (
+                          <Copy className="w-3 h-3" aria-hidden="true" />
+                        )}
+                        <span>{copiedWifiPass ? 'Copied' : 'Copy'}</span>
+                      </button>
+                    </div>
                   )}
-            </p>
-            {location.ambience && (
-              <p className="text-[11px] text-[#5c4e45]">{location.ambience}</p>
-            )}
-          </div>
-
-          <div className="p-4 rounded-xl bg-white border border-[#e6ddd0] space-y-1">
-            <p className="flex items-center gap-1.5 text-xs font-semibold text-[#5c4e45]">
-              <Laptop className="w-3.5 h-3.5 text-[#1b4d3e]" aria-hidden="true" />
-              <span>Laptops</span>
-            </p>
-            <p className="text-sm font-semibold text-[#1c1613]">
-              {location.laptop_friendly ? 'Laptop-friendly' : 'Not verified / Short visits'}
-            </p>
-          </div>
-
-          <div className="p-4 rounded-xl bg-white border border-[#e6ddd0] space-y-1">
-            <p className="flex items-center gap-1.5 text-xs font-semibold text-[#5c4e45]">
-              <Sun className="w-3.5 h-3.5 text-[#b45309]" aria-hidden="true" />
-              <span>Outdoor Seating</span>
-            </p>
-            <p className="text-sm font-semibold text-[#1c1613]">
-              {outdoorFriendly ? 'Outdoor / garden seating available' : 'Outdoor seating not verified'}
-            </p>
-          </div>
-
-          <div className="p-4 rounded-xl bg-white border border-[#e6ddd0] space-y-1">
-            <p className="flex items-center gap-1.5 text-xs font-semibold text-[#5c4e45]">
-              <Clock className="w-3.5 h-3.5 text-[#b45309]" aria-hidden="true" />
-              <span>Hours &amp; Stay</span>
-            </p>
-            <p className="text-xs font-semibold text-[#1c1613] leading-snug">
-              {location.timings}
-            </p>
-            <p className="text-[11px] text-[#5c4e45]">
-              {location.min_spend ? `Min spend ${location.min_spend}` : 'No min spend noted'} ·{' '}
-              {location.time_limit || 'No time limit reported'}
-            </p>
-          </div>
-        </div>
-
-        {/* Workspace Options & Seat Availability */}
-        <div className="p-5 rounded-xl bg-white border border-[#e6ddd0] flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="space-y-2">
-            <p className="text-xs font-semibold uppercase tracking-wider text-[#1b4d3e]">
-              Workspace Options &amp; Seat Availability
-            </p>
-            <div className="flex flex-wrap gap-2">
-              {workspaceTypes.map((wt) => (
-                <span
-                  key={wt}
-                  className="px-3 py-1 rounded-lg bg-[#f3ede3] border border-[#e6ddd0] text-xs font-semibold text-[#1c1613]"
-                >
-                  {wt}
-                </span>
-              ))}
-              {location.seating_info && (
-                <span className="px-3 py-1 rounded-lg bg-[#ecfdf5] border border-[#a7f3d0] text-xs font-semibold text-[#1b4d3e]">
-                  {location.seating_info}
-                </span>
+                </div>
+              ) : (
+                <PremiumLockCard
+                  compact
+                  title="Wi-Fi Details & Password"
+                  lockReason={lockReason}
+                  allowedPlanIds={allowedPlanIds}
+                />
               )}
-            </div>
-          </div>
 
-          {settings.bookings_enabled && (
-            <button
-              type="button"
-              onClick={() => {
-                setBookingOpen(true);
-                document
-                  .getElementById('reserve-workspace-card')
-                  ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-              }}
-              className="shrink-0 inline-flex items-center gap-2 min-h-[42px] px-4 py-2 rounded-lg bg-[#1c1613] hover:bg-[#b45309] text-white text-xs font-semibold transition-colors"
-            >
-              <CalendarCheck className="w-4 h-4" aria-hidden="true" />
-              <span>Check Available Seats &amp; Book</span>
-            </button>
-          )}
-        </div>
+              {unlocked.power_sockets ? (
+                <div className="p-5 rounded-xl bg-white border border-[#e6ddd0] space-y-1">
+                  <dt className="flex items-center gap-2 text-xs font-semibold text-[#5c4e45]">
+                    <Plug className="w-4 h-4 text-[#1b4d3e]" aria-hidden="true" />
+                    <span>Charging Sockets</span>
+                  </dt>
+                  <dd
+                    className={`font-mono-data text-lg sm:text-xl font-bold ${
+                      location.sockets_count === null && location.charging_sockets !== 'yes'
+                        ? 'text-[#5c4e45]'
+                        : 'text-[#1c1613]'
+                    }`}
+                  >
+                    {location.sockets_count !== null
+                      ? `${location.sockets_count} available`
+                      : location.charging_sockets === 'yes' || location.sockets_claimed
+                      ? 'Sockets available'
+                      : location.charging_sockets === 'no'
+                      ? 'Not available'
+                      : 'Not verified'}
+                  </dd>
+                </div>
+              ) : (
+                <PremiumLockCard
+                  compact
+                  title="Power Socket Info"
+                  lockReason={lockReason}
+                  allowedPlanIds={allowedPlanIds}
+                />
+              )}
+
+              {unlocked.workspace_details ? (
+                <div className="p-5 rounded-xl bg-white border border-[#e6ddd0] space-y-1">
+                  <dt className="flex items-center gap-2 text-xs font-semibold text-[#5c4e45]">
+                    <Volume2 className="w-4 h-4 text-[#b45309]" aria-hidden="true" />
+                    <span>Noise Level</span>
+                  </dt>
+                  <dd
+                    className={`text-base font-bold pt-1 ${
+                      location.noise_level === null ? 'text-[#5c4e45]' : 'text-[#1c1613]'
+                    }`}
+                  >
+                    {location.noise_level !== null
+                      ? `${noiseSummary} · ${NOISE_LABELS[location.noise_level]}`
+                      : 'Not measured yet'}
+                  </dd>
+                </div>
+              ) : (
+                <PremiumLockCard
+                  compact
+                  title="Workspace Acoustics"
+                  lockReason={lockReason}
+                  allowedPlanIds={allowedPlanIds}
+                />
+              )}
+
+              {unlocked.menu_pricing ? (
+                <div className="p-5 rounded-xl bg-white border border-[#e6ddd0] space-y-1">
+                  <dt className="text-xs font-semibold text-[#5c4e45]">Price Range &amp; Budget</dt>
+                  <dd
+                    className={`font-mono-data text-lg sm:text-xl font-bold ${
+                      !location.price_range && location.avg_cost_per_person === null
+                        ? 'text-[#5c4e45]'
+                        : 'text-[#1c1613]'
+                    }`}
+                  >
+                    {location.price_range ||
+                      (location.avg_cost_per_person !== null
+                        ? `₹${location.avg_cost_per_person} avg`
+                        : startingPrice)}
+                  </dd>
+                  {location.price_range && location.avg_cost_per_person !== null && (
+                    <p className="text-xs text-[#5c4e45] font-mono-data">
+                      {startingPrice} · ~₹{location.avg_cost_per_person} per person
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <PremiumLockCard
+                  compact
+                  title="Budget & Menu Pricing"
+                  lockReason={lockReason}
+                  allowedPlanIds={allowedPlanIds}
+                />
+              )}
+            </dl>
+
+            {/* Study & Work Readiness Row */}
+            {unlocked.workspace_details ? (
+              <>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  <div className="p-4 rounded-xl bg-white border border-[#e6ddd0] space-y-1">
+                    <p className="flex items-center gap-1.5 text-xs font-semibold text-[#5c4e45]">
+                      <Briefcase className="w-3.5 h-3.5 text-[#1b4d3e]" aria-hidden="true" />
+                      <span>Working</span>
+                    </p>
+                    <p className="text-sm font-semibold text-[#1c1613]">
+                      {formatAmenityLabel(
+                        location.suitable_for_working,
+                        'Suitable for remote work',
+                        'Better for casual visits'
+                      )}
+                    </p>
+                  </div>
+
+                  <div className="p-4 rounded-xl bg-white border border-[#e6ddd0] space-y-1">
+                    <p className="flex items-center gap-1.5 text-xs font-semibold text-[#5c4e45]">
+                      <BookOpen className="w-3.5 h-3.5 text-[#1b4d3e]" aria-hidden="true" />
+                      <span>Studying</span>
+                    </p>
+                    <p className="text-sm font-semibold text-[#1c1613]">
+                      {formatAmenityLabel(
+                        location.suitable_for_studying,
+                        'Good for focused study',
+                        'Not ideal for study'
+                      )}
+                    </p>
+                  </div>
+
+                  <div className="p-4 rounded-xl bg-white border border-[#e6ddd0] space-y-1">
+                    <p className="flex items-center gap-1.5 text-xs font-semibold text-[#5c4e45]">
+                      <Armchair className="w-3.5 h-3.5 text-[#b45309]" aria-hidden="true" />
+                      <span>Seating</span>
+                    </p>
+                    <p className="text-sm font-semibold text-[#1c1613]">
+                      {location.seating_info
+                        ? location.seating_info
+                        : formatAmenityLabel(
+                            location.comfortable_seating,
+                            'Comfortable seating',
+                            'Compact seating'
+                          )}
+                    </p>
+                    {location.ambience && (
+                      <p className="text-[11px] text-[#5c4e45]">{location.ambience}</p>
+                    )}
+                  </div>
+
+                  <div className="p-4 rounded-xl bg-white border border-[#e6ddd0] space-y-1">
+                    <p className="flex items-center gap-1.5 text-xs font-semibold text-[#5c4e45]">
+                      <Laptop className="w-3.5 h-3.5 text-[#1b4d3e]" aria-hidden="true" />
+                      <span>Laptops</span>
+                    </p>
+                    <p className="text-sm font-semibold text-[#1c1613]">
+                      {location.laptop_friendly ? 'Laptop-friendly' : 'Not verified / Short visits'}
+                    </p>
+                  </div>
+
+                  <div className="p-4 rounded-xl bg-white border border-[#e6ddd0] space-y-1">
+                    <p className="flex items-center gap-1.5 text-xs font-semibold text-[#5c4e45]">
+                      <Sun className="w-3.5 h-3.5 text-[#b45309]" aria-hidden="true" />
+                      <span>Outdoor Seating</span>
+                    </p>
+                    <p className="text-sm font-semibold text-[#1c1613]">
+                      {outdoorFriendly
+                        ? 'Outdoor / garden seating available'
+                        : 'Outdoor seating not verified'}
+                    </p>
+                  </div>
+
+                  <div className="p-4 rounded-xl bg-white border border-[#e6ddd0] space-y-1">
+                    <p className="flex items-center gap-1.5 text-xs font-semibold text-[#5c4e45]">
+                      <Clock className="w-3.5 h-3.5 text-[#b45309]" aria-hidden="true" />
+                      <span>Hours &amp; Stay</span>
+                    </p>
+                    <p className="text-xs font-semibold text-[#1c1613] leading-snug">
+                      {location.timings}
+                    </p>
+                    <p className="text-[11px] text-[#5c4e45]">
+                      {location.min_spend ? `Min spend ${location.min_spend}` : 'No min spend noted'} ·{' '}
+                      {location.time_limit || 'No time limit reported'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Workspace Options & Seat Availability */}
+                <div className="p-5 rounded-xl bg-white border border-[#e6ddd0] flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="space-y-2">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-[#1b4d3e]">
+                      Workspace Options &amp; Seat Availability
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {workspaceTypes.map((wt) => (
+                        <span
+                          key={wt}
+                          className="px-3 py-1 rounded-lg bg-[#f3ede3] border border-[#e6ddd0] text-xs font-semibold text-[#1c1613]"
+                        >
+                          {wt}
+                        </span>
+                      ))}
+                      {location.seating_info && (
+                        <span className="px-3 py-1 rounded-lg bg-[#ecfdf5] border border-[#a7f3d0] text-xs font-semibold text-[#1b4d3e]">
+                          {location.seating_info}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {settings.bookings_enabled && unlocked.booking && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setBookingOpen(true);
+                        document
+                          .getElementById('reserve-workspace-card')
+                          ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                      }}
+                      className="shrink-0 inline-flex items-center gap-2 min-h-[42px] px-4 py-2 rounded-lg bg-[#1c1613] hover:bg-[#b45309] text-white text-xs font-semibold transition-colors"
+                    >
+                      <CalendarCheck className="w-4 h-4" aria-hidden="true" />
+                      <span>Check Available Seats &amp; Book</span>
+                    </button>
+                  )}
+                </div>
+              </>
+            ) : (
+              <PremiumLockCard
+                title="Cafe Workspace Seating & Hours Policy"
+                description="Detailed seating capacity, minimum spend policies, time limits, and study/work ratings are unlocked with an active subscription."
+                lockReason={lockReason}
+                allowedPlanIds={allowedPlanIds}
+              />
+            )}
+          </>
+        )}
 
         {/* Live Google Weekly Opening Hours */}
         {liveOpeningHours.length > 0 && (
@@ -1067,47 +1260,70 @@ export function LocationDetailPage() {
               <Coffee className="w-5 h-5 text-[#b45309]" aria-hidden="true" />
             </div>
 
-            {hasAnyFoodPrices ? (
+            {!unlocked.food_menu ? (
+              <PremiumLockCard
+                title="Full Food & Beverage Menu & Prices"
+                description="Sign in with an active subscription to browse full coffee, tea, snacks, and meal menus with verified INR pricing."
+                previewHints={[
+                  'Coffee, tea & snacks price bands',
+                  'Full itemised menu & dietary tags',
+                  'Popular items & combo specials',
+                ]}
+                lockReason={lockReason}
+                allowedPlanIds={allowedPlanIds}
+              />
+            ) : hasAnyFoodPrices ? (
               <>
-                {(location.coffee_price ||
-                  location.tea_price ||
-                  location.snacks_price ||
-                  location.meals_price) && (
-                  <dl className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                    {location.coffee_price && (
-                      <div className="p-3.5 rounded-xl bg-[#faf7f2] border border-[#e6ddd0]">
-                        <dt className="text-xs font-semibold text-[#5c4e45]">Coffee</dt>
-                        <dd className="font-mono-data text-sm font-bold text-[#1c1613] mt-0.5">
-                          {location.coffee_price}
-                        </dd>
-                      </div>
-                    )}
-                    {location.tea_price && (
-                      <div className="p-3.5 rounded-xl bg-[#faf7f2] border border-[#e6ddd0]">
-                        <dt className="text-xs font-semibold text-[#5c4e45]">Tea</dt>
-                        <dd className="font-mono-data text-sm font-bold text-[#1c1613] mt-0.5">
-                          {location.tea_price}
-                        </dd>
-                      </div>
-                    )}
-                    {location.snacks_price && (
-                      <div className="p-3.5 rounded-xl bg-[#faf7f2] border border-[#e6ddd0]">
-                        <dt className="text-xs font-semibold text-[#5c4e45]">Snacks</dt>
-                        <dd className="font-mono-data text-sm font-bold text-[#1c1613] mt-0.5">
-                          {location.snacks_price}
-                        </dd>
-                      </div>
-                    )}
-                    {location.meals_price && (
-                      <div className="p-3.5 rounded-xl bg-[#faf7f2] border border-[#e6ddd0]">
-                        <dt className="text-xs font-semibold text-[#5c4e45]">Meals</dt>
-                        <dd className="font-mono-data text-sm font-bold text-[#1c1613] mt-0.5">
-                          {location.meals_price}
-                        </dd>
-                      </div>
-                    )}
-                  </dl>
+                {!unlocked.menu_pricing && (
+                  <PremiumLockCard
+                    compact
+                    title="Menu Pricing Locked"
+                    description="Menu items are visible on your plan, while full INR prices require an active plan with pricing access."
+                    lockReason={lockReason}
+                    allowedPlanIds={allowedPlanIds}
+                  />
                 )}
+
+                {unlocked.menu_pricing &&
+                  (location.coffee_price ||
+                    location.tea_price ||
+                    location.snacks_price ||
+                    location.meals_price) && (
+                    <dl className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                      {location.coffee_price && (
+                        <div className="p-3.5 rounded-xl bg-[#faf7f2] border border-[#e6ddd0]">
+                          <dt className="text-xs font-semibold text-[#5c4e45]">Coffee</dt>
+                          <dd className="font-mono-data text-sm font-bold text-[#1c1613] mt-0.5">
+                            {location.coffee_price}
+                          </dd>
+                        </div>
+                      )}
+                      {location.tea_price && (
+                        <div className="p-3.5 rounded-xl bg-[#faf7f2] border border-[#e6ddd0]">
+                          <dt className="text-xs font-semibold text-[#5c4e45]">Tea</dt>
+                          <dd className="font-mono-data text-sm font-bold text-[#1c1613] mt-0.5">
+                            {location.tea_price}
+                          </dd>
+                        </div>
+                      )}
+                      {location.snacks_price && (
+                        <div className="p-3.5 rounded-xl bg-[#faf7f2] border border-[#e6ddd0]">
+                          <dt className="text-xs font-semibold text-[#5c4e45]">Snacks</dt>
+                          <dd className="font-mono-data text-sm font-bold text-[#1c1613] mt-0.5">
+                            {location.snacks_price}
+                          </dd>
+                        </div>
+                      )}
+                      {location.meals_price && (
+                        <div className="p-3.5 rounded-xl bg-[#faf7f2] border border-[#e6ddd0]">
+                          <dt className="text-xs font-semibold text-[#5c4e45]">Meals</dt>
+                          <dd className="font-mono-data text-sm font-bold text-[#1c1613] mt-0.5">
+                            {location.meals_price}
+                          </dd>
+                        </div>
+                      )}
+                    </dl>
+                  )}
 
                 {location.popular_items.length > 0 && (
                   <div className="space-y-2">
@@ -1178,9 +1394,14 @@ export function LocationDetailPage() {
                           </div>
                         </div>
                         <div className="font-mono-data text-sm font-bold text-[#1c1613] shrink-0 text-right">
-                          {item.discount_price_inr !== null &&
-                          item.discount_price_inr !== undefined &&
-                          item.discount_price_inr < item.price_inr ? (
+                          {!unlocked.menu_pricing ? (
+                            <span className="inline-flex items-center gap-1 text-xs text-[#b45309]">
+                              <Lock className="w-3 h-3" aria-hidden="true" />
+                              <span>Locked</span>
+                            </span>
+                          ) : item.discount_price_inr !== null &&
+                            item.discount_price_inr !== undefined &&
+                            item.discount_price_inr < item.price_inr ? (
                             <>
                               <span className="text-[#1b4d3e]">₹{item.discount_price_inr}</span>
                               <del className="text-[#5c4e45] font-normal ml-1.5 text-xs">
@@ -1211,11 +1432,16 @@ export function LocationDetailPage() {
                               <p className="text-sm text-[#5c4e45] mt-0.5">{item.description}</p>
                             )}
                           </div>
-                          {item.price && (
+                          {unlocked.menu_pricing && item.price ? (
                             <span className="font-mono-data text-sm font-bold text-[#1c1613] shrink-0">
                               {item.price}
                             </span>
-                          )}
+                          ) : !unlocked.menu_pricing ? (
+                            <span className="inline-flex items-center gap-1 text-xs font-semibold text-[#b45309] shrink-0">
+                              <Lock className="w-3 h-3" aria-hidden="true" />
+                              <span>Locked</span>
+                            </span>
+                          ) : null}
                         </div>
                       ))}
                     </div>
@@ -1230,39 +1456,49 @@ export function LocationDetailPage() {
           </section>
 
           {/* Facilities & Best For */}
-          <div className="p-6 sm:p-8 rounded-2xl bg-white border border-[#e6ddd0] space-y-5">
-            {location.facilities.length > 0 && (
-              <div>
-                <h2 className="font-serif-display text-xl font-bold text-[#1c1613] mb-3">
-                  Amenities &amp; Atmosphere
+          {!unlocked.amenities ? (
+            <PremiumLockCard
+              title="Amenities, Atmosphere & Facilities"
+              description="Full facility checklists, acoustic notes, and official platform links are reserved for active subscribers."
+              previewHints={['Full facilities & power backup info', 'Work & study suitability tags']}
+              lockReason={lockReason}
+              allowedPlanIds={allowedPlanIds}
+            />
+          ) : (
+            <div className="p-6 sm:p-8 rounded-2xl bg-white border border-[#e6ddd0] space-y-5">
+              {location.facilities.length > 0 && (
+                <div>
+                  <h2 className="font-serif-display text-xl font-bold text-[#1c1613] mb-3">
+                    Amenities &amp; Atmosphere
+                  </h2>
+                  <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-sm text-[#1c1613]">
+                    {location.facilities.map((fac) => (
+                      <li key={fac} className="flex items-center gap-2">
+                        <CheckCircle2 className="w-4 h-4 text-[#1b4d3e] shrink-0" aria-hidden="true" />
+                        <span>{fac}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <div className="pt-4 border-t border-[#e6ddd0]">
+                <h2 className="font-serif-display text-xl font-bold text-[#1c1613] mb-2">
+                  Best For
                 </h2>
-                <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-sm text-[#1c1613]">
-                  {location.facilities.map((fac) => (
-                    <li key={fac} className="flex items-center gap-2">
-                      <CheckCircle2 className="w-4 h-4 text-[#1b4d3e] shrink-0" aria-hidden="true" />
-                      <span>{fac}</span>
-                    </li>
-                  ))}
-                </ul>
+                <p className="text-sm text-[#5c4e45]">{location.best_for.join(' · ')}</p>
               </div>
-            )}
 
-            <div className="pt-4 border-t border-[#e6ddd0]">
-              <h2 className="font-serif-display text-xl font-bold text-[#1c1613] mb-2">
-                Best For
-              </h2>
-              <p className="text-sm text-[#5c4e45]">{location.best_for.join(' · ')}</p>
+              {location.avoid_if && (
+                <div className="pt-4 border-t border-[#e6ddd0] flex items-start gap-2.5 text-sm">
+                  <AlertTriangle className="w-4 h-4 text-[#b45309] shrink-0 mt-0.5" aria-hidden="true" />
+                  <p className="text-[#5c4e45]">
+                    <strong className="text-[#1c1613]">Good to know:</strong> {location.avoid_if}
+                  </p>
+                </div>
+              )}
             </div>
-
-            {location.avoid_if && (
-              <div className="pt-4 border-t border-[#e6ddd0] flex items-start gap-2.5 text-sm">
-                <AlertTriangle className="w-4 h-4 text-[#b45309] shrink-0 mt-0.5" aria-hidden="true" />
-                <p className="text-[#5c4e45]">
-                  <strong className="text-[#1c1613]">Good to know:</strong> {location.avoid_if}
-                </p>
-              </div>
-            )}
-          </div>
+          )}
 
           {/* Reviews, Ratings & Community Verdict */}
           <section className="p-6 sm:p-8 rounded-2xl bg-white border border-[#e6ddd0] space-y-4">
@@ -1345,7 +1581,8 @@ export function LocationDetailPage() {
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 {plans.slice(0, 3).map((plan) => {
-                  const isCurrent = tier === plan.id;
+                  const isCurrent = isSubscribed && tier === plan.id;
+                  const isExpiredPlan = isExpired && subscription?.expired_from_plan === plan.id;
                   return (
                     <div
                       key={plan.id}
@@ -1377,10 +1614,12 @@ export function LocationDetailPage() {
                           onClick={() => openCheckout(plan.id)}
                           className="w-full py-2 rounded-lg bg-[#1c1613] hover:bg-[#b45309] text-white text-xs font-semibold transition-colors"
                         >
-                          Select Plan
+                          {isExpiredPlan ? 'Renew Plan' : 'Select Plan'}
                         </button>
                       ) : (
-                        <span className="text-[11px] font-semibold text-[#5c4e45]">Included free</span>
+                        <span className="text-[11px] font-semibold text-[#5c4e45]">
+                          {isSubscribed ? 'Included' : 'Current Tier'}
+                        </span>
                       )}
                     </div>
                   );
@@ -1389,29 +1628,51 @@ export function LocationDetailPage() {
             </section>
           )}
 
-          {/* Student Perks & Offers */}
-          {(location.student_discount || location.offers.length > 0) && (
-            <div className="p-6 rounded-2xl bg-[#f3ede3] border border-[#e6ddd0] space-y-3">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 text-[#1b4d3e] font-semibold text-sm">
-                  <GraduationCap className="w-4 h-4" aria-hidden="true" />
-                  <span>Student Perks &amp; Location Offers</span>
+          {/* Subscriber Benefits, Student Perks & Offers */}
+          {!unlocked.subscriber_benefits ? (
+            <PremiumLockCard
+              title="Subscriber Benefits, Perks & Offers"
+              description="Unlock member-only workspace perks, partner discounts, student deals, and cafe offers with an active Cafe Desk subscription."
+              previewHints={['Member-only partner offers', 'Student & creator discounts']}
+              lockReason={lockReason}
+              allowedPlanIds={allowedPlanIds}
+            />
+          ) : (
+            ((location.subscriber_benefits && location.subscriber_benefits.length > 0) ||
+              location.student_discount ||
+              location.offers.length > 0) && (
+              <div className="p-6 rounded-2xl bg-[#f3ede3] border border-[#e6ddd0] space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-[#1b4d3e] font-semibold text-sm">
+                    <GraduationCap className="w-4 h-4" aria-hidden="true" />
+                    <span>Subscriber Benefits, Student Perks &amp; Offers</span>
+                  </div>
                 </div>
+                {location.subscriber_benefits && location.subscriber_benefits.length > 0 && (
+                  <ul className="space-y-1.5 pt-1 text-sm text-[#1c1613]">
+                    {location.subscriber_benefits.map((perk, idx) => (
+                      <li key={idx} className="flex items-center gap-2 font-medium">
+                        <Sparkles className="w-3.5 h-3.5 text-[#b45309] shrink-0" aria-hidden="true" />
+                        <span>{perk}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {location.student_discount && (
+                  <p className="text-sm text-[#1c1613] font-medium">{location.student_discount}</p>
+                )}
+                {location.offers.length > 0 && (
+                  <ul className="space-y-1.5 pt-1 text-sm text-[#5c4e45]">
+                    {location.offers.map((offer, i) => (
+                      <li key={i} className="flex items-center gap-2">
+                        <Tag className="w-3.5 h-3.5 text-[#b45309] shrink-0" aria-hidden="true" />
+                        <span>{offer}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
-              {location.student_discount && (
-                <p className="text-sm text-[#1c1613] font-medium">{location.student_discount}</p>
-              )}
-              {location.offers.length > 0 && (
-                <ul className="space-y-1.5 pt-1 text-sm text-[#5c4e45]">
-                  {location.offers.map((offer, i) => (
-                    <li key={i} className="flex items-center gap-2">
-                      <Tag className="w-3.5 h-3.5 text-[#b45309] shrink-0" aria-hidden="true" />
-                      <span>{offer}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
+            )
           )}
 
           <div>
@@ -1492,7 +1753,7 @@ export function LocationDetailPage() {
                 <ArrowUpRight className="w-4 h-4" aria-hidden="true" />
               </a>
 
-              {location.website_url && (
+              {unlocked.amenities && location.website_url && (
                 <a
                   href={location.website_url}
                   target="_blank"
@@ -1507,7 +1768,7 @@ export function LocationDetailPage() {
                 </a>
               )}
 
-              {location.menu_url && (
+              {unlocked.food_menu && location.menu_url && (
                 <a
                   href={location.menu_url}
                   target="_blank"
@@ -1522,7 +1783,7 @@ export function LocationDetailPage() {
                 </a>
               )}
 
-              {location.instagram_url && (
+              {unlocked.amenities && location.instagram_url && (
                 <a
                   href={location.instagram_url}
                   target="_blank"
@@ -1537,7 +1798,7 @@ export function LocationDetailPage() {
                 </a>
               )}
 
-              {location.phone && (
+              {unlocked.amenities && location.phone && (
                 <a
                   href={`tel:${location.phone.replace(/\s+/g, '')}`}
                   className="w-full min-h-[42px] px-4 py-2 rounded-lg bg-[#faf7f2] border border-[#d6cbba] hover:bg-[#f3ede3] text-[#1c1613] text-sm font-semibold inline-flex items-center justify-between transition-colors"
@@ -1563,20 +1824,21 @@ export function LocationDetailPage() {
               </a>
             </div>
 
-            {(!location.website_url || !location.menu_url || !location.instagram_url) && (
-              <p className="pt-2 border-t border-[#e6ddd0] text-xs text-[#5c4e45]">
-                Missing an official link?{' '}
-                <Link
-                  to={`/submit?cafe=${encodeURIComponent(location.name)}`}
-                  className="font-semibold text-[#b45309] hover:underline"
-                >
-                  Suggest an update &rarr;
-                </Link>
-              </p>
-            )}
+            {unlocked.amenities &&
+              (!location.website_url || !location.menu_url || !location.instagram_url) && (
+                <p className="pt-2 border-t border-[#e6ddd0] text-xs text-[#5c4e45]">
+                  Missing an official link?{' '}
+                  <Link
+                    to={`/submit?cafe=${encodeURIComponent(location.name)}`}
+                    className="font-semibold text-[#b45309] hover:underline"
+                  >
+                    Suggest an update &rarr;
+                  </Link>
+                </p>
+              )}
           </div>
 
-          {/* Optional Seat / Workspace Reservation Card (controlled by Admin Settings) */}
+          {/* Optional Seat / Workspace Reservation Card (Gated by Subscription Booking Access) */}
           {settings.bookings_enabled && (
             <div
               id="reserve-workspace-card"
@@ -1598,7 +1860,15 @@ export function LocationDetailPage() {
                 </div>
               </div>
 
-              {bookingSuccessRef ? (
+              {!unlocked.booking ? (
+                <PremiumLockCard
+                  compact
+                  title="Booking Available for Subscribers"
+                  description="Activate an active subscription to reserve laptop desks, quiet study seats, or meeting booths."
+                  lockReason={lockReason}
+                  allowedPlanIds={allowedPlanIds}
+                />
+              ) : bookingSuccessRef ? (
                 <div className="p-4 rounded-xl bg-[#ecfdf5] border border-[#a7f3d0] space-y-2 text-xs text-[#1b4d3e]">
                   <p className="font-bold flex items-center gap-1.5">
                     <CheckCircle2 className="w-4 h-4 shrink-0" />
@@ -1640,7 +1910,7 @@ export function LocationDetailPage() {
                     try {
                       const res = await fetch('/api/bookings', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
                         credentials: 'include',
                         body: JSON.stringify({
                           cafe_id: location.id,
@@ -1659,9 +1929,17 @@ export function LocationDetailPage() {
                         ok?: boolean;
                         booking?: { booking_ref?: string };
                         error?: string;
+                        code?: string;
                       };
                       if (!res.ok) {
                         setBookingError(data.error || 'Could not submit reservation.');
+                        if (
+                          res.status === 403 &&
+                          (data.code === 'SUBSCRIPTION_REQUIRED' ||
+                            data.code === 'SUBSCRIPTION_EXPIRED')
+                        ) {
+                          openCheckout(renewPlanId);
+                        }
                         return;
                       }
                       setBookingSuccessRef(data.booking?.booking_ref || 'CONFIRMED');

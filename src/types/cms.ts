@@ -29,6 +29,36 @@ export interface MenuItemRecord {
 
 export type AmenityState = 'yes' | 'no' | 'unknown';
 
+export type AccessSectionKey =
+  | 'wifi_details'
+  | 'power_sockets'
+  | 'workspace_details'
+  | 'food_menu'
+  | 'menu_pricing'
+  | 'amenities'
+  | 'subscriber_benefits'
+  | 'booking';
+
+export type SectionAccessRequirement = 'public' | 'subscription';
+export type CafeAccessRule = 'inherit' | 'free_public' | 'subscription_required' | 'specific_plans';
+export type SectionOverrideMode = 'inherit' | 'public' | 'subscription';
+
+export interface AccessControlSettings {
+  default_rule: 'subscription_required' | 'free_public';
+  sections: Record<AccessSectionKey, SectionAccessRequirement>;
+  free_cafe_preview_note: string;
+}
+
+export interface CafeAccessInfo {
+  hasAccess: boolean;
+  viewerState: 'guest' | 'free' | 'expired' | 'suspended' | 'subscribed' | 'admin';
+  cafeRule: CafeAccessRule;
+  allowedPlanIds: string[];
+  unlockedSections: Record<AccessSectionKey, boolean>;
+  lockedSections: AccessSectionKey[];
+  lockReason: 'none' | 'guest' | 'no_subscription' | 'plan_restricted' | 'expired' | 'suspended';
+}
+
 export interface LocationItem {
   id: string;
   slug: string;
@@ -54,6 +84,7 @@ export interface LocationItem {
   photos_approved: boolean;
   wifi_available: AmenityState;
   wifi_mbps: number | null;
+  wifi_password?: string;
   charging_sockets: AmenityState;
   sockets_count: number | null;
   sockets_claimed: boolean;
@@ -79,6 +110,7 @@ export interface LocationItem {
   modes: CafeMode[];
   facilities: string[];
   offers: string[];
+  subscriber_benefits?: string[];
   menu_services: MenuServiceItem[];
   menu_items?: MenuItemRecord[];
   best_for: string[];
@@ -94,6 +126,10 @@ export interface LocationItem {
   source_name: string;
   source_url: string;
   sample: boolean;
+  access_rule?: CafeAccessRule;
+  allowed_plan_ids?: string[];
+  locked_sections_override?: Partial<Record<AccessSectionKey, SectionOverrideMode>>;
+  access?: CafeAccessInfo;
   created_at?: number;
   updated_at?: number;
 }
@@ -231,6 +267,7 @@ export interface SiteSettings {
   notify_new_payment: boolean;
   notify_new_suggestion: boolean;
   notification_email: string;
+  access_control?: AccessControlSettings;
 }
 
 export interface NavigationItem {

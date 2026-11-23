@@ -22,7 +22,7 @@ import { UpgradeModal } from './UpgradeModal';
 
 export function PublicLayout() {
   const { settings, navigation } = useCms();
-  const { authenticated, user, tier } = useAuth();
+  const { authenticated, user, tier, isSubscribed, isExpired, isSuspended } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const headerLinks = navigation.filter((n) => n.location === 'header' && n.visible);
@@ -134,9 +134,9 @@ export function PublicLayout() {
                     referrerPolicy="no-referrer"
                     className="w-5 h-5 rounded-full object-cover border border-[#e6ddd0] shrink-0"
                   />
-                ) : tier === 'premium' ? (
+                ) : isSubscribed && tier === 'premium' ? (
                   <Crown className="w-3.5 h-3.5 text-[#b45309]" aria-hidden="true" />
-                ) : tier === 'plus' ? (
+                ) : isSubscribed ? (
                   <Sparkles className="w-3.5 h-3.5 text-[#1b4d3e]" aria-hidden="true" />
                 ) : (
                   <User className="w-3.5 h-3.5 text-[#5c4e45]" aria-hidden="true" />
@@ -144,7 +144,15 @@ export function PublicLayout() {
                 <span className="max-w-[90px] sm:max-w-[110px] truncate">
                   {user.name.split(' ')[0]}
                 </span>
-                {tier === 'premium' || tier === 'plus' ? (
+                {isExpired ? (
+                  <span className="hidden sm:inline text-[11px] font-bold text-[#991b1b] whitespace-nowrap">
+                    Expired
+                  </span>
+                ) : isSuspended ? (
+                  <span className="hidden sm:inline text-[11px] font-bold text-[#b45309] whitespace-nowrap">
+                    Suspended
+                  </span>
+                ) : isSubscribed ? (
                   <span className="hidden sm:inline text-[11px] font-bold text-[#b45309] whitespace-nowrap">
                     Plus
                   </span>
@@ -205,7 +213,15 @@ export function PublicLayout() {
               <User className="w-4 h-4 text-[#b45309]" />
               <span>
                 {authenticated && user
-                  ? `${user.name} (${tier === 'free' ? 'FREE' : 'PLUS'})`
+                  ? `${user.name} (${
+                      isExpired
+                        ? 'EXPIRED'
+                        : isSuspended
+                        ? 'SUSPENDED'
+                        : isSubscribed
+                        ? 'PLUS'
+                        : 'FREE'
+                    })`
                   : 'Sign In / Join Free'}
               </span>
             </Link>

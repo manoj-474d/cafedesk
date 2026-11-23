@@ -5,6 +5,7 @@ import {
   getDb,
   getUserEffectiveSubscription,
   listPlansFromDb,
+  normalizePlanPermissions,
   recordActivity,
 } from './db.ts';
 import {
@@ -1196,7 +1197,10 @@ export function registerSubscriptionRoutes(app: Express): void {
     const now = Date.now();
     const currentSub = getUserEffectiveSubscription(req.user!.id);
     const baseTime =
-      currentSub.plan_id === planId && currentSub.expires_at && currentSub.expires_at > now
+      currentSub.effective_active &&
+      currentSub.plan_id === planId &&
+      currentSub.expires_at &&
+      currentSub.expires_at > now
         ? currentSub.expires_at
         : now;
     const nextExpiresAt = baseTime + durationDays * 24 * 60 * 60 * 1000;
@@ -1210,8 +1214,8 @@ export function registerSubscriptionRoutes(app: Express): void {
       ).run(method, providerPaymentId, paymentId);
 
       db.prepare(
-        `INSERT INTO user_subscriptions (user_id, plan_id, subscribed_price_inr, status, started_at, expires_at, auto_renew, cancelled_at, updated_at)
-         VALUES (?, ?, ?, 'active', ?, ?, 1, NULL, ?)
+        `INSERT INTO user_subscriptions (user_id, plan_id, subscribed_price_inr, status, started_at, expires_at, auto_renew, cancelled_at, expired_at, expired_from_plan, suspended_at, updated_at)
+         VALUES (?, ?, ?, 'active', ?, ?, 1, NULL, NULL, '', NULL, ?)
          ON CONFLICT(user_id) DO UPDATE SET
            plan_id = excluded.plan_id,
            subscribed_price_inr = excluded.subscribed_price_inr,
@@ -1220,6 +1224,9 @@ export function registerSubscriptionRoutes(app: Express): void {
            expires_at = excluded.expires_at,
            auto_renew = 1,
            cancelled_at = NULL,
+           expired_at = NULL,
+           expired_from_plan = '',
+           suspended_at = NULL,
            updated_at = excluded.updated_at`
       ).run(req.user!.id, planId, Number(paymentRow.amount_inr), now, nextExpiresAt, now);
 
@@ -1305,6 +1312,17 @@ export function registerSubscriptionRoutes(app: Express): void {
     const sub = getUserEffectiveSubscription(req.user!.id);
     if (sub.plan_id === 'free') {
       res.status(400).json({ error: 'Choose Plus or Premium from Pricing to subscribe.' });
+      return;
+    }
+    if (sub.status === 'suspended') {
+      res.status(403).json({ error: 'Your subscription is suspended. Contact support to restore it.' });
+      return;
+    }
+    if (sub.expired || sub.status === 'expired') {
+      res.status(400).json({
+        error: 'Your subscription period has ended. Complete a quick checkout to renew your plan.',
+        requiresCheckout: true,
+      });
       return;
     }
 
@@ -1411,9 +1429,11 @@ export function registerSubscriptionRoutes(app: Express): void {
 
   app.post('/api/user/collections', requireUserAuth, (req: Request, res: Response) => {
     const sub = getUserEffectiveSubscription(req.user!.id);
-    if (sub.plan_id === 'free') {
+    if (!sub.effective_active || !sub.permissions?.collections) {
       res.status(403).json({
-        error: 'Personal cafe collections require Cafe Desk Plus (₹79/month or ₹499/year).',
+        error: sub.expired
+          ? 'Your subscription has expired. Renew your plan to manage collections.'
+          : 'Personal cafe collections require an active Cafe Desk Plus subscription.',
         requiredPlan: 'plus',
       });
       return;
@@ -1445,9 +1465,11 @@ export function registerSubscriptionRoutes(app: Express): void {
 
   app.post('/api/user/collections/:id/items', requireUserAuth, (req: Request, res: Response) => {
     const sub = getUserEffectiveSubscription(req.user!.id);
-    if (sub.plan_id === 'free') {
+    if (!sub.effective_active || !sub.permissions?.collections) {
       res.status(403).json({
-        error: 'Adding cafes to collections requires Cafe Desk Plus (₹79/month or ₹499/year).',
+        error: sub.expired
+          ? 'Your subscription has expired. Renew your plan to update collections.'
+          : 'Adding cafes to collections requires an active Cafe Desk Plus subscription.',
         requiredPlan: 'plus',
       });
       return;
@@ -1596,12 +1618,13 @@ export function registerSubscriptionRoutes(app: Express): void {
     }
 
     const activePaidUsersList = users.filter(
-      (u) => u.subscription.plan_id !== 'free' && u.subscription.status === 'active'
+      (u) => u.subscription.effective_active && u.subscription.status === 'active'
     );
     const cancelledSubs = users.filter(
-      (u) => u.subscription.plan_id !== 'free' && u.subscription.status === 'cancelled'
+      (u) => u.subscription.effective_active && u.subscription.status === 'cancelled'
     ).length;
     const expiredSubs = users.filter((u) => u.subscription.status === 'expired').length;
+    const suspendedSubs = users.filter((u) => u.subscription.status === 'suspended').length;
 
     const mrrInr = Math.round(
       activePaidUsersList.reduce((acc, u) => {
@@ -1635,10 +1658,11 @@ export function registerSubscriptionRoutes(app: Express): void {
       revenueSeries,
       metrics: {
         totalUsers: users.length,
-        activePaidUsers: users.filter((u) => u.subscription.plan_id !== 'free').length,
+        activePaidUsers: users.filter((u) => u.subscription.effective_active).length,
         activeSubs: activePaidUsersList.length,
         cancelledSubs,
         expiredSubs,
+        suspendedSubs,
         countsByPlan,
         totalRevenueInr,
         monthRevenueInr,
@@ -1674,6 +1698,8 @@ export function registerSubscriptionRoutes(app: Express): void {
         ? req.body.features.map((f: unknown) => cleanStr(f, 160)).filter(Boolean)
         : [];
       const active = req.body?.active === undefined ? 1 : req.body.active ? 1 : 0;
+      const permissions = normalizePlanPermissions(req.body?.permissions, rawId !== 'free' && priceInr > 0);
+      const cafeAccessScope = req.body?.cafe_access_scope === 'specific' ? 'specific' : 'all';
 
       if (!rawId || !name || features.length === 0) {
         res.status(400).json({ error: 'Plan name, valid ID, and at least one feature are required.' });
@@ -1697,8 +1723,8 @@ export function registerSubscriptionRoutes(app: Express): void {
 
       db.prepare(
         `INSERT INTO subscription_plans
-         (id, name, tagline, price_inr, interval_days, badge_text, promo_note, usage_limits, is_recommended, features_json, sort_order, active, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (id, name, tagline, price_inr, interval_days, badge_text, promo_note, usage_limits, is_recommended, features_json, permissions_json, cafe_access_scope, sort_order, active, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         rawId,
         name,
@@ -1710,6 +1736,8 @@ export function registerSubscriptionRoutes(app: Express): void {
         usageLimits,
         isRecommended ? 1 : 0,
         JSON.stringify(features),
+        JSON.stringify(permissions),
+        cafeAccessScope,
         Number(maxSortRow.m) + 1,
         active,
         Date.now()
@@ -1773,9 +1801,23 @@ export function registerSubscriptionRoutes(app: Express): void {
       }
 
       const nextPrice = id === 'free' ? 0 : priceInr;
+      const existingPerms = safeJson<Record<string, unknown>>(existing.permissions_json, {});
+      const permissions = normalizePlanPermissions(
+        req.body?.permissions ?? existingPerms,
+        id !== 'free' && nextPrice > 0
+      );
+      const cafeAccessScope =
+        req.body?.cafe_access_scope === 'specific'
+          ? 'specific'
+          : req.body?.cafe_access_scope === 'all'
+          ? 'all'
+          : existing.cafe_access_scope === 'specific'
+          ? 'specific'
+          : 'all';
+
       db.prepare(
         `UPDATE subscription_plans
-         SET name = ?, tagline = ?, price_inr = ?, interval_days = ?, badge_text = ?, promo_note = ?, usage_limits = ?, is_recommended = ?, features_json = ?, active = ?, updated_at = ?
+         SET name = ?, tagline = ?, price_inr = ?, interval_days = ?, badge_text = ?, promo_note = ?, usage_limits = ?, is_recommended = ?, features_json = ?, permissions_json = ?, cafe_access_scope = ?, active = ?, updated_at = ?
          WHERE id = ?`
       ).run(
         name,
@@ -1787,6 +1829,8 @@ export function registerSubscriptionRoutes(app: Express): void {
         usageLimits,
         isRecommended ? 1 : 0,
         JSON.stringify(features),
+        JSON.stringify(permissions),
+        cafeAccessScope,
         active,
         Date.now(),
         id
@@ -2078,8 +2122,8 @@ export function registerSubscriptionRoutes(app: Express): void {
       const expiresAt = planId === 'free' ? null : now + durationDays * 24 * 60 * 60 * 1000;
 
       db.prepare(
-        `INSERT INTO user_subscriptions (user_id, plan_id, subscribed_price_inr, status, started_at, expires_at, auto_renew, cancelled_at, updated_at)
-         VALUES (?, ?, ?, 'active', ?, ?, ?, NULL, ?)
+        `INSERT INTO user_subscriptions (user_id, plan_id, subscribed_price_inr, status, started_at, expires_at, auto_renew, cancelled_at, expired_at, expired_from_plan, suspended_at, updated_at)
+         VALUES (?, ?, ?, 'active', ?, ?, ?, NULL, NULL, '', NULL, ?)
          ON CONFLICT(user_id) DO UPDATE SET
            plan_id = excluded.plan_id,
            subscribed_price_inr = excluded.subscribed_price_inr,
@@ -2088,6 +2132,9 @@ export function registerSubscriptionRoutes(app: Express): void {
            expires_at = excluded.expires_at,
            auto_renew = excluded.auto_renew,
            cancelled_at = NULL,
+           expired_at = NULL,
+           expired_from_plan = '',
+           suspended_at = NULL,
            updated_at = excluded.updated_at`
       ).run(userId, planId, targetPlan.price_inr, now, expiresAt, planId === 'free' ? 0 : 1, now);
 
@@ -2109,7 +2156,134 @@ export function registerSubscriptionRoutes(app: Express): void {
         prevSub.plan_id,
         planId
       );
-      res.json({ ok: true });
+      res.json({ ok: true, subscription: getUserEffectiveSubscription(userId) });
+    }
+  );
+
+  app.post(
+    '/api/admin/subscriptions/users/:userId/subscription-status',
+    requireAdminAuth,
+    requireFullAdmin,
+    (req: Request, res: Response) => {
+      const userId = Number(req.params.userId);
+      const action = cleanStr(req.body?.action, 24) as 'activate' | 'suspend' | 'revoke' | 'extend';
+      const requestedPlanId = cleanStr(req.body?.planId, 40) as PlanTier;
+      const durationDaysRaw = Number(req.body?.durationDays ?? 30);
+      const durationDays = Math.max(1, Math.min(3650, Math.round(Number.isFinite(durationDaysRaw) ? durationDaysRaw : 30)));
+      const customNote = cleanStr(req.body?.note, 220);
+
+      if (!Number.isFinite(userId) || !['activate', 'suspend', 'revoke', 'extend'].includes(action)) {
+        res.status(400).json({ error: 'Invalid user ID or subscription action.' });
+        return;
+      }
+
+      const db = getDb();
+      const userRow = db.prepare('SELECT email FROM users WHERE id = ?').get(userId) as
+        | { email: string }
+        | undefined;
+      if (!userRow) {
+        res.status(404).json({ error: 'User not found.' });
+        return;
+      }
+
+      const currentSub = getUserEffectiveSubscription(userId);
+      const plans = listPlansFromDb(true);
+      const now = Date.now();
+
+      if (action === 'suspend') {
+        db.prepare(
+          `UPDATE user_subscriptions
+           SET status = 'suspended', suspended_at = ?, auto_renew = 0, updated_at = ?
+           WHERE user_id = ?`
+        ).run(now, now, userId);
+        db.prepare(
+          `INSERT INTO subscription_history (user_id, action, from_plan, to_plan, note, created_at)
+           VALUES (?, 'suspended', ?, ?, ?, ?)`
+        ).run(
+          userId,
+          currentSub.plan_id,
+          currentSub.plan_id,
+          customNote || `Subscription suspended by admin ${req.admin!.username}`,
+          now
+        );
+        recordActivity(req.admin!.username, 'Suspended user subscription', userRow.email, currentSub.status, 'suspended');
+      } else if (action === 'revoke') {
+        const fromPlan = currentSub.plan_id !== 'free' ? currentSub.plan_id : currentSub.expired_from_plan || 'free';
+        db.prepare(
+          `UPDATE user_subscriptions
+           SET status = 'expired', expires_at = ?, expired_at = ?, expired_from_plan = ?, auto_renew = 0, updated_at = ?
+           WHERE user_id = ?`
+        ).run(now - 1000, now, fromPlan, now, userId);
+        db.prepare(
+          `INSERT INTO subscription_history (user_id, action, from_plan, to_plan, note, created_at)
+           VALUES (?, 'revoked', ?, ?, ?, ?)`
+        ).run(
+          userId,
+          fromPlan,
+          fromPlan,
+          customNote || `Subscription revoked/expired immediately by admin ${req.admin!.username}`,
+          now
+        );
+        recordActivity(req.admin!.username, 'Revoked user subscription', userRow.email, currentSub.status, 'expired');
+      } else if (action === 'activate' || action === 'extend') {
+        const fallbackPaidPlan = plans.find((p) => p.id !== 'free' && p.active) || plans.find((p) => p.id !== 'free');
+        const targetPlanId =
+          requestedPlanId && requestedPlanId !== 'free'
+            ? requestedPlanId
+            : currentSub.plan_id !== 'free'
+            ? currentSub.plan_id
+            : currentSub.expired_from_plan || fallbackPaidPlan?.id || 'plus';
+        const targetPlan = plans.find((p) => p.id === targetPlanId) || fallbackPaidPlan;
+        if (!targetPlan) {
+          res.status(400).json({ error: 'No paid subscription plan is configured.' });
+          return;
+        }
+        const addMs = durationDays * 24 * 60 * 60 * 1000;
+        const baseTime =
+          action === 'extend' && currentSub.expires_at && currentSub.expires_at > now
+            ? currentSub.expires_at
+            : now;
+        const nextExpiresAt = baseTime + addMs;
+
+        db.prepare(
+          `INSERT INTO user_subscriptions (user_id, plan_id, subscribed_price_inr, status, started_at, expires_at, auto_renew, cancelled_at, expired_at, expired_from_plan, suspended_at, updated_at)
+           VALUES (?, ?, ?, 'active', ?, ?, 1, NULL, NULL, '', NULL, ?)
+           ON CONFLICT(user_id) DO UPDATE SET
+             plan_id = excluded.plan_id,
+             subscribed_price_inr = excluded.subscribed_price_inr,
+             status = 'active',
+             started_at = CASE WHEN user_subscriptions.status = 'active' AND user_subscriptions.plan_id = excluded.plan_id THEN user_subscriptions.started_at ELSE excluded.started_at END,
+             expires_at = excluded.expires_at,
+             auto_renew = 1,
+             cancelled_at = NULL,
+             expired_at = NULL,
+             expired_from_plan = '',
+             suspended_at = NULL,
+             updated_at = excluded.updated_at`
+        ).run(userId, targetPlan.id, targetPlan.price_inr, now, nextExpiresAt, now);
+
+        db.prepare(
+          `INSERT INTO subscription_history (user_id, action, from_plan, to_plan, note, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`
+        ).run(
+          userId,
+          action === 'extend' ? 'admin_extended' : 'admin_activated',
+          currentSub.plan_id,
+          targetPlan.id,
+          customNote ||
+            `${action === 'extend' ? 'Extended' : 'Activated'} ${targetPlan.name} (+${durationDays} days) by admin ${req.admin!.username}`,
+          now
+        );
+        recordActivity(
+          req.admin!.username,
+          action === 'extend' ? 'Extended user subscription' : 'Activated user subscription',
+          userRow.email,
+          `${currentSub.plan_id}:${currentSub.status}`,
+          `${targetPlan.id}:active (+${durationDays}d)`
+        );
+      }
+
+      res.json({ ok: true, subscription: getUserEffectiveSubscription(userId) });
     }
   );
 

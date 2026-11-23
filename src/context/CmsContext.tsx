@@ -1,6 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import type {
-  AmenityState,
   LocationItem,
   MediaAsset,
   NavigationItem,
@@ -10,6 +9,7 @@ import type {
 } from '../types/cms';
 import { CAFES } from '../data/cafes';
 import { SITE_CONFIG } from '../config/constants';
+import { getUserSessionHeaders } from './AuthContext';
 
 const FALLBACK_SETTINGS: SiteSettings = {
   brand_name: 'Cafe Desk',
@@ -124,18 +124,7 @@ const FALLBACK_NAV: NavigationItem[] = [
   { id: 4, location: 'header', label: 'Contact', url: '/contact', sort_order: 4, visible: true, is_external: false },
 ];
 
-function derivePriceRange(avgCost: number | null): string {
-  if (avgCost === null) return '';
-  if (avgCost <= 100) return '₹50–₹100';
-  if (avgCost <= 200) return '₹100–₹200';
-  if (avgCost <= 300) return '₹200–₹300';
-  if (avgCost <= 500) return '₹300–₹500';
-  return '₹500+';
-}
-
 const FALLBACK_LOCATIONS: LocationItem[] = CAFES.map((c, idx) => {
-  const chargingSockets: AmenityState =
-    (c.sockets_count !== null && c.sockets_count > 0) || c.sockets_claimed ? 'yes' : 'unknown';
   const coverPhoto = c.photos.length > 0 ? [c.photos[0]] : [];
   const shortVerdict = c.claims[0] ?? 'Bengaluru cafe listed from official website & public sources.';
 
@@ -152,34 +141,39 @@ const FALLBACK_LOCATIONS: LocationItem[] = CAFES.map((c, idx) => {
     place_id: '',
     lat: null,
     lng: null,
-    timings: '',
+    timings: c.timings || '',
     verdict: shortVerdict,
     description: shortVerdict,
     photos: coverPhoto,
     photos_approved: coverPhoto.length > 0,
-    wifi_available: c.wifi_available,
-    charging_sockets: chargingSockets,
-    comfortable_seating: c.laptop_friendly || c.modes.includes('plan') ? 'yes' : 'unknown',
-    suitable_for_studying:
-      c.modes.includes('calm') || c.best_for.some((b) => /study|read|deep/i.test(b))
-        ? 'yes'
-        : 'unknown',
-    suitable_for_working: c.modes.includes('work') || c.laptop_friendly ? 'yes' : 'unknown',
-    price_range: derivePriceRange(c.avg_cost_per_person),
-    coffee_price: c.coffee_price ?? null,
-    tea_price: c.tea_price ?? null,
+    wifi_available: 'unknown',
+    wifi_mbps: null,
+    wifi_password: '',
+    charging_sockets: 'unknown',
+    sockets_count: null,
+    sockets_claimed: false,
+    comfortable_seating: 'unknown',
+    suitable_for_studying: 'unknown',
+    suitable_for_working: 'unknown',
+    noise_level: null,
+    avg_cost_per_person: null,
+    price_range: '',
+    coffee_price: null,
+    tea_price: null,
     snacks_price: null,
     meals_price: null,
     popular_items: [],
     rating: null,
     rating_count: null,
     min_spend: null,
+    laptop_friendly: false,
     time_limit: null,
     facilities: [],
     offers: [],
+    subscriber_benefits: [],
     menu_services: [],
     menu_items: [],
-    best_for: c.best_for.slice(0, 3),
+    best_for: [],
     avoid_if: null,
     student_discount: null,
     claims: [],
@@ -188,6 +182,33 @@ const FALLBACK_LOCATIONS: LocationItem[] = CAFES.map((c, idx) => {
     published: true,
     display_order: idx + 1,
     sample: false,
+    access: {
+      hasAccess: false,
+      viewerState: 'guest',
+      cafeRule: 'inherit',
+      allowedPlanIds: [],
+      unlockedSections: {
+        wifi_details: false,
+        power_sockets: false,
+        workspace_details: false,
+        food_menu: false,
+        menu_pricing: false,
+        amenities: false,
+        subscriber_benefits: false,
+        booking: false,
+      },
+      lockedSections: [
+        'wifi_details',
+        'power_sockets',
+        'workspace_details',
+        'food_menu',
+        'menu_pricing',
+        'amenities',
+        'subscriber_benefits',
+        'booking',
+      ],
+      lockReason: 'guest',
+    },
   };
 });
 
@@ -221,7 +242,10 @@ export function CmsProvider({ children }: { children: React.ReactNode }) {
 
   const refreshCms = useCallback(async () => {
     try {
-      const res = await fetch('/api/public/bootstrap', { credentials: 'include' });
+      const res = await fetch('/api/public/bootstrap', {
+        credentials: 'include',
+        headers: getUserSessionHeaders(),
+      });
       const ct = res.headers.get('content-type') || '';
       if (!res.ok || !ct.includes('application/json')) return;
       const data = (await res.json()) as PublicBootstrapResponse;

@@ -164,15 +164,13 @@ export function useDocumentMeta(
 }
 
 /**
- * Returns the direct cafe detail route for signed-in members,
- * or redirects unauthenticated visitors to /login?next=<encoded_cafe_path>.
+ * Returns the direct cafe detail route so Guests, Free Explorers, and Subscribed
+ * members can all view public cafe overviews and lock/unlock status cleanly.
  */
-export function getCafeDetailRoute(slugOrKey: string, authenticated: boolean): string {
-  const safePath = slugOrKey.startsWith('/locations/')
+export function getCafeDetailRoute(slugOrKey: string, _authenticated?: boolean): string {
+  return slugOrKey.startsWith('/locations/')
     ? slugOrKey
     : `/locations/${slugOrKey}`;
-  if (authenticated) return safePath;
-  return `/login?next=${encodeURIComponent(safePath)}`;
 }
 
 /**

@@ -5,6 +5,7 @@ import {
   Download,
   Image as ImageIcon,
   KeyRound,
+  Lock,
   Save,
   Shield,
   ShieldCheck,
@@ -12,8 +13,40 @@ import {
   Upload,
   UserPlus,
 } from 'lucide-react';
-import type { MediaAsset, SiteSettings } from '../../types/cms';
+import type {
+  AccessControlSettings,
+  AccessSectionKey,
+  MediaAsset,
+  SiteSettings,
+} from '../../types/cms';
 import { MediaPickerModal } from './MediaPickerModal';
+
+const DEFAULT_ACCESS_CONTROL: AccessControlSettings = {
+  default_rule: 'subscription_required',
+  sections: {
+    wifi_details: 'subscription',
+    power_sockets: 'subscription',
+    workspace_details: 'subscription',
+    food_menu: 'subscription',
+    menu_pricing: 'subscription',
+    amenities: 'subscription',
+    subscriber_benefits: 'subscription',
+    booking: 'subscription',
+  },
+  free_cafe_preview_note:
+    'Public listing shows cafe name, photo, location, rating, and overview. Active subscription required for Wi-Fi, sockets, menus, pricing, and workspace bookings.',
+};
+
+const ACCESS_SECTION_LABELS: Array<{ key: AccessSectionKey; label: string }> = [
+  { key: 'wifi_details', label: 'Wi-Fi Speeds & Passwords' },
+  { key: 'power_sockets', label: 'Power Socket Counts & Locations' },
+  { key: 'workspace_details', label: 'Workspace Specs, Noise & Seating' },
+  { key: 'food_menu', label: 'Food & Beverage Menu Items' },
+  { key: 'menu_pricing', label: 'Food & Coffee Prices / Avg Budget' },
+  { key: 'amenities', label: 'Amenities, Best-For & Perks' },
+  { key: 'subscriber_benefits', label: 'Subscriber Discounts & Benefits' },
+  { key: 'booking', label: 'Workspace & Seat Booking' },
+];
 
 export interface AdminUserRecord {
   id: number;
@@ -59,7 +92,19 @@ export function AdminSettingsTab({
   on2FAChanged,
   onFullRefresh,
 }: AdminSettingsTabProps) {
-  const [form, setForm] = useState<SiteSettings>(settings);
+  const [form, setForm] = useState<SiteSettings>(() => ({
+    ...settings,
+    access_control: {
+      default_rule: settings.access_control?.default_rule ?? DEFAULT_ACCESS_CONTROL.default_rule,
+      sections: {
+        ...DEFAULT_ACCESS_CONTROL.sections,
+        ...(settings.access_control?.sections ?? {}),
+      },
+      free_cafe_preview_note:
+        settings.access_control?.free_cafe_preview_note ??
+        DEFAULT_ACCESS_CONTROL.free_cafe_preview_note,
+    },
+  }));
   const [savingSettings, setSavingSettings] = useState(false);
   const [settingsMsg, setSettingsMsg] = useState('');
   const [pickerTarget, setPickerTarget] = useState<'logo_url' | 'favicon_url' | null>(null);
@@ -750,6 +795,99 @@ export function AdminSettingsTab({
                 />
                 <span>Notify on new cafe suggestions &amp; enquiries</span>
               </label>
+            </div>
+          </div>
+
+          {/* Subscription & Access Control Rules */}
+          <div className="md:col-span-2 pt-4 border-t border-[#f1f5f9] space-y-4">
+            <div className="flex items-center gap-2">
+              <Lock className="w-4 h-4 text-[#b45309]" aria-hidden="true" />
+              <div>
+                <h4 className="font-semibold text-[#0f172a]">
+                  Subscription &amp; Protected Content Access Rules
+                </h4>
+                <p className="text-[11px] text-[#64748b]">
+                  Control what Guests &amp; Free logged-in users can view vs what requires an active paid subscription.
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label className="block font-semibold text-[#475569] mb-1">
+                  Global Default Cafe Access Policy
+                </label>
+                <select
+                  value={form.access_control?.default_rule ?? 'subscription_required'}
+                  onChange={(e) => {
+                    const rule = e.target.value as AccessControlSettings['default_rule'];
+                    const cur = form.access_control ?? DEFAULT_ACCESS_CONTROL;
+                    setForm({
+                      ...form,
+                      access_control: { ...cur, default_rule: rule },
+                    });
+                  }}
+                  className="w-full h-10 px-3 rounded-lg border border-[#cbd5e1] bg-[#f8fafc] font-semibold"
+                >
+                  <option value="subscription_required">
+                    Subscription Required (Guests &amp; Free see public preview only)
+                  </option>
+                  <option value="free_public">
+                    Public by Default (Only explicitly restricted cafes/sections locked)
+                  </option>
+                </select>
+              </div>
+              <div>
+                <label className="block font-semibold text-[#475569] mb-1">
+                  Locked Preview Notice Text
+                </label>
+                <input
+                  type="text"
+                  value={form.access_control?.free_cafe_preview_note ?? ''}
+                  onChange={(e) => {
+                    const cur = form.access_control ?? DEFAULT_ACCESS_CONTROL;
+                    setForm({
+                      ...form,
+                      access_control: { ...cur, free_cafe_preview_note: e.target.value },
+                    });
+                  }}
+                  className="w-full h-10 px-3 rounded-lg border border-[#cbd5e1] bg-[#f8fafc]"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {ACCESS_SECTION_LABELS.map(({ key, label }) => {
+                const cur = form.access_control ?? DEFAULT_ACCESS_CONTROL;
+                const val = cur.sections[key] ?? 'subscription';
+                return (
+                  <div key={key} className="p-3 rounded-lg border border-[#e2e8f0] bg-[#f8fafc] space-y-1.5">
+                    <label className="block font-semibold text-[#0f172a] text-[11px]">
+                      {label}
+                    </label>
+                    <select
+                      value={val}
+                      onChange={(e) => {
+                        const nextReq = e.target.value as 'public' | 'subscription';
+                        setForm({
+                          ...form,
+                          access_control: {
+                            ...cur,
+                            sections: {
+                              ...cur.sections,
+                              [key]: nextReq,
+                            },
+                          },
+                        });
+                      }}
+                      className="w-full h-9 px-2 rounded border border-[#cbd5e1] bg-white text-xs font-semibold"
+                    >
+                      <option value="subscription">Subscription Required</option>
+                      <option value="public">Public (Guests &amp; Free)</option>
+                    </select>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>

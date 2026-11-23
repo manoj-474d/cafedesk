@@ -6,7 +6,8 @@ import { useAuth } from '../context/AuthContext';
 
 export function CompareCafesDrawer() {
   const {
-    hasPlus,
+    isSubscribed,
+    hasPermission,
     compareList,
     compareModalOpen,
     setCompareModalOpen,
@@ -14,7 +15,7 @@ export function CompareCafesDrawer() {
     clearCompare,
   } = useAuth();
 
-  if (!hasPlus || compareList.length === 0) return null;
+  if (!hasPermission('compare') || compareList.length === 0) return null;
 
   return (
     <>
@@ -117,59 +118,89 @@ export function CompareCafesDrawer() {
                 <tbody className="divide-y divide-[#e6ddd0]">
                   <tr>
                     <td className="py-3 pr-4 font-semibold text-[#5c4e45]">Wi-Fi &amp; Speed</td>
-                    {compareList.map((c) => (
-                      <td key={c.id} className="py-3 px-3 font-medium">
-                        {c.wifi_mbps !== null
-                          ? `Yes · ${c.wifi_mbps} Mbps`
-                          : c.wifi_available === 'yes'
-                          ? 'Yes · Not verified'
-                          : 'Not verified'}
-                      </td>
-                    ))}
+                    {compareList.map((c) => {
+                      const ok = c.access?.unlockedSections?.wifi_details ?? isSubscribed;
+                      return (
+                        <td key={c.id} className="py-3 px-3 font-medium">
+                          {!ok
+                            ? 'Subscribers only'
+                            : c.wifi_mbps !== null
+                            ? `Yes · ${c.wifi_mbps} Mbps`
+                            : c.wifi_available === 'yes'
+                            ? 'Yes · Not verified'
+                            : 'Not verified'}
+                        </td>
+                      );
+                    })}
                   </tr>
                   <tr>
                     <td className="py-3 pr-4 font-semibold text-[#5c4e45]">Charging Sockets</td>
-                    {compareList.map((c) => (
-                      <td key={c.id} className="py-3 px-3 font-medium">
-                        {c.sockets_count !== null
-                          ? `${c.sockets_count} sockets`
-                          : c.charging_sockets === 'yes' || c.sockets_claimed
-                          ? 'Available'
-                          : 'Not verified'}
-                      </td>
-                    ))}
+                    {compareList.map((c) => {
+                      const ok = c.access?.unlockedSections?.power_sockets ?? isSubscribed;
+                      return (
+                        <td key={c.id} className="py-3 px-3 font-medium">
+                          {!ok
+                            ? 'Subscribers only'
+                            : c.sockets_count !== null
+                            ? `${c.sockets_count} sockets`
+                            : c.charging_sockets === 'yes' || c.sockets_claimed
+                            ? 'Available'
+                            : 'Not verified'}
+                        </td>
+                      );
+                    })}
                   </tr>
                   <tr>
                     <td className="py-3 pr-4 font-semibold text-[#5c4e45]">Noise &amp; Laptop</td>
-                    {compareList.map((c) => (
-                      <td key={c.id} className="py-3 px-3">
-                        {getNoiseSummary(c.noise_level) ?? 'Not measured'} ·{' '}
-                        {c.laptop_friendly ? 'Laptop-friendly' : 'Casual'}
-                      </td>
-                    ))}
+                    {compareList.map((c) => {
+                      const ok = c.access?.unlockedSections?.workspace_details ?? isSubscribed;
+                      return (
+                        <td key={c.id} className="py-3 px-3">
+                          {!ok
+                            ? 'Subscribers only'
+                            : `${getNoiseSummary(c.noise_level) ?? 'Not measured'} · ${
+                                c.laptop_friendly ? 'Laptop-friendly' : 'Casual'
+                              }`}
+                        </td>
+                      );
+                    })}
                   </tr>
                   <tr>
                     <td className="py-3 pr-4 font-semibold text-[#5c4e45]">Avg Budget / Person</td>
-                    {compareList.map((c) => (
-                      <td key={c.id} className="py-3 px-3 font-mono-data font-bold">
-                        {c.avg_cost_per_person !== null
-                          ? `₹${c.avg_cost_per_person}`
-                          : c.price_range || 'Not verified'}
-                      </td>
-                    ))}
+                    {compareList.map((c) => {
+                      const ok = c.access?.unlockedSections?.menu_pricing ?? isSubscribed;
+                      return (
+                        <td key={c.id} className="py-3 px-3 font-mono-data font-bold">
+                          {!ok
+                            ? 'Subscribers only'
+                            : c.avg_cost_per_person !== null
+                            ? `₹${c.avg_cost_per_person}`
+                            : c.price_range || 'Not verified'}
+                        </td>
+                      );
+                    })}
                   </tr>
                   <tr>
                     <td className="py-3 pr-4 font-semibold text-[#5c4e45]">Coffee / Tea / Snacks</td>
-                    {compareList.map((c) => (
-                      <td key={c.id} className="py-3 px-3 space-y-0.5 text-xs">
-                        {c.coffee_price && <div>Coffee: {c.coffee_price}</div>}
-                        {c.tea_price && <div>Tea: {c.tea_price}</div>}
-                        {c.snacks_price && <div>Snacks: {c.snacks_price}</div>}
-                        {!c.coffee_price && !c.tea_price && !c.snacks_price && (
-                          <span className="text-[#5c4e45]">Not verified</span>
-                        )}
-                      </td>
-                    ))}
+                    {compareList.map((c) => {
+                      const ok = c.access?.unlockedSections?.menu_pricing ?? isSubscribed;
+                      return (
+                        <td key={c.id} className="py-3 px-3 space-y-0.5 text-xs">
+                          {!ok ? (
+                            <span className="text-[#b45309] font-semibold">Subscribers only</span>
+                          ) : (
+                            <>
+                              {c.coffee_price && <div>Coffee: {c.coffee_price}</div>}
+                              {c.tea_price && <div>Tea: {c.tea_price}</div>}
+                              {c.snacks_price && <div>Snacks: {c.snacks_price}</div>}
+                              {!c.coffee_price && !c.tea_price && !c.snacks_price && (
+                                <span className="text-[#5c4e45]">Not verified</span>
+                              )}
+                            </>
+                          )}
+                        </td>
+                      );
+                    })}
                   </tr>
                   <tr>
                     <td className="py-3 pr-4 font-semibold text-[#5c4e45]">Timings &amp; Maps</td>

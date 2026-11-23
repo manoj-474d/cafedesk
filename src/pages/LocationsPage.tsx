@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
+  AlertTriangle,
   ArrowUpRight,
   Bookmark,
   Compass,
@@ -14,6 +15,7 @@ import {
   Map as MapIcon,
   MapPin,
   Navigation,
+  RefreshCw,
   RotateCcw,
   Search,
   SlidersHorizontal,
@@ -66,7 +68,13 @@ export function LocationsPage() {
   const { locations, settings } = useCms();
   const {
     authenticated,
-    hasPlus,
+    subscription,
+    isSubscribed,
+    isExpired,
+    isSuspended,
+    expiredPlanName,
+    hasPermission,
+    openCheckout,
     openUpgradeModal,
     isCafeSaved,
     isCafeFavourite,
@@ -74,6 +82,20 @@ export function LocationsPage() {
     compareList,
     toggleCompareCafe,
   } = useAuth();
+
+  const canViewPricing =
+    settings.access_control?.sections?.menu_pricing === 'public' ||
+    hasPermission('menu_pricing');
+  const canViewWifi =
+    settings.access_control?.sections?.wifi_details === 'public' ||
+    hasPermission('wifi_details');
+  const canViewSockets =
+    settings.access_control?.sections?.power_sockets === 'public' ||
+    hasPermission('power_sockets');
+  const canViewWorkspace =
+    settings.access_control?.sections?.workspace_details === 'public' ||
+    hasPermission('workspace_details');
+  const canCompare = isSubscribed && hasPermission('compare');
   const {
     userLocation,
     geoStatus,
@@ -273,30 +295,35 @@ export function LocationsPage() {
         if (!hayArea.includes(area.toLowerCase())) return false;
       }
       if (mode && !loc.modes.includes(mode as CafeMode)) return false;
-      if (hasPlus && budget && !matchesBudgetBracket(loc.avg_cost_per_person, loc.price_range, budget)) {
+      if (canViewPricing && budget && !matchesBudgetBracket(loc.avg_cost_per_person, loc.price_range, budget)) {
         return false;
       }
       if (maxDistanceKm > 0 && userLocation) {
         if (loc.distanceKm === null || loc.distanceKm > maxDistanceKm) return false;
       }
-      if (hasPlus && wifiOnly) {
+      if (canViewWifi && wifiOnly) {
         const hasWifi = loc.wifi_available === 'yes' || (loc.wifi_mbps !== null && loc.wifi_mbps > 0);
         if (!hasWifi) return false;
       }
-      if (hasPlus && minWifi > 0 && (loc.wifi_mbps === null || loc.wifi_mbps < minWifi)) return false;
+      if (canViewWifi && minWifi > 0 && (loc.wifi_mbps === null || loc.wifi_mbps < minWifi)) return false;
       if (minRating > 0 && (loc.rating === null || loc.rating < minRating)) return false;
 
-      if (laptopFriendlyOnly && !loc.laptop_friendly) return false;
-      if (socketsOnly) {
+      if (canViewWorkspace && laptopFriendlyOnly && !loc.laptop_friendly) return false;
+      if (canViewSockets && socketsOnly) {
         const hasPlugs =
           loc.charging_sockets === 'yes' ||
           loc.sockets_claimed ||
           (loc.sockets_count !== null && loc.sockets_count > 0);
         if (!hasPlugs) return false;
       }
-      if (quietOnly && (loc.noise_level === null || loc.noise_level > 2)) return false;
-      if (atmosphere === 'quiet' && (loc.noise_level === null || loc.noise_level > 2)) return false;
-      if (atmosphere === 'lively' && (loc.noise_level === null || loc.noise_level < 3) && !loc.modes.includes('plan')) {
+      if (canViewWorkspace && quietOnly && (loc.noise_level === null || loc.noise_level > 2)) return false;
+      if (canViewWorkspace && atmosphere === 'quiet' && (loc.noise_level === null || loc.noise_level > 2)) return false;
+      if (
+        canViewWorkspace &&
+        atmosphere === 'lively' &&
+        (loc.noise_level === null || loc.noise_level < 3) &&
+        !loc.modes.includes('plan')
+      ) {
         return false;
       }
       if (outdoorOnly && !isOutdoorFriendly(loc)) return false;
@@ -305,11 +332,11 @@ export function LocationsPage() {
       if (collectionFilter === 'trending' && !isTrendingCafe(loc)) return false;
       if (collectionFilter === 'outdoor' && !isOutdoorFriendly(loc)) return false;
 
-      if (comfortableOnly && loc.comfortable_seating !== 'yes') return false;
-      if (studyOnly && loc.suitable_for_studying !== 'yes' && !loc.modes.includes('calm')) {
+      if (canViewWorkspace && comfortableOnly && loc.comfortable_seating !== 'yes') return false;
+      if (canViewWorkspace && studyOnly && loc.suitable_for_studying !== 'yes' && !loc.modes.includes('calm')) {
         return false;
       }
-      if (hasPlus && workOnly && loc.suitable_for_working !== 'yes' && !loc.modes.includes('work')) {
+      if (canViewWorkspace && workOnly && loc.suitable_for_working !== 'yes' && !loc.modes.includes('work')) {
         return false;
       }
 
@@ -322,7 +349,7 @@ export function LocationsPage() {
       ].join(' ');
 
       if (
-        hasPlus &&
+        canViewWorkspace &&
         meetingOnly &&
         !loc.modes.includes('plan') &&
         !/meeting|meetup|friend|catchup|hangout|conversation|discussion|group/i.test(itemText)
@@ -330,7 +357,7 @@ export function LocationsPage() {
         return false;
       }
       if (
-        hasPlus &&
+        canViewPricing &&
         teaCoffeeOnly &&
         !loc.tea_price &&
         !loc.coffee_price &&
@@ -339,7 +366,7 @@ export function LocationsPage() {
         return false;
       }
       if (
-        hasPlus &&
+        canViewPricing &&
         bakerySnacksOnly &&
         !loc.snacks_price &&
         !/puff|croissant|cake|pastry|pastries|bakery|bun|toast|muffin|fries|maggi|snack|cookie|biscuit|donut|waffle|samosa|vada|pakoda|dilpasand|khara/i.test(
@@ -349,7 +376,7 @@ export function LocationsPage() {
         return false;
       }
       if (
-        hasPlus &&
+        canViewPricing &&
         burgersSandwichesOnly &&
         !/burger|sandwich|toastie|panini|roll|sub|slider/i.test(itemText)
       ) {
@@ -383,14 +410,14 @@ export function LocationsPage() {
         return (a.distanceKm ?? Number.MAX_SAFE_INTEGER) - (b.distanceKm ?? Number.MAX_SAFE_INTEGER);
       }
       if (sortBy === 'rating') return (b.rating ?? -1) - (a.rating ?? -1);
-      if (sortBy === 'wifi' && hasPlus) return (b.wifi_mbps ?? -1) - (a.wifi_mbps ?? -1);
-      if (sortBy === 'cheapest' && hasPlus) {
+      if (sortBy === 'wifi' && canViewWifi) return (b.wifi_mbps ?? -1) - (a.wifi_mbps ?? -1);
+      if (sortBy === 'cheapest' && canViewPricing) {
         return (
           (a.avg_cost_per_person ?? Number.MAX_SAFE_INTEGER) -
           (b.avg_cost_per_person ?? Number.MAX_SAFE_INTEGER)
         );
       }
-      if (sortBy === 'quietest') return (a.noise_level ?? 99) - (b.noise_level ?? 99);
+      if (sortBy === 'quietest' && canViewWorkspace) return (a.noise_level ?? 99) - (b.noise_level ?? 99);
       if (sortBy === 'recent') {
         const da = a.last_verified_date ? Date.parse(a.last_verified_date) || 0 : 0;
         const db = b.last_verified_date ? Date.parse(b.last_verified_date) || 0 : 0;
@@ -403,7 +430,10 @@ export function LocationsPage() {
     });
   }, [
     effectiveLocations,
-    hasPlus,
+    canViewPricing,
+    canViewWifi,
+    canViewSockets,
+    canViewWorkspace,
     area,
     mode,
     budget,
@@ -555,6 +585,51 @@ export function LocationsPage() {
           </button>
         </div>
       </div>
+
+      {/* Expired / Suspended Subscription Banner */}
+      {(isExpired || isSuspended) && (
+        <div
+          role="alert"
+          className={`p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+            isSuspended
+              ? 'bg-[#fef2f2] border-[#fecaca] text-[#991b1b]'
+              : 'bg-amber-50 border-amber-200 text-[#92400e]'
+          }`}
+        >
+          <div className="flex items-start gap-2.5 text-xs">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
+            <div>
+              <p className="font-bold text-sm">
+                {isSuspended
+                  ? 'Your subscription access is suspended'
+                  : 'Your subscription has expired'}
+              </p>
+              <p className="opacity-90 mt-0.5">
+                {isSuspended
+                  ? 'Premium Wi-Fi, socket, menu, and booking details are locked. Contact support or visit Account for status.'
+                  : `${expiredPlanName || 'Your Cafe Desk plan'} has ended. Renew your subscription to unlock Wi-Fi details, sockets, menus, pricing filters, and bookings.`}
+              </p>
+            </div>
+          </div>
+          {isExpired ? (
+            <button
+              type="button"
+              onClick={() => openCheckout(subscription?.expired_from_plan || 'plus')}
+              className="shrink-0 inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#b45309] hover:bg-[#92400e] text-white text-xs font-semibold"
+            >
+              <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Renew Subscription</span>
+            </button>
+          ) : (
+            <Link
+              to="/account"
+              className="shrink-0 inline-flex items-center px-4 py-2 rounded-lg bg-[#991b1b] text-white text-xs font-semibold"
+            >
+              View Account
+            </Link>
+          )}
+        </div>
+      )}
 
       {/* GPS Status Banner */}
       {(userLocation || geoError) && (
@@ -721,23 +796,23 @@ export function LocationsPage() {
               className="flex items-center justify-between text-xs font-semibold text-[#5c4e45] mb-1"
             >
               <span>Budget Per Person</span>
-              {!hasPlus && (
+              {!canViewPricing && (
                 <span className="inline-flex items-center gap-1 text-[10px] font-bold text-[#b45309]">
                   <Lock className="w-3 h-3" aria-hidden="true" />
-                  Plus ₹79
+                  {isExpired ? 'Expired' : 'Subscribers'}
                 </span>
               )}
             </label>
             <select
               id="loc-budget"
-              value={hasPlus ? budget : ''}
+              value={canViewPricing ? budget : ''}
               onChange={(e) => {
-                if (!hasPlus) {
+                if (!canViewPricing) {
                   openUpgradeModal({
                     featureName: 'Budget Per Person Filter',
                     requiredPlan: 'plus',
                     description:
-                      'Filter cafes by average spend per person and compare full food & beverage prices with Cafe Desk Plus (₹79/mo or ₹499/yr).',
+                      'Filter cafes by average spend per person and compare full food & beverage prices with an active Cafe Desk subscription.',
                   });
                   return;
                 }
@@ -750,7 +825,7 @@ export function LocationsPage() {
               <option value="">Any budget</option>
               {BUDGET_BRACKETS.map((b) => (
                 <option key={b.id} value={b.id}>
-                  {hasPlus ? b.label : `🔒 ${b.label}`}
+                  {canViewPricing ? b.label : `🔒 ${b.label}`}
                 </option>
               ))}
             </select>
@@ -762,23 +837,23 @@ export function LocationsPage() {
               className="flex items-center justify-between text-xs font-semibold text-[#5c4e45] mb-1"
             >
               <span>Minimum Wi-Fi Speed</span>
-              {!hasPlus && (
+              {!canViewWifi && (
                 <span className="inline-flex items-center gap-1 text-[10px] font-bold text-[#b45309]">
                   <Lock className="w-3 h-3" aria-hidden="true" />
-                  Plus ₹79
+                  {isExpired ? 'Expired' : 'Subscribers'}
                 </span>
               )}
             </label>
             <select
               id="loc-wifi"
-              value={hasPlus ? minWifi : 0}
+              value={canViewWifi ? minWifi : 0}
               onChange={(e) => {
-                if (!hasPlus) {
+                if (!canViewWifi) {
                   openUpgradeModal({
                     featureName: 'Minimum Wi-Fi Speed Filter',
                     requiredPlan: 'plus',
                     description:
-                      'Filter cafes by measured Wi-Fi speeds (50+, 80+, 100+ Mbps) with Cafe Desk Plus (₹79/mo or ₹499/yr).',
+                      'Filter cafes by measured Wi-Fi speeds (50+, 80+, 100+ Mbps) with an active Cafe Desk subscription.',
                   });
                   return;
                 }
@@ -787,9 +862,9 @@ export function LocationsPage() {
               className="w-full h-11 px-3 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-sm font-medium text-[#1c1613]"
             >
               <option value={0}>Any speed</option>
-              <option value={50}>{hasPlus ? '50+ Mbps (Measured)' : '🔒 50+ Mbps (Plus)'}</option>
-              <option value={80}>{hasPlus ? '80+ Mbps (Measured)' : '🔒 80+ Mbps (Plus)'}</option>
-              <option value={100}>{hasPlus ? '100+ Mbps (Measured)' : '🔒 100+ Mbps (Plus)'}</option>
+              <option value={50}>{canViewWifi ? '50+ Mbps (Measured)' : '🔒 50+ Mbps (Subscribers)'}</option>
+              <option value={80}>{canViewWifi ? '80+ Mbps (Measured)' : '🔒 80+ Mbps (Subscribers)'}</option>
+              <option value={100}>{canViewWifi ? '100+ Mbps (Measured)' : '🔒 100+ Mbps (Subscribers)'}</option>
             </select>
           </div>
 
@@ -814,24 +889,22 @@ export function LocationsPage() {
         <div className="pt-3 border-t border-[#e6ddd0] flex flex-wrap items-center justify-between gap-4">
           <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
             {[
-              { label: 'Laptop-friendly', checked: laptopFriendlyOnly, onChange: setLaptopFriendlyOnly, tierReq: 'free' as const },
-              { label: 'Comfortable seating', checked: comfortableOnly, onChange: setComfortableOnly, tierReq: 'free' as const },
-              { label: 'Suitable for studying', checked: studyOnly, onChange: setStudyOnly, tierReq: 'free' as const },
-              { label: 'Quiet environment', checked: quietOnly, onChange: setQuietOnly, tierReq: 'free' as const },
-              { label: 'Charging sockets', checked: socketsOnly, onChange: setSocketsOnly, tierReq: 'free' as const },
-              { label: 'Outdoor seating', checked: outdoorOnly, onChange: setOutdoorOnly, tierReq: 'free' as const },
-              { label: 'Wi-Fi available', checked: wifiOnly, onChange: setWifiOnly, tierReq: 'plus' as const },
-              { label: 'Suitable for working', checked: workOnly, onChange: setWorkOnly, tierReq: 'plus' as const },
-              { label: 'Meeting-friendly', checked: meetingOnly, onChange: setMeetingOnly, tierReq: 'plus' as const },
-              { label: 'Tea & coffee', checked: teaCoffeeOnly, onChange: setTeaCoffeeOnly, tierReq: 'plus' as const },
-              { label: 'Bakery & snacks', checked: bakerySnacksOnly, onChange: setBakerySnacksOnly, tierReq: 'plus' as const },
-              { label: 'Burgers & sandwiches', checked: burgersSandwichesOnly, onChange: setBurgersSandwichesOnly, tierReq: 'plus' as const },
-              { label: 'Open now', checked: openNowOnly, onChange: setOpenNowOnly, tierReq: 'free' as const },
-              { label: 'Verified in person', checked: verifiedOnly, onChange: setVerifiedOnly, tierReq: 'free' as const },
+              { label: 'Laptop-friendly', checked: laptopFriendlyOnly, onChange: setLaptopFriendlyOnly, allowed: canViewWorkspace },
+              { label: 'Comfortable seating', checked: comfortableOnly, onChange: setComfortableOnly, allowed: canViewWorkspace },
+              { label: 'Suitable for studying', checked: studyOnly, onChange: setStudyOnly, allowed: canViewWorkspace },
+              { label: 'Quiet environment', checked: quietOnly, onChange: setQuietOnly, allowed: canViewWorkspace },
+              { label: 'Charging sockets', checked: socketsOnly, onChange: setSocketsOnly, allowed: canViewSockets },
+              { label: 'Outdoor seating', checked: outdoorOnly, onChange: setOutdoorOnly, allowed: true },
+              { label: 'Wi-Fi available', checked: wifiOnly, onChange: setWifiOnly, allowed: canViewWifi },
+              { label: 'Suitable for working', checked: workOnly, onChange: setWorkOnly, allowed: canViewWorkspace },
+              { label: 'Meeting-friendly', checked: meetingOnly, onChange: setMeetingOnly, allowed: canViewWorkspace },
+              { label: 'Tea & coffee', checked: teaCoffeeOnly, onChange: setTeaCoffeeOnly, allowed: canViewPricing },
+              { label: 'Bakery & snacks', checked: bakerySnacksOnly, onChange: setBakerySnacksOnly, allowed: canViewPricing },
+              { label: 'Burgers & sandwiches', checked: burgersSandwichesOnly, onChange: setBurgersSandwichesOnly, allowed: canViewPricing },
+              { label: 'Open now', checked: openNowOnly, onChange: setOpenNowOnly, allowed: true },
+              { label: 'Verified in person', checked: verifiedOnly, onChange: setVerifiedOnly, allowed: true },
             ].map((item) => {
-              const requiredTier: 'plus' | null =
-                item.tierReq === 'plus' && !hasPlus ? 'plus' : null;
-              const locked = requiredTier !== null;
+              const locked = !item.allowed;
               return (
                 <label
                   key={item.label}
@@ -841,7 +914,7 @@ export function LocationsPage() {
                     type="checkbox"
                     checked={!locked && item.checked}
                     onChange={(e) => {
-                      if (requiredTier) {
+                      if (locked) {
                         openUpgradeModal({
                           featureName: `${item.label} Filter`,
                           requiredPlan: 'plus',
@@ -853,10 +926,10 @@ export function LocationsPage() {
                     className="w-4 h-4 accent-[#b45309] rounded"
                   />
                   <span>{item.label}</span>
-                  {requiredTier && (
+                  {locked && (
                     <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-[#faf7f2] border border-[#e6ddd0] text-[10px] font-bold text-[#b45309]">
                       <Lock className="w-2.5 h-2.5" aria-hidden="true" />
-                      Plus
+                      {isExpired ? 'Renew' : 'Plus'}
                     </span>
                   )}
                 </label>
@@ -867,13 +940,22 @@ export function LocationsPage() {
           <div className="flex flex-wrap items-center gap-2.5 shrink-0">
             <select
               aria-label="Atmosphere vibe"
-              value={atmosphere}
-              onChange={(e) => setAtmosphere(e.target.value as 'any' | 'quiet' | 'lively')}
+              value={canViewWorkspace ? atmosphere : 'any'}
+              onChange={(e) => {
+                if (!canViewWorkspace) {
+                  openUpgradeModal({
+                    featureName: 'Atmosphere & Noise Filters',
+                    requiredPlan: 'plus',
+                  });
+                  return;
+                }
+                setAtmosphere(e.target.value as 'any' | 'quiet' | 'lively');
+              }}
               className="h-10 px-3 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-xs font-semibold text-[#1c1613]"
             >
               <option value="any">Any Vibe</option>
-              <option value="quiet">Quiet Acoustics</option>
-              <option value="lively">Lively Buzz</option>
+              <option value="quiet">{canViewWorkspace ? 'Quiet Acoustics' : '🔒 Quiet Acoustics (Plus)'}</option>
+              <option value="lively">{canViewWorkspace ? 'Lively Buzz' : '🔒 Lively Buzz (Plus)'}</option>
             </select>
 
             <label htmlFor="loc-sort" className="text-xs font-semibold text-[#5c4e45]">
@@ -884,16 +966,23 @@ export function LocationsPage() {
               value={sortBy}
               onChange={(e) => {
                 const nextSort = e.target.value as SortOption;
-                if (nextSort === 'wifi' && !hasPlus) {
+                if (nextSort === 'wifi' && !canViewWifi) {
                   openUpgradeModal({
                     featureName: 'Sort by Fastest Wi-Fi',
                     requiredPlan: 'plus',
                   });
                   return;
                 }
-                if (nextSort === 'cheapest' && !hasPlus) {
+                if (nextSort === 'cheapest' && !canViewPricing) {
                   openUpgradeModal({
                     featureName: 'Sort by Lowest Budget',
+                    requiredPlan: 'plus',
+                  });
+                  return;
+                }
+                if (nextSort === 'quietest' && !canViewWorkspace) {
+                  openUpgradeModal({
+                    featureName: 'Sort by Quietest First',
                     requiredPlan: 'plus',
                   });
                   return;
@@ -907,9 +996,9 @@ export function LocationsPage() {
               </option>
               <option value="featured">Recommended</option>
               <option value="rating">Highest Rated</option>
-              <option value="wifi">{hasPlus ? 'Fastest Wi-Fi' : '🔒 Fastest Wi-Fi (Plus)'}</option>
-              <option value="cheapest">{hasPlus ? 'Lowest Budget' : '🔒 Lowest Budget (Plus)'}</option>
-              <option value="quietest">Quietest First</option>
+              <option value="wifi">{canViewWifi ? 'Fastest Wi-Fi' : '🔒 Fastest Wi-Fi (Plus)'}</option>
+              <option value="cheapest">{canViewPricing ? 'Lowest Budget' : '🔒 Lowest Budget (Plus)'}</option>
+              <option value="quietest">{canViewWorkspace ? 'Quietest First' : '🔒 Quietest First (Plus)'}</option>
               <option value="recent">Recently Verified</option>
             </select>
           </div>
@@ -1154,7 +1243,7 @@ export function LocationsPage() {
                         {gc.priceLevelLabel && (
                           <>
                             <span aria-hidden="true">·</span>
-                            {hasPlus ? (
+                            {canViewPricing ? (
                               <span className="font-semibold text-[#1c1613]">
                                 {gc.priceLevelLabel}
                               </span>
@@ -1170,7 +1259,7 @@ export function LocationsPage() {
                                 className="inline-flex items-center gap-1 font-semibold text-[#b45309] hover:underline"
                               >
                                 <Lock className="w-3 h-3" aria-hidden="true" />
-                                <span>Budget · Plus</span>
+                                <span>{isExpired ? 'Renew to Unlock' : 'Subscribers Only'}</span>
                               </button>
                             )}
                           </>
@@ -1178,9 +1267,9 @@ export function LocationsPage() {
                       </div>
 
                       <div className="pt-2 border-t border-[#f3ede3] flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[#5c4e45]">
-                        <span>Wi-Fi: Not verified</span>
+                        <span>Wi-Fi: {canViewWifi ? 'Not verified' : 'Subscribers only'}</span>
                         <span>·</span>
-                        <span>Sockets: Not verified</span>
+                        <span>Sockets: {canViewSockets ? 'Not verified' : 'Subscribers only'}</span>
                       </div>
                     </div>
                   </div>
@@ -1222,7 +1311,7 @@ export function LocationsPage() {
                             : 'bg-[#faf7f2] text-[#5c4e45] border-[#e6ddd0] hover:border-[#b45309]'
                         }`}
                       >
-                        {!hasPlus ? (
+                        {!canCompare ? (
                           <Lock className="w-3 h-3 text-[#b45309]" aria-hidden="true" />
                         ) : (
                           <GitCompareArrows className="w-3 h-3" aria-hidden="true" />

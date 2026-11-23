@@ -39,8 +39,23 @@ import {
   type AdminRole,
 } from './server/auth.ts';
 import { registerSubscriptionRoutes } from './server/subscriptionRoutes.ts';
+import {
+  ACCESS_SECTION_KEYS,
+  evaluateCafeAccess,
+  normalizeAccessControlSettings,
+  resolveViewerAccessContext,
+  sanitizeCafeForAccess,
+} from './server/accessControl.ts';
 import type { CafeMode } from './src/config/constants.ts';
-import type { AmenityState, DietaryType, LocationItem, SiteSettings } from './src/types/cms.ts';
+import type {
+  AccessSectionKey,
+  AmenityState,
+  CafeAccessRule,
+  DietaryType,
+  LocationItem,
+  SectionOverrideMode,
+  SiteSettings,
+} from './src/types/cms.ts';
 
 const PORT = Number(process.env.PORT ?? 3000);
 const IS_PROD = process.env.NODE_ENV === 'production';
@@ -239,119 +254,48 @@ async function startServer() {
     return Boolean(row && row.expires_at >= Date.now());
   }
 
-  function isAuthenticatedVisitorOrAdmin(req: Request): boolean {
-    if (hasValidAdminSession(req)) return true;
-    const user = resolveUserFromRequest(req);
-    return Boolean(user && user.status === 'active');
-  }
-
-  function toPublicCafePreview(loc: LocationItem): LocationItem {
-    const shortExcerptSource = String(loc.verdict || loc.claims[0] || loc.description || '').trim();
-    const shortExcerpt =
-      shortExcerptSource.length > 150
-        ? `${shortExcerptSource.slice(0, 147).trimEnd()}...`
-        : shortExcerptSource;
-    const coverPhoto =
-      loc.photos_approved && Array.isArray(loc.photos) && loc.photos.length > 0
-        ? [loc.photos[0]]
-        : [];
-
+  function getViewerContextForRequest(req: Request, res?: Response) {
+    const isAdmin = hasValidAdminSession(req);
+    const user = isAdmin ? null : resolveUserFromRequest(req, res);
     return {
-      id: loc.id,
-      slug: loc.slug,
-      name: loc.name,
-      category: loc.category,
-      city: loc.city,
-      area: loc.area,
-      address: `${loc.area}, ${loc.city}`,
-      phone: '',
-      map_link: '',
-      website_url: '',
-      menu_url: '',
-      instagram_url: '',
-      other_social_links: '',
-      place_id: loc.place_id,
-      lat: loc.lat,
-      lng: loc.lng,
-      timings: '',
-      description: shortExcerpt,
-      photos: coverPhoto,
-      interior_photos: [],
-      exterior_photos: [],
-      photos_approved: coverPhoto.length > 0,
-      wifi_available: loc.wifi_available,
-      wifi_mbps: loc.wifi_mbps,
-      charging_sockets: loc.charging_sockets,
-      sockets_count: loc.sockets_count,
-      sockets_claimed: loc.sockets_claimed,
-      comfortable_seating: loc.comfortable_seating,
-      seating_info: '',
-      ambience: '',
-      outdoor_seating: 'unknown',
-      suitable_for_studying: loc.suitable_for_studying,
-      suitable_for_working: loc.suitable_for_working,
-      noise_level: loc.noise_level,
-      avg_cost_per_person: loc.avg_cost_per_person,
-      price_range: loc.price_range,
-      coffee_price: loc.coffee_price,
-      tea_price: loc.tea_price,
-      snacks_price: null,
-      meals_price: null,
-      popular_items: [],
-      rating: loc.rating,
-      rating_count: loc.rating_count,
-      min_spend: null,
-      laptop_friendly: loc.laptop_friendly,
-      time_limit: null,
-      modes: loc.modes,
-      facilities: [],
-      offers: [],
-      menu_services: [],
-      menu_items: [],
-      best_for: loc.best_for.slice(0, 3),
-      verdict: shortExcerpt,
-      avoid_if: null,
-      student_discount: null,
-      verified: loc.verified,
-      featured: loc.featured,
-      published: loc.published,
-      display_order: loc.display_order,
-      last_verified_date: loc.last_verified_date,
-      claims: [],
-      source_name: '',
-      source_url: '',
-      sample: loc.sample,
+      isAdmin,
+      user,
+      viewer: resolveViewerAccessContext({ userId: user?.id ?? null, isAdmin }),
     };
   }
 
   app.get('/api/public/bootstrap', (req, res) => {
     const rawLocations = listLocationsFromDb(false);
-    const canViewDetails = isAuthenticatedVisitorOrAdmin(req);
-    const locations = canViewDetails ? rawLocations : rawLocations.map(toPublicCafePreview);
     const settings = getSiteSettingsFromDb();
+    const { viewer } = getViewerContextForRequest(req, res);
+    const locations = rawLocations.map((loc) => sanitizeCafeForAccess(loc, viewer, settings));
     const navigation = listNavigationFromDb(false);
     const testimonials = listTestimonialsFromDb(false);
     const media = listMediaFromDb();
-    res.json({ locations, settings, navigation, testimonials, media });
+    res.json({
+      locations,
+      settings,
+      navigation,
+      testimonials,
+      media,
+      viewerAccess: {
+        viewerState: viewer.viewerState,
+        hasActiveSubscription: viewer.hasActiveSubscription,
+        planId: viewer.planId,
+        planName: viewer.planName,
+        permissions: viewer.permissions,
+      },
+    });
   });
 
   app.get('/api/cafes/:slug', (req, res) => {
-    const isAdmin = hasValidAdminSession(req);
-    const user = resolveUserFromRequest(req, res);
-    if (!isAdmin && (!user || user.status !== 'active')) {
-      res.status(401).json({
-        error: 'Sign in required to explore full cafe details.',
-        requiresAuth: true,
-      });
-      return;
-    }
-
     const lookup = cleanStr(req.params.slug, 120);
     if (!lookup) {
       res.status(400).json({ error: 'Cafe identifier is required.' });
       return;
     }
 
+    const { isAdmin, viewer } = getViewerContextForRequest(req, res);
     const all = listLocationsFromDb(isAdmin);
     const cafe = all.find((loc) => loc.slug === lookup || loc.id === lookup);
     if (!cafe) {
@@ -359,7 +303,9 @@ async function startServer() {
       return;
     }
 
-    res.json({ cafe });
+    const settings = getSiteSettingsFromDb();
+    const sanitized = sanitizeCafeForAccess(cafe, viewer, settings);
+    res.json({ cafe: sanitized, access: sanitized.access });
   });
 
   app.post('/api/analytics/visit', (req, res) => {
@@ -508,7 +454,7 @@ async function startServer() {
     }
 
     const db = getDb();
-    const resolvedUser = resolveUserFromRequest(req, res);
+    const { isAdmin, user: resolvedUser, viewer } = getViewerContextForRequest(req, res);
 
     const cafeId = cleanStr(req.body?.cafe_id, 100);
     const cafeRow = cafeId
@@ -518,6 +464,49 @@ async function startServer() {
       : undefined;
     const cafeName = cafeRow?.name || cleanStr(req.body?.cafe_name, 140);
     const finalCafeId = cafeRow?.id || cafeId || 'custom';
+
+    // Server-side subscription enforcement for workspace booking
+    if (!isAdmin) {
+      const targetCafe = cafeRow
+        ? listLocationsFromDb(false).find((loc) => loc.id === cafeRow.id)
+        : undefined;
+      const globalAccess = normalizeAccessControlSettings(settings.access_control);
+      const bookingUnlocked = targetCafe
+        ? evaluateCafeAccess(targetCafe, viewer, settings).unlockedSections.booking
+        : globalAccess.sections.booking === 'public' ||
+          (viewer.hasActiveSubscription && Boolean(viewer.permissions.booking));
+
+      if (!bookingUnlocked) {
+        if (viewer.viewerState === 'guest') {
+          res.status(401).json({
+            error: 'Sign in and activate a subscription to book workspace seating.',
+            code: 'SUBSCRIPTION_REQUIRED',
+            requiresAuth: true,
+          });
+          return;
+        }
+        if (viewer.viewerState === 'expired') {
+          res.status(403).json({
+            error: 'Your subscription has expired. Renew your subscription to reserve workspace seats.',
+            code: 'SUBSCRIPTION_EXPIRED',
+            expired: true,
+          });
+          return;
+        }
+        if (viewer.viewerState === 'suspended') {
+          res.status(403).json({
+            error: 'Your subscription is suspended. Please contact support.',
+            code: 'SUBSCRIPTION_SUSPENDED',
+          });
+          return;
+        }
+        res.status(403).json({
+          error: 'An active subscription plan with booking access is required to reserve seats.',
+          code: 'SUBSCRIPTION_REQUIRED',
+        });
+        return;
+      }
+    }
 
     const customerName = cleanStr(req.body?.customer_name || resolvedUser?.name, 100);
     const customerEmail = cleanStr(req.body?.customer_email || resolvedUser?.email, 160).toLowerCase();
@@ -1606,6 +1595,33 @@ async function startServer() {
 
     const photos = Array.from(new Set([...explicitPhotos, ...interiorPhotos, ...exteriorPhotos])).slice(0, 16);
 
+    const wifiPassword = cleanStr(body.wifi_password, 120);
+    const subscriberBenefits = (Array.isArray(body.subscriber_benefits) ? body.subscriber_benefits : [])
+      .map((item) => cleanStr(item, 220))
+      .filter(Boolean)
+      .slice(0, 12);
+    const accessRule: CafeAccessRule =
+      body.access_rule === 'free_public' ||
+      body.access_rule === 'subscription_required' ||
+      body.access_rule === 'specific_plans' ||
+      body.access_rule === 'inherit'
+        ? body.access_rule
+        : 'inherit';
+    const allowedPlanIds = (Array.isArray(body.allowed_plan_ids) ? body.allowed_plan_ids : [])
+      .map((p) => cleanStr(p, 40))
+      .filter((p) => p && p !== 'free')
+      .slice(0, 10);
+    const lockedSectionsOverride: Partial<Record<AccessSectionKey, SectionOverrideMode>> = {};
+    if (body.locked_sections_override && typeof body.locked_sections_override === 'object') {
+      const ovObj = body.locked_sections_override as Record<string, unknown>;
+      for (const sec of ACCESS_SECTION_KEYS) {
+        const val = ovObj[sec];
+        if (val === 'public' || val === 'subscription' || val === 'inherit') {
+          lockedSectionsOverride[sec] = val;
+        }
+      }
+    }
+
     return {
       cafe: {
         id: existingId ?? slugifyId(name),
@@ -1633,6 +1649,7 @@ async function startServer() {
         photos_approved: Boolean(body.photos_approved) && photos.length > 0,
         wifi_available: wifiAvailable,
         wifi_mbps: wifiMbps,
+        wifi_password: wifiPassword,
         charging_sockets: chargingSockets,
         sockets_count: socketsCount,
         sockets_claimed: socketsClaimed,
@@ -1658,6 +1675,7 @@ async function startServer() {
         modes,
         facilities,
         offers,
+        subscriber_benefits: subscriberBenefits,
         menu_services: menuServices,
         best_for: bestFor.length > 0 ? bestFor : ['Laptop work'],
         verdict,
@@ -1672,6 +1690,9 @@ async function startServer() {
         source_name: sourceName,
         source_url: sourceUrl,
         sample: Boolean(body.sample),
+        access_rule: accessRule,
+        allowed_plan_ids: allowedPlanIds,
+        locked_sections_override: lockedSectionsOverride,
       },
     } as const;
   }
@@ -1695,17 +1716,18 @@ async function startServer() {
         id, slug, name, category, city, area, address, phone, map_link, booking_url,
         website_url, menu_url, instagram_url, other_social_links, place_id, lat, lng,
         timings, description, photos_json, interior_photos_json, exterior_photos_json, photos_approved,
-        wifi_available, wifi_mbps, charging_sockets, sockets_count, sockets_claimed,
+        wifi_available, wifi_mbps, wifi_password, charging_sockets, sockets_count, sockets_claimed,
         comfortable_seating, seating_info, ambience, outdoor_seating,
         suitable_for_studying, suitable_for_working,
         noise_level, avg_cost_per_person, price_range,
         coffee_price, tea_price, snacks_price, meals_price, popular_items_json,
         rating, rating_count, min_spend, laptop_friendly, time_limit,
-        modes_json, facilities_json, offers_json, menu_services_json,
+        modes_json, facilities_json, offers_json, subscriber_benefits_json, menu_services_json,
         best_for_json, verdict, avoid_if, student_discount,
         verified, featured, published, display_order, last_verified_date, claims_json,
-        source_name, source_url, sample, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        source_name, source_url, sample, access_rule, allowed_plan_ids_json, locked_sections_override_json,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       c.id,
       finalSlug,
@@ -1731,6 +1753,7 @@ async function startServer() {
       c.photos_approved ? 1 : 0,
       c.wifi_available,
       c.wifi_mbps,
+      c.wifi_password,
       c.charging_sockets,
       c.sockets_count,
       c.sockets_claimed ? 1 : 0,
@@ -1756,6 +1779,7 @@ async function startServer() {
       JSON.stringify(c.modes),
       JSON.stringify(c.facilities),
       JSON.stringify(c.offers),
+      JSON.stringify(c.subscriber_benefits),
       JSON.stringify(c.menu_services),
       JSON.stringify(c.best_for),
       c.verdict,
@@ -1770,6 +1794,9 @@ async function startServer() {
       c.source_name,
       c.source_url,
       c.sample ? 1 : 0,
+      c.access_rule,
+      JSON.stringify(c.allowed_plan_ids),
+      JSON.stringify(c.locked_sections_override),
       now,
       now
     );
@@ -1779,7 +1806,7 @@ async function startServer() {
       'Created cafe listing',
       c.name,
       '',
-      `${c.area} · ${c.published ? 'Active' : 'Hidden'} · Avg ₹${c.avg_cost_per_person ?? '—'}`
+      `${c.area} · ${c.published ? 'Active' : 'Hidden'} · Access ${c.access_rule}`
     );
     res.status(201).json({ cafe: { ...c, slug: finalSlug, menu_items: [], created_at: now, updated_at: now } });
   });
@@ -1823,16 +1850,17 @@ async function startServer() {
         slug = ?, name = ?, category = ?, city = ?, area = ?, address = ?, phone = ?, map_link = ?,
         booking_url = '', website_url = ?, menu_url = ?, instagram_url = ?, other_social_links = ?, place_id = ?,
         lat = ?, lng = ?, timings = ?, description = ?, photos_json = ?, interior_photos_json = ?, exterior_photos_json = ?, photos_approved = ?,
-        wifi_available = ?, wifi_mbps = ?, charging_sockets = ?, sockets_count = ?, sockets_claimed = ?,
+        wifi_available = ?, wifi_mbps = ?, wifi_password = ?, charging_sockets = ?, sockets_count = ?, sockets_claimed = ?,
         comfortable_seating = ?, seating_info = ?, ambience = ?, outdoor_seating = ?,
         suitable_for_studying = ?, suitable_for_working = ?,
         noise_level = ?, avg_cost_per_person = ?, price_range = ?,
         coffee_price = ?, tea_price = ?, snacks_price = ?, meals_price = ?, popular_items_json = ?,
         rating = ?, rating_count = ?, min_spend = ?, laptop_friendly = ?, time_limit = ?,
-        modes_json = ?, facilities_json = ?, offers_json = ?, menu_services_json = ?,
+        modes_json = ?, facilities_json = ?, offers_json = ?, subscriber_benefits_json = ?, menu_services_json = ?,
         best_for_json = ?, verdict = ?, avoid_if = ?, student_discount = ?, verified = ?,
         featured = ?, published = ?, display_order = ?, last_verified_date = ?,
-        claims_json = ?, source_name = ?, source_url = ?, sample = ?, updated_at = ?
+        claims_json = ?, source_name = ?, source_url = ?, sample = ?,
+        access_rule = ?, allowed_plan_ids_json = ?, locked_sections_override_json = ?, updated_at = ?
        WHERE id = ?`
     ).run(
       finalSlug,
@@ -1858,6 +1886,7 @@ async function startServer() {
       c.photos_approved ? 1 : 0,
       c.wifi_available,
       c.wifi_mbps,
+      c.wifi_password,
       c.charging_sockets,
       c.sockets_count,
       c.sockets_claimed ? 1 : 0,
@@ -1883,6 +1912,7 @@ async function startServer() {
       JSON.stringify(c.modes),
       JSON.stringify(c.facilities),
       JSON.stringify(c.offers),
+      JSON.stringify(c.subscriber_benefits),
       JSON.stringify(c.menu_services),
       JSON.stringify(c.best_for),
       c.verdict,
@@ -1897,12 +1927,15 @@ async function startServer() {
       c.source_name,
       c.source_url,
       c.sample ? 1 : 0,
+      c.access_rule,
+      JSON.stringify(c.allowed_plan_ids),
+      JSON.stringify(c.locked_sections_override),
       now,
       id
     );
 
     const prevSummary = `pub=${Boolean(existing.published)}, ver=${Boolean(existing.verified)}, feat=${Boolean(existing.featured)}, avg=₹${existing.avg_cost_per_person ?? '—'}`;
-    const newSummary = `pub=${c.published}, ver=${c.verified}, feat=${c.featured}, avg=₹${c.avg_cost_per_person ?? '—'}`;
+    const newSummary = `pub=${c.published}, ver=${c.verified}, feat=${c.featured}, access=${c.access_rule}`;
     recordActivity(req.admin!.username, 'Updated cafe listing', c.name, prevSummary, newSummary);
     res.json({ cafe: { ...c, slug: finalSlug, updated_at: now } });
   });
@@ -2652,6 +2685,10 @@ async function startServer() {
         b.notification_email === undefined
           ? current.notification_email
           : cleanStr(b.notification_email, 160),
+      access_control:
+        b.access_control === undefined
+          ? normalizeAccessControlSettings(current.access_control)
+          : normalizeAccessControlSettings(b.access_control),
     };
 
     const db = getDb();

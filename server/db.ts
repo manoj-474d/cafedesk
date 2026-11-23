@@ -5,20 +5,79 @@ import { DatabaseSync } from 'node:sqlite';
 import { CAFES } from '../src/data/cafes.ts';
 import { SITE_CONFIG } from '../src/config/constants.ts';
 import type {
+  AccessControlSettings,
+  AccessSectionKey,
   AmenityState,
+  CafeAccessRule,
   DietaryType,
   LocationItem,
   MediaAsset,
   MenuItemRecord,
   NavigationItem,
+  SectionOverrideMode,
   SiteSettings,
   TestimonialItem,
 } from '../src/types/cms.ts';
 import type {
+  PlanPermissions,
   PlanTier,
   SubscriptionPlan,
   UserSubscription,
 } from '../src/types/subscription.ts';
+
+export const DEFAULT_ACCESS_CONTROL: AccessControlSettings = {
+  default_rule: 'subscription_required',
+  sections: {
+    wifi_details: 'subscription',
+    power_sockets: 'subscription',
+    workspace_details: 'subscription',
+    food_menu: 'subscription',
+    menu_pricing: 'subscription',
+    amenities: 'subscription',
+    subscriber_benefits: 'subscription',
+    booking: 'subscription',
+  },
+  free_cafe_preview_note:
+    'Basic cafe overview is free to browse. Subscribe to unlock Wi-Fi speeds & credentials, charging sockets, full food & beverage pricing, and workspace booking.',
+};
+
+export const DEFAULT_FREE_PERMISSIONS: PlanPermissions = {
+  wifi_details: false,
+  power_sockets: false,
+  workspace_details: false,
+  food_menu: false,
+  menu_pricing: false,
+  amenities: false,
+  subscriber_benefits: false,
+  booking: false,
+  collections: false,
+  compare: false,
+};
+
+export const DEFAULT_PAID_PERMISSIONS: PlanPermissions = {
+  wifi_details: true,
+  power_sockets: true,
+  workspace_details: true,
+  food_menu: true,
+  menu_pricing: true,
+  amenities: true,
+  subscriber_benefits: true,
+  booking: true,
+  collections: true,
+  compare: true,
+};
+
+export function normalizePlanPermissions(raw: unknown, isPaid: boolean): PlanPermissions {
+  const base = isPaid ? { ...DEFAULT_PAID_PERMISSIONS } : { ...DEFAULT_FREE_PERMISSIONS };
+  if (!raw || typeof raw !== 'object') return base;
+  const src = raw as Record<string, unknown>;
+  (Object.keys(base) as Array<keyof PlanPermissions>).forEach((key) => {
+    if (typeof src[key] === 'boolean') {
+      base[key] = src[key] as boolean;
+    }
+  });
+  return base;
+}
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
@@ -278,6 +337,7 @@ export const DEFAULT_SITE_SETTINGS: SiteSettings = {
     'Suggest a Bengaluru cafe, report outdated menu prices or hours, or contact the Cafe Desk team.',
   seo_og_image: '/src/assets/images/hero_cafedesk_interior_1794976059561.jpg',
   seo_allow_indexing: true,
+  access_control: DEFAULT_ACCESS_CONTROL,
 };
 
 let dbInstance: DatabaseSync | null = null;
@@ -663,7 +723,12 @@ export function getDb(): DatabaseSync {
   ensureColumn(db, 'subscription_plans', 'promo_note', "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'subscription_plans', 'usage_limits', "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'subscription_plans', 'is_recommended', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'subscription_plans', 'permissions_json', "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn(db, 'subscription_plans', 'cafe_access_scope', "TEXT NOT NULL DEFAULT 'all'");
   ensureColumn(db, 'user_subscriptions', 'subscribed_price_inr', 'INTEGER');
+  ensureColumn(db, 'user_subscriptions', 'expired_at', 'INTEGER');
+  ensureColumn(db, 'user_subscriptions', 'expired_from_plan', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'user_subscriptions', 'suspended_at', 'INTEGER');
   ensureColumn(db, 'cafes', 'slug', 'TEXT');
   ensureColumn(db, 'cafes', 'category', "TEXT NOT NULL DEFAULT 'Cafe'");
   ensureColumn(db, 'cafes', 'city', "TEXT NOT NULL DEFAULT 'Bengaluru'");
@@ -681,6 +746,7 @@ export function getDb(): DatabaseSync {
   ensureColumn(db, 'cafes', 'interior_photos_json', "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, 'cafes', 'exterior_photos_json', "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, 'cafes', 'wifi_available', "TEXT NOT NULL DEFAULT 'unknown'");
+  ensureColumn(db, 'cafes', 'wifi_password', "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'cafes', 'charging_sockets', "TEXT NOT NULL DEFAULT 'unknown'");
   ensureColumn(db, 'cafes', 'sockets_claimed', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'cafes', 'comfortable_seating', "TEXT NOT NULL DEFAULT 'unknown'");
@@ -699,12 +765,16 @@ export function getDb(): DatabaseSync {
   ensureColumn(db, 'cafes', 'rating_count', 'INTEGER');
   ensureColumn(db, 'cafes', 'facilities_json', "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, 'cafes', 'offers_json', "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, 'cafes', 'subscriber_benefits_json', "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, 'cafes', 'menu_services_json', "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, 'cafes', 'published', 'INTEGER NOT NULL DEFAULT 1');
   ensureColumn(db, 'cafes', 'display_order', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'cafes', 'claims_json', "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, 'cafes', 'source_name', "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'cafes', 'source_url', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'cafes', 'access_rule', "TEXT NOT NULL DEFAULT 'inherit'");
+  ensureColumn(db, 'cafes', 'allowed_plan_ids_json', "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, 'cafes', 'locked_sections_override_json', "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn(db, 'cafes', 'created_at', 'INTEGER');
   ensureColumn(db, 'media_assets', 'description', "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'media_assets', 'category', "TEXT NOT NULL DEFAULT 'General'");
@@ -1368,6 +1438,18 @@ export function getDb(): DatabaseSync {
     db.exec("UPDATE subscription_plans SET is_recommended = 1 WHERE id = 'plus'");
   }
 
+  // Backfill plan permissions_json if uninitialized
+  const planPermRows = db
+    .prepare('SELECT id, price_inr, permissions_json FROM subscription_plans')
+    .all() as Array<{ id: string; price_inr: number; permissions_json: string }>;
+  const updPerm = db.prepare('UPDATE subscription_plans SET permissions_json = ? WHERE id = ?');
+  for (const pr of planPermRows) {
+    if (!pr.permissions_json || pr.permissions_json.trim() === '{}' || pr.permissions_json.trim() === '') {
+      const isPaid = pr.id !== 'free' && Number(pr.price_inr) > 0;
+      updPerm.run(JSON.stringify(isPaid ? DEFAULT_PAID_PERMISSIONS : DEFAULT_FREE_PERMISSIONS), pr.id);
+    }
+  }
+
   db.exec('UPDATE cafes SET created_at = updated_at WHERE created_at IS NULL');
 
   // One-time backfill of structured menu_items from legacy menu_services_json where menu_items is empty for that cafe
@@ -1607,6 +1689,7 @@ export function listLocationsFromDb(includeUnpublished = false): LocationItem[] 
       photos_approved: photosApproved,
       wifi_available: wifiAvailable,
       wifi_mbps: wifiMbps,
+      wifi_password: String(row.wifi_password || ''),
       charging_sockets: chargingSockets,
       sockets_count: socketsCount,
       sockets_claimed: socketsClaimed,
@@ -1635,6 +1718,7 @@ export function listLocationsFromDb(includeUnpublished = false): LocationItem[] 
       modes,
       facilities: safeParseJson<string[]>(row.facilities_json, []),
       offers: safeParseJson<string[]>(row.offers_json, []),
+      subscriber_benefits: safeParseJson<string[]>(row.subscriber_benefits_json, []),
       menu_services: safeParseJson<LocationItem['menu_services']>(row.menu_services_json, []),
       menu_items: menuByCafe.get(String(row.id)) ?? [],
       best_for: bestFor,
@@ -1650,6 +1734,16 @@ export function listLocationsFromDb(includeUnpublished = false): LocationItem[] 
       source_name: String(row.source_name || ''),
       source_url: String(row.source_url || ''),
       sample: Boolean(row.sample),
+      access_rule: (['inherit', 'free_public', 'subscription_required', 'specific_plans'].includes(
+        String(row.access_rule || '')
+      )
+        ? String(row.access_rule)
+        : 'inherit') as CafeAccessRule,
+      allowed_plan_ids: safeParseJson<string[]>(row.allowed_plan_ids_json, []),
+      locked_sections_override: safeParseJson<Partial<Record<AccessSectionKey, SectionOverrideMode>>>(
+        row.locked_sections_override_json,
+        {}
+      ),
       created_at: toNullableInt(row.created_at) ?? toNullableInt(row.updated_at) ?? undefined,
       updated_at: toNullableInt(row.updated_at) ?? undefined,
     };
@@ -1765,21 +1859,29 @@ export function listPlansFromDb(includeInactive = false): SubscriptionPlan[] {
   const rows = db
     .prepare(`SELECT * FROM subscription_plans ${where} ORDER BY sort_order ASC`)
     .all() as Array<Record<string, unknown>>;
-  return rows.map((r) => ({
-    id: String(r.id) as PlanTier,
-    name: String(r.name),
-    tagline: String(r.tagline),
-    price_inr: Number(r.price_inr),
-    interval_days: Number(r.interval_days),
-    badge_text: String(r.badge_text || ''),
-    promo_note: String(r.promo_note || ''),
-    usage_limits: String(r.usage_limits || ''),
-    is_recommended: Boolean(r.is_recommended),
-    features: safeParseJson<string[]>(r.features_json, []),
-    sort_order: Number(r.sort_order),
-    active: Boolean(r.active),
-    updated_at: Number(r.updated_at),
-  }));
+  return rows.map((r) => {
+    const id = String(r.id) as PlanTier;
+    const priceInr = Number(r.price_inr);
+    const isPaid = id !== 'free' && priceInr > 0;
+    const rawPerms = safeParseJson<Record<string, unknown>>(r.permissions_json, {});
+    return {
+      id,
+      name: String(r.name),
+      tagline: String(r.tagline),
+      price_inr: priceInr,
+      interval_days: Number(r.interval_days),
+      badge_text: String(r.badge_text || ''),
+      promo_note: String(r.promo_note || ''),
+      usage_limits: String(r.usage_limits || ''),
+      is_recommended: Boolean(r.is_recommended),
+      features: safeParseJson<string[]>(r.features_json, []),
+      permissions: normalizePlanPermissions(rawPerms, isPaid),
+      cafe_access_scope: r.cafe_access_scope === 'specific' ? 'specific' : 'all',
+      sort_order: Number(r.sort_order),
+      active: Boolean(r.active),
+      updated_at: Number(r.updated_at),
+    };
+  });
 }
 
 export function getUserEffectiveSubscription(userId: number): UserSubscription {
@@ -1787,9 +1889,9 @@ export function getUserEffectiveSubscription(userId: number): UserSubscription {
   const now = Date.now();
   const row = db
     .prepare(
-      `SELECT us.*, sp.name as plan_name, sp.price_inr
+      `SELECT us.*, sp.name as plan_name, sp.price_inr, sp.permissions_json
        FROM user_subscriptions us
-       JOIN subscription_plans sp ON sp.id = us.plan_id
+       LEFT JOIN subscription_plans sp ON sp.id = us.plan_id
        WHERE us.user_id = ?`
     )
     .get(userId) as Record<string, unknown> | undefined;
@@ -1800,8 +1902,8 @@ export function getUserEffectiveSubscription(userId: number): UserSubscription {
        VALUES (?, 'free', 0, 'active', ?, NULL, 0, ?)`
     ).run(userId, now, now);
     const freePlan = db
-      .prepare("SELECT name, price_inr FROM subscription_plans WHERE id = 'free'")
-      .get() as { name: string; price_inr: number };
+      .prepare("SELECT name, price_inr, permissions_json FROM subscription_plans WHERE id = 'free'")
+      .get() as { name: string; price_inr: number; permissions_json?: string } | undefined;
     const created = db
       .prepare('SELECT * FROM user_subscriptions WHERE user_id = ?')
       .get(userId) as Record<string, unknown>;
@@ -1817,62 +1919,100 @@ export function getUserEffectiveSubscription(userId: number): UserSubscription {
       expires_at: null,
       auto_renew: false,
       cancelled_at: null,
+      expired: false,
+      expired_from_plan: null,
+      expired_from_plan_name: null,
+      expired_at: null,
+      suspended_at: null,
+      effective_active: false,
+      permissions: normalizePlanPermissions(
+        safeParseJson(freePlan?.permissions_json, {}),
+        false
+      ),
       updated_at: now,
     };
   }
 
   const expiresAt = row.expires_at !== null && row.expires_at !== undefined ? Number(row.expires_at) : null;
   const planId = String(row.plan_id) as PlanTier;
-  const status = String(row.status) as UserSubscription['status'];
+  let status = String(row.status) as UserSubscription['status'];
+  let expiredAt = row.expired_at !== null && row.expired_at !== undefined ? Number(row.expired_at) : null;
+  let expiredFromPlan = String(row.expired_from_plan || '').trim() || null;
 
-  // Automatically expire paid subscriptions whose billing period has elapsed
-  if (planId !== 'free' && expiresAt !== null && expiresAt <= now) {
+  // Transition expired paid subscriptions to 'expired' WITHOUT erasing which plan expired
+  if (planId !== 'free' && expiresAt !== null && expiresAt <= now && status !== 'expired' && status !== 'suspended') {
+    status = 'expired';
+    expiredAt = expiredAt ?? now;
+    expiredFromPlan = expiredFromPlan || planId;
     db.prepare(
       `UPDATE user_subscriptions
-       SET plan_id = 'free', subscribed_price_inr = 0, status = 'active', started_at = ?, expires_at = NULL, auto_renew = 0, updated_at = ?
+       SET status = 'expired',
+           expired_at = ?,
+           expired_from_plan = ?,
+           auto_renew = 0,
+           updated_at = ?
        WHERE user_id = ?`
-    ).run(now, now, userId);
+    ).run(expiredAt, expiredFromPlan, now, userId);
     db.prepare(
       `INSERT INTO subscription_history (user_id, action, from_plan, to_plan, note, created_at)
-       VALUES (?, 'expired', ?, 'free', 'Billing period ended — reverted to Free Explorer', ?)`
-    ).run(userId, planId, now);
+       VALUES (?, 'expired', ?, ?, 'Subscription billing period ended — premium access revoked', ?)`
+    ).run(userId, planId, planId, now);
+  }
 
-    const freePlan = db
-      .prepare("SELECT name, price_inr FROM subscription_plans WHERE id = 'free'")
-      .get() as { name: string; price_inr: number };
-    return {
-      id: Number(row.id),
-      user_id: userId,
-      plan_id: 'free',
-      plan_name: freePlan?.name || 'Free Explorer',
-      price_inr: freePlan?.price_inr ?? 0,
-      subscribed_price_inr: 0,
-      status: 'active',
-      started_at: now,
-      expires_at: null,
-      auto_renew: false,
-      cancelled_at: row.cancelled_at ? Number(row.cancelled_at) : null,
-      updated_at: now,
-    };
+  const isExpired =
+    status === 'expired' || (planId !== 'free' && expiresAt !== null && expiresAt <= now);
+  const isSuspended = status === 'suspended';
+  const planPrice = Number(row.price_inr ?? 0);
+  const isPaidPlan = planId !== 'free' && planPrice >= 0;
+  const isEffectiveActive =
+    isPaidPlan &&
+    planId !== 'free' &&
+    !isExpired &&
+    !isSuspended &&
+    (status === 'active' || status === 'cancelled') &&
+    (expiresAt === null || expiresAt > now);
+
+  if (isExpired && !expiredFromPlan && planId !== 'free') {
+    expiredFromPlan = planId;
+  }
+
+  let expiredFromPlanName: string | null = null;
+  if (expiredFromPlan) {
+    const prevPlan = db
+      .prepare('SELECT name FROM subscription_plans WHERE id = ?')
+      .get(expiredFromPlan) as { name?: string } | undefined;
+    expiredFromPlanName = prevPlan?.name || (row.plan_name ? String(row.plan_name) : expiredFromPlan);
   }
 
   const subscribedPrice =
     row.subscribed_price_inr !== null && row.subscribed_price_inr !== undefined
       ? Number(row.subscribed_price_inr)
-      : Number(row.price_inr);
+      : planPrice;
+
+  const permissions = isEffectiveActive
+    ? normalizePlanPermissions(safeParseJson(row.permissions_json, {}), true)
+    : { ...DEFAULT_FREE_PERMISSIONS };
 
   return {
     id: Number(row.id),
     user_id: Number(row.user_id),
     plan_id: planId,
-    plan_name: String(row.plan_name),
-    price_inr: Number(row.price_inr),
+    plan_name: String(row.plan_name || (planId === 'free' ? 'Free Explorer' : planId)),
+    price_inr: planPrice,
     subscribed_price_inr: subscribedPrice,
-    status,
+    status: isExpired ? 'expired' : status,
     started_at: Number(row.started_at),
     expires_at: expiresAt,
     auto_renew: Boolean(row.auto_renew),
     cancelled_at: row.cancelled_at !== null && row.cancelled_at !== undefined ? Number(row.cancelled_at) : null,
+    expired: isExpired,
+    expired_from_plan: expiredFromPlan,
+    expired_from_plan_name: expiredFromPlanName,
+    expired_at: isExpired ? expiredAt ?? expiresAt ?? Number(row.updated_at) : null,
+    suspended_at:
+      row.suspended_at !== null && row.suspended_at !== undefined ? Number(row.suspended_at) : null,
+    effective_active: isEffectiveActive,
+    permissions,
     updated_at: Number(row.updated_at),
   };
 }

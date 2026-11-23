@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
+  AlertTriangle,
   ArrowUpRight,
   Bookmark,
   CheckCircle2,
@@ -34,7 +35,11 @@ export function AccountPage() {
     user,
     subscription,
     tier,
-    hasPlus,
+    isSubscribed,
+    isExpired,
+    isSuspended,
+    expiredPlanName,
+    hasPermission,
     savedCafes,
     collections,
     logout,
@@ -46,6 +51,10 @@ export function AccountPage() {
     deleteCollection,
     removeCafeFromCollection,
   } = useAuth();
+
+  const canUseCollections = isSubscribed && hasPermission('collections');
+  const renewTargetPlanId =
+    subscription?.expired_from_plan || (tier !== 'free' ? tier : 'plus');
 
   useDocumentMeta(
     `My Account – ${settings.brand_name}`,
@@ -312,19 +321,67 @@ export function AccountPage() {
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-10 sm:py-14 space-y-10">
+      {/* Expired / Suspended Alert */}
+      {(isExpired || isSuspended) && (
+        <section
+          role="alert"
+          className={`rounded-2xl border p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
+            isSuspended
+              ? 'bg-[#fef2f2] border-[#fecaca] text-[#991b1b]'
+              : 'bg-amber-50 border-amber-200 text-[#92400e]'
+          }`}
+        >
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" aria-hidden="true" />
+            <div className="space-y-1">
+              <h2 className="font-serif-display text-xl font-bold">
+                {isSuspended
+                  ? 'Subscription Access Suspended'
+                  : 'Your subscription has expired'}
+              </h2>
+              <p className="text-xs sm:text-sm opacity-90">
+                {isSuspended
+                  ? 'Your Cafe Desk paid access has been suspended by an administrator. Premium cafe Wi-Fi, socket, menu, and booking features are locked.'
+                  : `${expiredPlanName || subscription?.plan_name || 'Your paid plan'} has ended and your account is currently on Free Preview mode. Renew your subscription to restore full cafe access.`}
+              </p>
+            </div>
+          </div>
+          {isExpired && (
+            <button
+              type="button"
+              onClick={() => openCheckout(renewTargetPlanId)}
+              className="shrink-0 inline-flex items-center justify-center gap-1.5 min-h-[44px] px-5 py-2.5 rounded-lg bg-[#b45309] hover:bg-[#92400e] text-white text-xs font-semibold"
+            >
+              <RefreshCw className="w-4 h-4" aria-hidden="true" />
+              <span>Renew Subscription</span>
+            </button>
+          )}
+        </section>
+      )}
+
       {/* Header Banner */}
       <header className="rounded-2xl bg-white border border-[#e6ddd0] p-6 sm:p-8 flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-2.5">
-            {tier === 'premium' ? (
+            {isSuspended ? (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#fef2f2] text-[#991b1b] border border-[#fecaca] text-xs font-bold">
+                <AlertTriangle className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Suspended · {subscription?.plan_name || 'Subscription'}</span>
+              </span>
+            ) : isExpired ? (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-100 text-[#92400e] border border-amber-300 text-xs font-bold">
+                <AlertTriangle className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Expired · {expiredPlanName || subscription?.plan_name || 'Paid Plan'}</span>
+              </span>
+            ) : isSubscribed && tier === 'premium' ? (
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#1c1613] text-[#f59e0b] text-xs font-bold">
                 <Crown className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>Cafe Desk Plus Annual · ₹{subscription?.price_inr ?? 499}/yr</span>
+                <span>{subscription?.plan_name || 'Cafe Desk Plus Annual'} · ₹{subscription?.price_inr ?? 499}/yr</span>
               </span>
-            ) : tier === 'plus' ? (
+            ) : isSubscribed ? (
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#b45309] text-white text-xs font-bold">
                 <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>Cafe Desk Plus · ₹{subscription?.price_inr ?? 79}/mo</span>
+                <span>{subscription?.plan_name || 'Cafe Desk Plus'} · ₹{subscription?.price_inr ?? 79}</span>
               </span>
             ) : (
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#f3ede3] text-[#1c1613] border border-[#e6ddd0] text-xs font-bold">
@@ -359,13 +416,13 @@ export function AccountPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          {!hasPlus && (
+          {!isSubscribed && (
             <button
               type="button"
-              onClick={() => openCheckout('plus')}
+              onClick={() => openCheckout(isExpired ? renewTargetPlanId : 'plus')}
               className="min-h-[42px] px-4 py-2 rounded-lg bg-[#b45309] hover:bg-[#92400e] text-white text-xs font-semibold transition-colors"
             >
-              Upgrade to Cafe Desk Plus (₹79/mo)
+              {isExpired ? 'Renew Subscription' : 'Upgrade to Cafe Desk Plus (₹79/mo)'}
             </button>
           )}
           <Link
@@ -441,33 +498,55 @@ export function AccountPage() {
             </div>
             <div>
               <dt className="text-[#5c4e45]">Billing Status</dt>
-              <dd className="font-bold text-sm text-[#1b4d3e] capitalize mt-0.5">
-                {subscription?.status || 'active'}
+              <dd
+                className={`font-bold text-sm capitalize mt-0.5 ${
+                  isSuspended || isExpired
+                    ? 'text-[#991b1b]'
+                    : isSubscribed
+                    ? 'text-[#1b4d3e]'
+                    : 'text-[#5c4e45]'
+                }`}
+              >
+                {isSuspended
+                  ? 'suspended'
+                  : isExpired
+                  ? 'expired'
+                  : subscription?.status || 'active'}
               </dd>
             </div>
             <div>
               <dt className="text-[#5c4e45]">
-                {subscription?.status === 'cancelled' ? 'Access Ends' : 'Next Renewal'}
+                {isExpired
+                  ? 'Expired On'
+                  : subscription?.status === 'cancelled'
+                  ? 'Access Ends'
+                  : 'Next Renewal'}
               </dt>
               <dd className="font-mono-data font-bold text-sm text-[#1c1613] mt-0.5">
                 {subscription?.expires_at
                   ? new Date(subscription.expires_at).toLocaleDateString('en-IN')
+                  : subscription?.expired_at
+                  ? new Date(subscription.expired_at).toLocaleDateString('en-IN')
                   : 'Never (Free)'}
               </dd>
             </div>
           </dl>
 
           <div className="flex flex-wrap items-center gap-3">
-            {tier !== 'plus' && (
+            {(!isSubscribed || tier !== 'plus') && (
               <button
                 type="button"
                 onClick={() => openCheckout('plus')}
                 className="px-4 py-2 rounded-lg bg-[#faf7f2] border border-[#d6cbba] hover:border-[#b45309] text-xs font-semibold text-[#1c1613]"
               >
-                {tier === 'free' ? 'Plus Monthly (₹79/mo)' : 'Switch to Monthly (₹79/mo)'}
+                {isExpired && renewTargetPlanId === 'plus'
+                  ? 'Renew Plus Monthly (₹79/mo)'
+                  : tier === 'free'
+                  ? 'Plus Monthly (₹79/mo)'
+                  : 'Switch to Monthly (₹79/mo)'}
               </button>
             )}
-            {tier !== 'premium' && (
+            {(!isSubscribed || tier !== 'premium') && (
               <button
                 type="button"
                 onClick={() => openCheckout('premium')}
@@ -476,7 +555,7 @@ export function AccountPage() {
                 Plus Annual · Save 47% (₹499/yr)
               </button>
             )}
-            {(tier === 'plus' || tier === 'premium') && (
+            {isSubscribed && tier !== 'free' && (
               <button
                 type="button"
                 onClick={() => openCheckout(tier)}
@@ -486,7 +565,7 @@ export function AccountPage() {
                 <span>Renew Now (+{tier === 'premium' ? '365' : '30'} Days)</span>
               </button>
             )}
-            {tier !== 'free' && subscription?.status === 'active' && (
+            {isSubscribed && tier !== 'free' && subscription?.status === 'active' && (
               <button
                 type="button"
                 disabled={billingBusy}
@@ -496,7 +575,7 @@ export function AccountPage() {
                 Cancel Auto-Renewal
               </button>
             )}
-            {tier !== 'free' && subscription?.status === 'cancelled' && (
+            {isSubscribed && tier !== 'free' && subscription?.status === 'cancelled' && (
               <button
                 type="button"
                 disabled={billingBusy}
@@ -620,7 +699,7 @@ export function AccountPage() {
               Saved Favourites &amp; Personal Collections
             </h2>
           </div>
-          {!hasPlus && (
+          {!canUseCollections && (
             <button
               type="button"
               onClick={() =>
@@ -632,7 +711,7 @@ export function AccountPage() {
               className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#b45309] text-white text-xs font-semibold"
             >
               <Lock className="w-3.5 h-3.5" />
-              <span>Unlock Collections (Plus ₹79/mo)</span>
+              <span>{isExpired ? 'Renew Subscription for Collections' : 'Unlock Collections (Plus ₹79/mo)'}</span>
             </button>
           )}
         </div>
@@ -693,14 +772,16 @@ export function AccountPage() {
               <span>Personal Cafe Collections ({collections.length})</span>
             </h3>
 
-            {!hasPlus ? (
+            {!canUseCollections ? (
               <div className="p-5 rounded-xl bg-[#faf7f2] border border-[#e6ddd0] space-y-2.5">
                 <p className="text-sm font-semibold text-[#1c1613]">
                   Organize cafes into unlimited custom lists like &ldquo;Indiranagar Deep Work&rdquo;
                   or &ldquo;Budget Chai Spots&rdquo;.
                 </p>
                 <p className="text-xs text-[#5c4e45]">
-                  Included with Cafe Desk Plus (₹79/mo or ₹499/yr).
+                  {isExpired
+                    ? 'Your subscription has expired. Renew your plan to create and manage custom cafe collections.'
+                    : 'Included with an active Cafe Desk subscription (from ₹79/mo).'}
                 </p>
               </div>
             ) : (
@@ -783,15 +864,15 @@ export function AccountPage() {
               Recommended Bengaluru Cafes
             </h2>
           </div>
-          {!hasPlus && (
+          {!isSubscribed && (
             <span className="inline-flex items-center gap-1 text-xs font-semibold text-[#b45309]">
               <Lock className="w-3.5 h-3.5" />
-              <span>Plus ₹79</span>
+              <span>{isExpired ? 'Expired' : 'Plus ₹79'}</span>
             </span>
           )}
         </div>
 
-        {hasPlus ? (
+        {isSubscribed ? (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {recommendedCafes.map((cafe) => (
               <Link
@@ -808,15 +889,16 @@ export function AccountPage() {
         ) : (
           <div className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-xl bg-[#faf7f2] border border-[#e6ddd0] text-xs">
             <span className="text-[#5c4e45]">
-              Upgrade to Cafe Desk Plus for tailored Bengaluru cafe recommendations matched to your
-              saved areas and work preferences.
+              {isExpired
+                ? 'Your subscription has expired. Renew to restore personalized Bengaluru cafe recommendations matched to your saved areas.'
+                : 'Upgrade to Cafe Desk Plus for tailored Bengaluru cafe recommendations matched to your saved areas and work preferences.'}
             </span>
             <button
               type="button"
-              onClick={() => openCheckout('plus')}
+              onClick={() => openCheckout(isExpired ? renewTargetPlanId : 'plus')}
               className="px-3.5 py-2 rounded-lg bg-[#1c1613] text-white font-semibold"
             >
-              Upgrade ₹79/mo
+              {isExpired ? 'Renew Subscription' : 'Upgrade ₹79/mo'}
             </button>
           </div>
         )}

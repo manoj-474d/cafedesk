@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   CheckCircle2,
@@ -9,6 +9,7 @@ import {
   Eye,
   EyeOff,
   Image as ImageIcon,
+  Lock,
   MapPin,
   Plus,
   Search,
@@ -19,8 +20,28 @@ import {
   Zap,
 } from 'lucide-react';
 import type { CafeMode } from '../../config/constants';
-import type { AmenityState, LocationItem, MediaAsset, MenuServiceItem } from '../../types/cms';
+import type {
+  AccessSectionKey,
+  AmenityState,
+  CafeAccessRule,
+  LocationItem,
+  MediaAsset,
+  MenuServiceItem,
+  SectionOverrideMode,
+} from '../../types/cms';
+import type { SubscriptionPlan } from '../../types/subscription';
 import { MediaPickerModal } from './MediaPickerModal';
+
+const SECTION_OVERRIDE_FIELDS: Array<{ key: AccessSectionKey; label: string }> = [
+  { key: 'wifi_details', label: 'Wi-Fi & Password' },
+  { key: 'power_sockets', label: 'Power Sockets' },
+  { key: 'workspace_details', label: 'Workspace Specs' },
+  { key: 'food_menu', label: 'Food Menu' },
+  { key: 'menu_pricing', label: 'Menu Prices' },
+  { key: 'amenities', label: 'Amenities & Best-For' },
+  { key: 'subscriber_benefits', label: 'Subscriber Benefits' },
+  { key: 'booking', label: 'Workspace Booking' },
+];
 
 interface AdminLocationsTabProps {
   locations: LocationItem[];
@@ -57,6 +78,7 @@ const EMPTY_LOCATION: LocationItem = {
   photos_approved: false,
   wifi_available: 'unknown',
   wifi_mbps: null,
+  wifi_password: '',
   charging_sockets: 'unknown',
   sockets_count: null,
   sockets_claimed: false,
@@ -82,6 +104,7 @@ const EMPTY_LOCATION: LocationItem = {
   modes: ['work'],
   facilities: [],
   offers: [],
+  subscriber_benefits: [],
   menu_services: [],
   best_for: ['Solo laptop work'],
   verdict: '',
@@ -96,6 +119,9 @@ const EMPTY_LOCATION: LocationItem = {
   source_name: '',
   source_url: '',
   sample: false,
+  access_rule: 'inherit',
+  allowed_plan_ids: [],
+  locked_sections_override: {},
 };
 
 export function AdminLocationsTab({
@@ -125,9 +151,27 @@ export function AdminLocationsTab({
 
   const [facilitiesText, setFacilitiesText] = useState('');
   const [offersText, setOffersText] = useState('');
+  const [benefitsText, setBenefitsText] = useState('');
   const [bestForText, setBestForText] = useState('');
   const [claimsText, setClaimsText] = useState('');
   const [popularItemsText, setPopularItemsText] = useState('');
+  const [availablePlans, setAvailablePlans] = useState<SubscriptionPlan[]>([]);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await fetch('/api/plans');
+        if (res.ok) {
+          const data = (await res.json()) as { plans?: SubscriptionPlan[] };
+          if (Array.isArray(data.plans)) {
+            setAvailablePlans(data.plans.filter((p) => p.id !== 'free'));
+          }
+        }
+      } catch {
+        // Non-blocking
+      }
+    })();
+  }, []);
 
   const cities = useMemo(
     () => ['All', ...Array.from(new Set(locations.map((l) => l.city).filter(Boolean)))],
@@ -170,6 +214,7 @@ export function AdminLocationsTab({
       setEditing({ ...EMPTY_LOCATION, display_order: locations.length + 1 });
       setFacilitiesText('');
       setOffersText('');
+      setBenefitsText('');
       setBestForText(EMPTY_LOCATION.best_for.join(', '));
       setClaimsText('');
       setPopularItemsText('');
@@ -178,12 +223,18 @@ export function AdminLocationsTab({
       setEditing({
         ...EMPTY_LOCATION,
         ...loc,
+        wifi_password: loc.wifi_password ?? '',
+        subscriber_benefits: loc.subscriber_benefits ?? [],
+        access_rule: loc.access_rule ?? 'inherit',
+        allowed_plan_ids: loc.allowed_plan_ids ?? [],
+        locked_sections_override: loc.locked_sections_override ?? {},
         interior_photos: loc.interior_photos ?? [],
         exterior_photos: loc.exterior_photos ?? [],
         outdoor_seating: loc.outdoor_seating ?? 'unknown',
       });
       setFacilitiesText(loc.facilities.join(', '));
       setOffersText(loc.offers.join('\n'));
+      setBenefitsText((loc.subscriber_benefits ?? []).join('\n'));
       setBestForText(loc.best_for.join(', '));
       setClaimsText((loc.claims ?? []).join('\n'));
       setPopularItemsText((loc.popular_items ?? []).join(', '));
@@ -203,6 +254,10 @@ export function AdminLocationsTab({
         .map((s) => s.trim())
         .filter(Boolean),
       offers: offersText
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean),
+      subscriber_benefits: benefitsText
         .split('\n')
         .map((s) => s.trim())
         .filter(Boolean),
@@ -1338,7 +1393,7 @@ export function AdminLocationsTab({
               </div>
 
               {/* Workspace Metrics */}
-              <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-7 gap-3">
                 <div>
                   <label className="block font-semibold text-[#475569] mb-1">WiFi (Mbps)</label>
                   <input
@@ -1349,6 +1404,23 @@ export function AdminLocationsTab({
                       setEditing({
                         ...editing,
                         wifi_mbps: e.target.value === '' ? null : Number(e.target.value),
+                      })
+                    }
+                    className="w-full h-10 px-3 rounded-lg border border-[#cbd5e1] bg-[#f8fafc] font-mono-data"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold text-[#475569] mb-1">
+                    WiFi Password (Subscribers)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Optional password"
+                    value={editing.wifi_password ?? ''}
+                    onChange={(e) =>
+                      setEditing({
+                        ...editing,
+                        wifi_password: e.target.value,
                       })
                     }
                     className="w-full h-10 px-3 rounded-lg border border-[#cbd5e1] bg-[#f8fafc] font-mono-data"
@@ -1533,7 +1605,7 @@ export function AdminLocationsTab({
                     />
                   </div>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div>
                     <label className="block font-semibold text-[#475569] mb-1">
                       Public Source Claims (one per line)
@@ -1555,6 +1627,18 @@ export function AdminLocationsTab({
                       value={offersText}
                       onChange={(e) => setOffersText(e.target.value)}
                       placeholder="e.g. 15% off espresso for students Mon–Thu"
+                      className="w-full p-3 rounded-lg border border-[#cbd5e1] bg-[#f8fafc]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-[#475569] mb-1">
+                      Subscriber Benefits (one per line)
+                    </label>
+                    <textarea
+                      rows={2}
+                      value={benefitsText}
+                      onChange={(e) => setBenefitsText(e.target.value)}
+                      placeholder="e.g. Priority silent corner table, complimentary filter coffee refill"
                       className="w-full p-3 rounded-lg border border-[#cbd5e1] bg-[#f8fafc]"
                     />
                   </div>
@@ -1636,6 +1720,114 @@ export function AdminLocationsTab({
                     </button>
                   </div>
                 ))}
+              </div>
+
+              {/* Per-Cafe Subscription Access Control */}
+              <div className="space-y-3 border-t border-[#e2e8f0] pt-4">
+                <div className="flex items-center gap-2">
+                  <Lock className="w-4 h-4 text-[#b45309]" aria-hidden="true" />
+                  <div>
+                    <p className="font-semibold text-[#0f172a]">
+                      Subscription Access Control (Per-Cafe Rule)
+                    </p>
+                    <p className="text-[11px] text-[#64748b]">
+                      Override the global access rule or assign specific subscription plans for this cafe.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-semibold text-[#475569] mb-1">
+                      Cafe Access Policy
+                    </label>
+                    <select
+                      value={editing.access_rule ?? 'inherit'}
+                      onChange={(e) =>
+                        setEditing({
+                          ...editing,
+                          access_rule: e.target.value as CafeAccessRule,
+                        })
+                      }
+                      className="w-full h-10 px-3 rounded-lg border border-[#cbd5e1] bg-[#f8fafc] font-semibold"
+                    >
+                      <option value="inherit">Inherit Global Site Rules (Default)</option>
+                      <option value="subscription_required">Subscription Required (Any Active Plan)</option>
+                      <option value="specific_plans">Specific Subscription Plans Only</option>
+                      <option value="free_public">Free Public Access (Unlock All Sections)</option>
+                    </select>
+                  </div>
+
+                  {editing.access_rule === 'specific_plans' && (
+                    <div>
+                      <p className="font-semibold text-[#475569] mb-1.5">
+                        Allowed Paid Plans ({(editing.allowed_plan_ids ?? []).length} selected)
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {availablePlans.map((plan) => {
+                          const selected = (editing.allowed_plan_ids ?? []).includes(plan.id);
+                          return (
+                            <label
+                              key={plan.id}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded border border-[#cbd5e1] bg-[#f8fafc] cursor-pointer font-semibold"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={selected}
+                                onChange={(e) => {
+                                  const cur = editing.allowed_plan_ids ?? [];
+                                  const next = e.target.checked
+                                    ? [...cur, plan.id]
+                                    : cur.filter((id) => id !== plan.id);
+                                  setEditing({ ...editing, allowed_plan_ids: next });
+                                }}
+                                className="w-3.5 h-3.5 accent-[#b45309]"
+                              />
+                              <span>{plan.name}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {editing.access_rule !== 'free_public' && (
+                  <div>
+                    <p className="font-semibold text-[#475569] mb-1.5">
+                      Per-Section Visibility Overrides (Optional)
+                    </p>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {SECTION_OVERRIDE_FIELDS.map(({ key, label }) => {
+                        const curMode = editing.locked_sections_override?.[key] ?? 'inherit';
+                        return (
+                          <div key={key} className="p-2 rounded border border-[#e2e8f0] bg-[#f8fafc]">
+                            <label className="block text-[11px] font-semibold text-[#0f172a] mb-1">
+                              {label}
+                            </label>
+                            <select
+                              value={curMode}
+                              onChange={(e) =>
+                                setEditing({
+                                  ...editing,
+                                  locked_sections_override: {
+                                    ...(editing.locked_sections_override ?? {}),
+                                    [key]: e.target.value as SectionOverrideMode,
+                                  },
+                                })
+                              }
+                              className="w-full h-8 px-1.5 rounded border border-[#cbd5e1] bg-white text-[11px] font-semibold"
+                            >
+                              <option value="inherit">Inherit</option>
+                              <option value="subscription">Subscription</option>
+                              <option value="public">Public</option>
+                            </select>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Modes & Flags */}

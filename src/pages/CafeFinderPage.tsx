@@ -66,7 +66,19 @@ const PURPOSE_OPTIONS: Array<{
 
 export function CafeFinderPage() {
   const { locations, settings } = useCms();
-  const { authenticated, hasPlus, openUpgradeModal } = useAuth();
+  const { authenticated, hasPlus, hasPermission, openUpgradeModal } = useAuth();
+  const canFilterPricing =
+    settings.access_control?.sections?.menu_pricing === 'public' ||
+    hasPermission('menu_pricing');
+  const canFilterWifi =
+    settings.access_control?.sections?.wifi_details === 'public' ||
+    hasPermission('wifi_details');
+  const canFilterSockets =
+    settings.access_control?.sections?.power_sockets === 'public' ||
+    hasPermission('power_sockets');
+  const canFilterWorkspace =
+    settings.access_control?.sections?.workspace_details === 'public' ||
+    hasPermission('workspace_details');
   const { userLocation, geoStatus, requestUserLocation, getEffectiveLocation } = useDiscovery();
 
   useDocumentMeta(
@@ -111,18 +123,18 @@ export function CafeFinderPage() {
       setPrefs({
         ...DEFAULT_PREFS,
         purpose: 'working',
-        atmosphere: 'quiet',
-        laptopFriendly: true,
-        chargingSockets: true,
-        wifiRequired: hasPlus,
+        atmosphere: canFilterWorkspace ? 'quiet' : 'any',
+        laptopFriendly: canFilterWorkspace,
+        chargingSockets: canFilterSockets,
+        wifiRequired: canFilterWifi,
       });
     } else if (presetId === 'quiet-study') {
       setPrefs({
         ...DEFAULT_PREFS,
         purpose: 'studying',
-        atmosphere: 'quiet',
-        laptopFriendly: true,
-        chargingSockets: true,
+        atmosphere: canFilterWorkspace ? 'quiet' : 'any',
+        laptopFriendly: canFilterWorkspace,
+        chargingSockets: canFilterSockets,
       });
     } else if (presetId === 'coffee-date') {
       setPrefs({
@@ -131,12 +143,12 @@ export function CafeFinderPage() {
         atmosphere: 'any',
       });
     } else if (presetId === 'budget-under-200') {
-      if (!hasPlus) {
+      if (!canFilterPricing) {
         openUpgradeModal({
           featureName: 'Budget Matching Filter (Under ₹200)',
           requiredPlan: 'plus',
           description:
-            'Filter cafes by average spend per person and compare full tea, coffee, and food prices with Cafe Desk Plus.',
+            'Filter cafes by average spend per person and compare full tea, coffee, and food prices with an active subscription.',
         });
         return;
       }
@@ -176,7 +188,7 @@ export function CafeFinderPage() {
       if (outdoor.length > 0) pool = outdoor;
     }
 
-    const scored = pool.map((loc) => scoreCafeMatch(loc, prefs, hasPlus));
+    const scored = pool.map((loc) => scoreCafeMatch(loc, prefs, hasPlus && canFilterWifi));
     return scored.sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
       if (prefs.nearMeOnly && userLocation) {
@@ -187,7 +199,7 @@ export function CafeFinderPage() {
       }
       return (b.location.rating ?? 0) - (a.location.rating ?? 0);
     });
-  }, [effectiveLocations, prefs, hiddenGemsOnly, hasPlus, userLocation]);
+  }, [effectiveLocations, prefs, hiddenGemsOnly, hasPlus, canFilterWifi, userLocation]);
 
   const topPick = rankedMatches[0] ?? null;
 
@@ -241,7 +253,7 @@ export function CafeFinderPage() {
             { id: 'deep-work', label: 'Deep Work & Sockets' },
             { id: 'quiet-study', label: 'Quiet Study' },
             { id: 'coffee-date', label: 'Coffee Date' },
-            { id: 'budget-under-200', label: hasPlus ? 'Budget Under ₹200' : 'Budget Under ₹200 (Plus)' },
+            { id: 'budget-under-200', label: canFilterPricing ? 'Budget Under ₹200' : 'Budget Under ₹200 (Plus)' },
             { id: 'hidden-gems', label: 'Hidden Gems' },
             { id: 'outdoor-breeze', label: 'Outdoor Seating' },
           ].map((preset) => (
@@ -251,7 +263,7 @@ export function CafeFinderPage() {
               onClick={() => applyPreset(preset.id)}
               className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-white border border-[#d6cbba] hover:border-[#b45309] hover:text-[#b45309] text-xs font-semibold text-[#1c1613] transition-colors"
             >
-              {preset.id === 'budget-under-200' && !hasPlus && (
+              {preset.id === 'budget-under-200' && !canFilterPricing && (
                 <Lock className="w-3 h-3 text-[#b45309]" aria-hidden="true" />
               )}
               <span>{preset.label}</span>
@@ -372,23 +384,23 @@ export function CafeFinderPage() {
                 <IndianRupee className="w-3.5 h-3.5 text-[#1b4d3e]" aria-hidden="true" />
                 <span>5. Typical Budget</span>
               </span>
-              {!hasPlus && (
+              {!canFilterPricing && (
                 <span className="inline-flex items-center gap-1 text-[10px] font-bold text-[#b45309]">
                   <Lock className="w-3 h-3" aria-hidden="true" />
-                  Plus ₹79
+                  Subscribers
                 </span>
               )}
             </label>
             <select
               id="finder-budget"
-              value={hasPlus ? prefs.budget : 'any'}
+              value={canFilterPricing ? prefs.budget : 'any'}
               onChange={(e) => {
-                if (!hasPlus) {
+                if (!canFilterPricing) {
                   openUpgradeModal({
                     featureName: 'Budget Matching Filter',
                     requiredPlan: 'plus',
                     description:
-                      'Filter cafes by average spend per person and compare food & beverage menus with Cafe Desk Plus (₹79/mo or ₹499/yr).',
+                      'Filter cafes by average spend per person and compare food & beverage menus with an active Cafe Desk subscription.',
                   });
                   return;
                 }
@@ -397,9 +409,9 @@ export function CafeFinderPage() {
               className="w-full h-11 px-3 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-sm font-medium text-[#1c1613]"
             >
               <option value="any">Any budget</option>
-              <option value="under-200">{hasPlus ? 'Under ₹200 / person' : '🔒 Under ₹200 (Plus)'}</option>
-              <option value="200-350">{hasPlus ? '₹200 – ₹350 / person' : '🔒 ₹200 – ₹350 (Plus)'}</option>
-              <option value="350-plus">{hasPlus ? '₹350+ / Specialty dining' : '🔒 ₹350+ (Plus)'}</option>
+              <option value="under-200">{canFilterPricing ? 'Under ₹200 / person' : '🔒 Under ₹200 (Subscribers)'}</option>
+              <option value="200-350">{canFilterPricing ? '₹200 – ₹350 / person' : '🔒 ₹200 – ₹350 (Subscribers)'}</option>
+              <option value="350-plus">{canFilterPricing ? '₹350+ / Specialty dining' : '🔒 ₹350+ (Subscribers)'}</option>
             </select>
           </div>
         </div>
@@ -409,23 +421,37 @@ export function CafeFinderPage() {
           <label className="inline-flex items-center gap-2 text-xs sm:text-sm font-medium text-[#1c1613] cursor-pointer">
             <input
               type="checkbox"
-              checked={prefs.laptopFriendly}
-              onChange={(e) => setPrefs((p) => ({ ...p, laptopFriendly: e.target.checked }))}
+              checked={canFilterWorkspace && prefs.laptopFriendly}
+              onChange={(e) => {
+                if (!canFilterWorkspace) {
+                  openUpgradeModal({ featureName: 'Workspace Seating Filters', requiredPlan: 'plus' });
+                  return;
+                }
+                setPrefs((p) => ({ ...p, laptopFriendly: e.target.checked }));
+              }}
               className="w-4 h-4 accent-[#b45309] rounded"
             />
             <Laptop className="w-4 h-4 text-[#b45309]" aria-hidden="true" />
             <span>Laptop-friendly seating</span>
+            {!canFilterWorkspace && <Lock className="w-3 h-3 text-[#b45309]" aria-hidden="true" />}
           </label>
 
           <label className="inline-flex items-center gap-2 text-xs sm:text-sm font-medium text-[#1c1613] cursor-pointer">
             <input
               type="checkbox"
-              checked={prefs.chargingSockets}
-              onChange={(e) => setPrefs((p) => ({ ...p, chargingSockets: e.target.checked }))}
+              checked={canFilterSockets && prefs.chargingSockets}
+              onChange={(e) => {
+                if (!canFilterSockets) {
+                  openUpgradeModal({ featureName: 'Power Socket Filter', requiredPlan: 'plus' });
+                  return;
+                }
+                setPrefs((p) => ({ ...p, chargingSockets: e.target.checked }));
+              }}
               className="w-4 h-4 accent-[#b45309] rounded"
             />
             <Plug className="w-4 h-4 text-[#1b4d3e]" aria-hidden="true" />
             <span>Charging sockets</span>
+            {!canFilterSockets && <Lock className="w-3 h-3 text-[#b45309]" aria-hidden="true" />}
           </label>
 
           <label className="inline-flex items-center gap-2 text-xs sm:text-sm font-medium text-[#1c1613] cursor-pointer">
@@ -442,14 +468,14 @@ export function CafeFinderPage() {
           <label className="inline-flex items-center gap-2 text-xs sm:text-sm font-medium text-[#1c1613] cursor-pointer">
             <input
               type="checkbox"
-              checked={hasPlus && prefs.wifiRequired}
+              checked={canFilterWifi && prefs.wifiRequired}
               onChange={(e) => {
-                if (!hasPlus) {
+                if (!canFilterWifi) {
                   openUpgradeModal({
                     featureName: 'Wi-Fi Availability & Speed Filter',
                     requiredPlan: 'plus',
                     description:
-                      'Filter cafes by verified customer Wi-Fi availability and measured Mbps speeds with Cafe Desk Plus.',
+                      'Filter cafes by verified customer Wi-Fi availability and measured Mbps speeds with an active subscription.',
                   });
                   return;
                 }
@@ -459,7 +485,7 @@ export function CafeFinderPage() {
             />
             <Wifi className="w-4 h-4 text-[#1b4d3e]" aria-hidden="true" />
             <span>Wi-Fi required</span>
-            {!hasPlus && (
+            {!canFilterWifi && (
               <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-[#faf7f2] border border-[#e6ddd0] text-[10px] font-bold text-[#b45309]">
                 <Lock className="w-2.5 h-2.5" aria-hidden="true" />
                 Plus

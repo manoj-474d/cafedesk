@@ -1,11 +1,21 @@
 import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowRight, CheckCircle2, Heart, Lock, Sparkles, X } from 'lucide-react';
+import { AlertTriangle, ArrowRight, CheckCircle2, Heart, Lock, RefreshCw, Sparkles, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 export function UpgradeModal() {
   const navigate = useNavigate();
-  const { upgradePrompt, closeUpgradeModal, plans, authenticated, openCheckout } = useAuth();
+  const {
+    upgradePrompt,
+    closeUpgradeModal,
+    plans,
+    authenticated,
+    isExpired,
+    isSuspended,
+    expiredPlanName,
+    subscription,
+    openCheckout,
+  } = useAuth();
 
   if (!upgradePrompt) return null;
 
@@ -76,13 +86,14 @@ export function UpgradeModal() {
   const plusAnnual = plans.find((p) => p.id === 'premium');
   const monthlyPrice = plusMonthly?.price_inr ?? 79;
   const annualPrice = plusAnnual?.price_inr ?? 499;
+  const renewPlanId = subscription?.expired_from_plan || 'plus';
 
-  const handleCheckoutOrSignup = (planKey: 'plus' | 'premium') => {
+  const handleCheckoutOrSignup = (planKey: string) => {
     closeUpgradeModal();
     if (authenticated) {
       openCheckout(planKey);
     } else {
-      navigate(`/login?mode=signup&upgrade=${planKey}`);
+      navigate(`/login?mode=signup&upgrade=${encodeURIComponent(planKey)}`);
     }
   };
 
@@ -100,12 +111,34 @@ export function UpgradeModal() {
       >
         <div className="p-6 bg-[#1c1613] text-[#faf7f2] flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-[#b45309] text-white text-[11px] font-bold uppercase tracking-wider">
-              <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>Cafe Desk Plus</span>
+            <div
+              className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-white text-[11px] font-bold uppercase tracking-wider ${
+                isSuspended
+                  ? 'bg-[#991b1b]'
+                  : isExpired
+                  ? 'bg-[#d97706]'
+                  : 'bg-[#b45309]'
+              }`}
+            >
+              {isExpired || isSuspended ? (
+                <AlertTriangle className="w-3.5 h-3.5" aria-hidden="true" />
+              ) : (
+                <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
+              )}
+              <span>
+                {isSuspended
+                  ? 'Subscription Suspended'
+                  : isExpired
+                  ? 'Subscription Expired'
+                  : 'Cafe Desk Plus'}
+              </span>
             </div>
             <h2 id="upgrade-modal-title" className="font-serif-display text-2xl font-bold text-white">
-              Unlock {upgradePrompt.featureName}
+              {isSuspended
+                ? 'Subscription Access Paused'
+                : isExpired
+                ? 'Renew Your Cafe Desk Subscription'
+                : `Unlock ${upgradePrompt.featureName}`}
             </h2>
           </div>
 
@@ -124,11 +157,19 @@ export function UpgradeModal() {
             <Lock className="w-5 h-5 text-[#b45309] shrink-0 mt-0.5" aria-hidden="true" />
             <div className="space-y-1 text-sm">
               <p className="font-semibold text-[#1c1613]">
-                Included in Cafe Desk Plus — ₹{monthlyPrice}/month or ₹{annualPrice}/year
+                {isSuspended
+                  ? 'Your paid subscription is currently suspended'
+                  : isExpired
+                  ? `Your ${expiredPlanName || 'Cafe Desk subscription'} has expired`
+                  : `Included in Cafe Desk Plus — ₹${monthlyPrice}/month or ₹${annualPrice}/year`}
               </p>
               <p className="text-xs text-[#5c4e45] leading-relaxed">
-                {upgradePrompt.description ||
-                  `Upgrade to Cafe Desk Plus to unlock ${upgradePrompt.featureName.toLowerCase()}, complete food & beverage prices, budget filters, comparisons, and exclusive deals.`}
+                {isSuspended
+                  ? 'Protected cafe details and booking access are temporarily disabled. Please review your account or contact support.'
+                  : isExpired
+                  ? `Renew your subscription to restore ${upgradePrompt.featureName.toLowerCase()}, Wi-Fi passwords, power sockets, complete menus, and bookings.`
+                  : upgradePrompt.description ||
+                    `An active paid subscription is required to access ${upgradePrompt.featureName.toLowerCase()}, Wi-Fi details, sockets, menus, pricing, and workspace booking.`}
               </p>
             </div>
           </div>
@@ -136,9 +177,9 @@ export function UpgradeModal() {
           <ul className="space-y-2 text-xs text-[#1c1613]">
             {(plusMonthly?.features ?? [
               'Complete coffee, tea, snacks & meal prices + budget per person',
-              'Verified Wi-Fi availability, Mbps speeds & work/meeting filters',
+              'Verified Wi-Fi speeds, passwords, socket availability & workspace details',
               'Side-by-side cafe comparison & custom personal collections',
-              'Exclusive cafe deals, partner perks & student discounts',
+              'Workspace seat bookings & exclusive subscriber perks',
             ])
               .slice(0, 5)
               .map((feat) => (
@@ -153,33 +194,46 @@ export function UpgradeModal() {
           </ul>
 
           <div className="space-y-2.5 pt-1">
-            <button
-              type="button"
-              onClick={() => handleCheckoutOrSignup('plus')}
-              className="w-full min-h-[46px] px-5 py-2.5 rounded-lg bg-[#b45309] hover:bg-[#92400e] text-white text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors"
-            >
-              <span>
-                {authenticated
-                  ? `Start Plus Monthly (₹${monthlyPrice}/mo)`
-                  : `Sign in & Unlock Plus (₹${monthlyPrice}/mo)`}
-              </span>
-              <ArrowRight className="w-4 h-4" aria-hidden="true" />
-            </button>
+            {isExpired ? (
+              <button
+                type="button"
+                onClick={() => handleCheckoutOrSignup(renewPlanId)}
+                className="w-full min-h-[46px] px-5 py-2.5 rounded-lg bg-[#b45309] hover:bg-[#92400e] text-white text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors"
+              >
+                <RefreshCw className="w-4 h-4" aria-hidden="true" />
+                <span>Renew Now</span>
+              </button>
+            ) : !isSuspended ? (
+              <button
+                type="button"
+                onClick={() => handleCheckoutOrSignup('plus')}
+                className="w-full min-h-[46px] px-5 py-2.5 rounded-lg bg-[#b45309] hover:bg-[#92400e] text-white text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors"
+              >
+                <span>
+                  {authenticated
+                    ? `Subscribe Now — Plus (₹${monthlyPrice}/mo)`
+                    : `Sign in & Subscribe (₹${monthlyPrice}/mo)`}
+                </span>
+                <ArrowRight className="w-4 h-4" aria-hidden="true" />
+              </button>
+            ) : null}
 
-            <button
-              type="button"
-              onClick={() => handleCheckoutOrSignup('premium')}
-              className="w-full min-h-[42px] px-4 py-2 rounded-lg bg-[#1c1613] hover:bg-[#312722] text-white text-xs font-semibold inline-flex items-center justify-center gap-2 transition-colors"
-            >
-              <span>Or Save 47% with Annual Plus (₹{annualPrice}/year)</span>
-            </button>
+            {!isSuspended && (
+              <button
+                type="button"
+                onClick={() => handleCheckoutOrSignup('premium')}
+                className="w-full min-h-[42px] px-4 py-2 rounded-lg bg-[#1c1613] hover:bg-[#312722] text-white text-xs font-semibold inline-flex items-center justify-center gap-2 transition-colors"
+              >
+                <span>Or Save 47% with Annual Plus (₹{annualPrice}/year)</span>
+              </button>
+            )}
 
             <Link
               to="/pricing"
               onClick={closeUpgradeModal}
               className="w-full min-h-[38px] px-4 py-2 rounded-lg bg-white border border-[#d6cbba] hover:bg-[#f3ede3] text-[#1c1613] text-xs font-semibold inline-flex items-center justify-center transition-colors"
             >
-              Compare Free vs Cafe Desk Plus
+              View Plans &amp; Permissions
             </Link>
           </div>
         </div>
@@ -187,3 +241,4 @@ export function UpgradeModal() {
     </div>
   );
 }
+

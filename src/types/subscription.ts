@@ -2,6 +2,20 @@ import type { LocationItem } from './cms';
 
 export type PlanTier = 'free' | 'plus' | 'premium' | (string & {});
 
+export type PlanPermissionKey =
+  | 'wifi_details'
+  | 'power_sockets'
+  | 'workspace_details'
+  | 'food_menu'
+  | 'menu_pricing'
+  | 'amenities'
+  | 'subscriber_benefits'
+  | 'booking'
+  | 'collections'
+  | 'compare';
+
+export type PlanPermissions = Record<PlanPermissionKey, boolean>;
+
 export interface SubscriptionPlan {
   id: PlanTier;
   name: string;
@@ -13,6 +27,8 @@ export interface SubscriptionPlan {
   usage_limits?: string;
   is_recommended?: boolean;
   features: string[];
+  permissions?: PlanPermissions;
+  cafe_access_scope?: 'all' | 'specific';
   sort_order: number;
   active: boolean;
   updated_at: number;
@@ -39,11 +55,18 @@ export interface UserSubscription {
   plan_name: string;
   price_inr: number;
   subscribed_price_inr?: number;
-  status: 'active' | 'cancelled' | 'expired' | 'past_due';
+  status: 'active' | 'cancelled' | 'expired' | 'past_due' | 'suspended';
   started_at: number;
   expires_at: number | null;
   auto_renew: boolean;
   cancelled_at: number | null;
+  expired?: boolean;
+  expired_from_plan?: string | null;
+  expired_from_plan_name?: string | null;
+  expired_at?: number | null;
+  suspended_at?: number | null;
+  effective_active?: boolean;
+  permissions?: PlanPermissions;
   updated_at: number;
 }
 

@@ -1,11 +1,13 @@
 import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
+  AlertTriangle,
   ArrowRight,
   Check,
   CheckCircle2,
   Crown,
   Minus,
+  RefreshCw,
   ShieldCheck,
   Sparkles,
 } from 'lucide-react';
@@ -92,7 +94,17 @@ function formatIntervalLabel(priceInr: number, intervalDays: number): string {
 export function PricingPage() {
   const navigate = useNavigate();
   const { settings } = useCms();
-  const { authenticated, tier, plans, openCheckout } = useAuth();
+  const {
+    authenticated,
+    tier,
+    subscription,
+    isSubscribed,
+    isExpired,
+    isSuspended,
+    expiredPlanName,
+    plans,
+    openCheckout,
+  } = useAuth();
 
   const currencySymbol = settings.currency_symbol || '₹';
   const activePlans = plans.filter((p) => p.active);
@@ -137,6 +149,44 @@ export function PricingPage() {
         </p>
       </header>
 
+      {/* Expired / Suspended Alert Banner */}
+      {(isExpired || isSuspended) && (
+        <div
+          role="alert"
+          className={`rounded-2xl border p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
+            isSuspended
+              ? 'bg-[#fef2f2] border-[#fecaca] text-[#991b1b]'
+              : 'bg-amber-50 border-amber-200 text-[#92400e]'
+          }`}
+        >
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" aria-hidden="true" />
+            <div className="space-y-0.5">
+              <p className="font-bold text-sm">
+                {isSuspended
+                  ? 'Your subscription access is suspended'
+                  : 'Your subscription has expired'}
+              </p>
+              <p className="text-xs opacity-90">
+                {isSuspended
+                  ? 'Paid cafe permissions are paused. Check your Account page or contact support.'
+                  : `${expiredPlanName || subscription?.plan_name || 'Your previous plan'} has ended. Choose a plan below or renew immediately to restore full cafe access.`}
+              </p>
+            </div>
+          </div>
+          {isExpired && (
+            <button
+              type="button"
+              onClick={() => openCheckout(subscription?.expired_from_plan || 'plus')}
+              className="shrink-0 inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg bg-[#b45309] hover:bg-[#92400e] text-white text-xs font-semibold"
+            >
+              <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Renew Subscription</span>
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Dynamic Active Membership Plans Grid */}
       <section
         aria-label="Subscription plans"
@@ -146,8 +196,10 @@ export function PricingPage() {
       >
         {activePlans.map((plan) => {
           const isDark = Boolean(plan.is_recommended);
-          const isCurrent = authenticated && tier === plan.id;
           const isFree = plan.id === 'free' || plan.price_inr <= 0;
+          const isCurrent =
+            authenticated && (isFree ? !isSubscribed : isSubscribed && tier === plan.id);
+          const wasExpiredPlan = isExpired && subscription?.expired_from_plan === plan.id;
           const intervalLabel = formatIntervalLabel(plan.price_inr, plan.interval_days);
 
           return (
@@ -288,6 +340,8 @@ export function PricingPage() {
                         : 'Get Started Free'
                       : isCurrent
                       ? 'Current Active Plan'
+                      : wasExpiredPlan
+                      ? `Renew ${plan.name} · ${currencySymbol}${plan.price_inr}`
                       : `Choose ${plan.name} · ${currencySymbol}${plan.price_inr}`}
                   </span>
                   {!(isCurrent && !isFree) && !isFree && (
