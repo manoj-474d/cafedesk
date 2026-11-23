@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import type { Express, Request, Response } from 'express';
+import Razorpay from 'razorpay';
 import {
   getDb,
   getUserEffectiveSubscription,
@@ -55,6 +56,52 @@ import type {
 
 const TEST_SIGNING_SECRET =
   process.env.SESSION_SECRET || 'cafedesk-local-razorpay-test-signing-key-2026';
+
+function getRazorpayConfig() {
+  const keyId = (process.env.RAZORPAY_KEY_ID || process.env.VITE_RAZORPAY_KEY_ID || '').trim();
+  const keySecret = (process.env.RAZORPAY_KEY_SECRET || '').trim();
+  const client =
+    keyId && keySecret
+      ? new Razorpay({
+          key_id: keyId,
+          key_secret: keySecret,
+        })
+      : null;
+  return { keyId, keySecret, client };
+}
+
+function verifyRazorpaySignature(
+  orderId: string,
+  paymentId: string,
+  signature: string,
+  keySecret: string
+): boolean {
+  if (!orderId || !paymentId || !signature || !keySecret) return false;
+  const expected = crypto
+    .createHmac('sha256', keySecret)
+    .update(`${orderId}|${paymentId}`)
+    .digest('hex');
+  const expectedBuf = Buffer.from(expected, 'utf8');
+  const providedBuf = Buffer.from(signature.trim(), 'utf8');
+  if (expectedBuf.length !== providedBuf.length) return false;
+  return crypto.timingSafeEqual(expectedBuf, providedBuf);
+}
+
+function extractRazorpayApiError(err: unknown): { status: number; message: string } {
+  const obj = err as {
+    statusCode?: number;
+    error?: { description?: string; reason?: string; code?: string };
+    message?: string;
+  };
+  const statusCode = Number(obj?.statusCode || 0);
+  const message =
+    cleanStr(obj?.error?.description || obj?.message || 'Razorpay API request failed.', 240) ||
+    'Razorpay API request failed.';
+  if (statusCode === 401) {
+    return { status: 401, message: 'Razorpay authentication failed. Verify API credentials.' };
+  }
+  return { status: 500, message };
+}
 
 function cleanStr(val: unknown, maxLen = 400): string {
   return String(val ?? '')
@@ -905,12 +952,84 @@ export function registerSubscriptionRoutes(app: Express): void {
 
   app.get('/api/plans', (_req: Request, res: Response) => {
     const plans = listPlansFromDb();
-    const keyId = (process.env.RAZORPAY_KEY_ID || process.env.VITE_RAZORPAY_KEY_ID || '').trim();
-    const hasSecret = Boolean((process.env.RAZORPAY_KEY_SECRET || '').trim());
+    const { keyId, keySecret } = getRazorpayConfig();
+    const enabled = Boolean(keyId && keySecret);
     res.json({
       plans,
-      razorpayEnabled: Boolean(keyId && hasSecret),
-      razorpayKeyId: keyId && hasSecret ? keyId : '',
+      razorpayEnabled: enabled,
+      razorpayKeyId: enabled ? keyId : '',
+    });
+  });
+
+  app.post('/api/create-order', requireUserAuth, async (req: Request, res: Response) => {
+    const amountRaw = Number(req.body?.amount);
+    const amount = Number.isFinite(amountRaw) ? Math.round(amountRaw) : 0;
+    if (!Number.isInteger(amount) || amount < 100) {
+      res.status(400).json({ error: 'Minimum order amount is 100 paise (₹1.00).' });
+      return;
+    }
+
+    const currencyRaw = cleanStr(req.body?.currency || 'INR', 8).toUpperCase();
+    const currency = /^[A-Z]{3}$/.test(currencyRaw) ? currencyRaw : 'INR';
+    const receipt = cleanStr(req.body?.receipt || makeReceiptNumber(), 40) || makeReceiptNumber();
+
+    const { keyId, client } = getRazorpayConfig();
+    if (!client || !keyId) {
+      res.status(500).json({ error: 'Razorpay credentials are not configured on the server.' });
+      return;
+    }
+
+    try {
+      const order = await client.orders.create({
+        amount,
+        currency,
+        receipt,
+        notes: {
+          user_id: String(req.user!.id),
+          email: req.user!.email,
+        },
+      });
+      res.json({
+        order_id: order.id,
+        amount: Number(order.amount),
+        currency: order.currency,
+        key_id: keyId,
+      });
+    } catch (err) {
+      console.error('Razorpay /api/create-order error:', err);
+      const mapped = extractRazorpayApiError(err);
+      res.status(mapped.status).json({ error: mapped.message });
+    }
+  });
+
+  app.post('/api/verify-payment', requireUserAuth, (req: Request, res: Response) => {
+    const orderId = cleanStr(req.body?.razorpay_order_id || req.body?.order_id, 120);
+    const paymentId = cleanStr(req.body?.razorpay_payment_id || req.body?.payment_id, 120);
+    const signature = cleanStr(req.body?.razorpay_signature || req.body?.signature, 256);
+
+    if (!orderId || !paymentId || !signature) {
+      res.status(400).json({
+        verified: false,
+        error: 'razorpay_order_id, razorpay_payment_id, and razorpay_signature are required.',
+      });
+      return;
+    }
+
+    const { keySecret } = getRazorpayConfig();
+    if (!keySecret) {
+      res.status(500).json({ verified: false, error: 'Razorpay secret is not configured.' });
+      return;
+    }
+
+    if (!verifyRazorpaySignature(orderId, paymentId, signature, keySecret)) {
+      res.status(400).json({ verified: false, error: 'Payment signature verification failed.' });
+      return;
+    }
+
+    res.json({
+      verified: true,
+      order_id: orderId,
+      payment_id: paymentId,
     });
   });
 
@@ -929,38 +1048,30 @@ export function registerSubscriptionRoutes(app: Express): void {
 
     const amountInr = targetPlan.price_inr;
     const amountPaise = Math.round(amountInr * 100);
+    if (amountPaise < 100) {
+      res.status(400).json({ error: 'Minimum payable amount is ₹1.00 (100 paise).' });
+      return;
+    }
     const receiptNumber = makeReceiptNumber();
     const now = Date.now();
     const db = getDb();
 
-    const rzpKey = (process.env.RAZORPAY_KEY_ID || '').trim();
-    const rzpSecret = (process.env.RAZORPAY_KEY_SECRET || '').trim();
+    const { keyId, client } = getRazorpayConfig();
 
-    if (rzpKey && rzpSecret) {
+    if (client && keyId) {
       try {
-        const authHeader = Buffer.from(`${rzpKey}:${rzpSecret}`).toString('base64');
-        const rzpRes = await fetch('https://api.razorpay.com/v1/orders', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Basic ${authHeader}`,
+        const orderData = await client.orders.create({
+          amount: amountPaise,
+          currency: 'INR',
+          receipt: receiptNumber,
+          notes: {
+            user_id: String(req.user!.id),
+            plan_id: planId,
+            email: req.user!.email,
           },
-          body: JSON.stringify({
-            amount: amountPaise,
-            currency: 'INR',
-            receipt: receiptNumber,
-            notes: {
-              user_id: String(req.user!.id),
-              plan_id: planId,
-              email: req.user!.email,
-            },
-          }),
         });
-        const orderData = (await rzpRes.json()) as { id?: string; error?: { description?: string } };
-        if (!rzpRes.ok || !orderData.id) {
-          res.status(502).json({
-            error: orderData.error?.description || 'Failed to initiate Razorpay payment order.',
-          });
+        if (!orderData?.id) {
+          res.status(500).json({ error: 'Failed to initiate Razorpay payment order.' });
           return;
         }
 
@@ -974,7 +1085,7 @@ export function registerSubscriptionRoutes(app: Express): void {
 
         res.json({
           mode: 'razorpay',
-          keyId: rzpKey,
+          keyId,
           orderId: orderData.id,
           paymentId: Number(insertPayment.lastInsertRowid),
           receiptNumber,
@@ -986,7 +1097,8 @@ export function registerSubscriptionRoutes(app: Express): void {
         return;
       } catch (err) {
         console.error('Razorpay order error:', err);
-        res.status(502).json({ error: 'Payment gateway could not be reached.' });
+        const mapped = extractRazorpayApiError(err);
+        res.status(mapped.status).json({ error: mapped.message });
         return;
       }
     }
@@ -1016,10 +1128,16 @@ export function registerSubscriptionRoutes(app: Express): void {
   });
 
   app.post('/api/billing/checkout/verify', requireUserAuth, (req: Request, res: Response) => {
-    const orderId = cleanStr(req.body?.orderId, 120);
+    const orderId = cleanStr(req.body?.orderId || req.body?.razorpay_order_id, 120);
     const paymentId = Number(req.body?.paymentId);
-    const providerPaymentId = cleanStr(req.body?.razorpayPaymentId || `pay_${crypto.randomBytes(6).toString('hex')}`, 120);
-    const razorpaySignature = cleanStr(req.body?.razorpaySignature, 256);
+    const explicitRazorpayPaymentId = cleanStr(
+      req.body?.razorpayPaymentId || req.body?.razorpay_payment_id,
+      120
+    );
+    const razorpaySignature = cleanStr(
+      req.body?.razorpaySignature || req.body?.razorpay_signature,
+      256
+    );
     const testToken = cleanStr(req.body?.testToken, 256);
     const methodRaw = cleanStr(req.body?.method, 20);
     const method =
@@ -1047,13 +1165,14 @@ export function registerSubscriptionRoutes(app: Express): void {
     }
 
     const planId = String(paymentRow.plan_id) as PlanTier;
+    let providerPaymentId = explicitRazorpayPaymentId;
     if (paymentRow.provider === 'razorpay') {
-      const rzpSecret = (process.env.RAZORPAY_KEY_SECRET || '').trim();
-      const expectedSig = crypto
-        .createHmac('sha256', rzpSecret)
-        .update(`${orderId}|${providerPaymentId}`)
-        .digest('hex');
-      if (!rzpSecret || !razorpaySignature || expectedSig !== razorpaySignature) {
+      if (!explicitRazorpayPaymentId || !razorpaySignature) {
+        res.status(400).json({ error: 'Missing razorpay_payment_id or razorpay_signature.' });
+        return;
+      }
+      const { keySecret } = getRazorpayConfig();
+      if (!verifyRazorpaySignature(orderId, explicitRazorpayPaymentId, razorpaySignature, keySecret)) {
         db.prepare(
           "UPDATE payments SET status = 'failed', failure_reason = 'Invalid Razorpay signature' WHERE id = ?"
         ).run(paymentId);
@@ -1061,6 +1180,7 @@ export function registerSubscriptionRoutes(app: Express): void {
         return;
       }
     } else {
+      providerPaymentId = explicitRazorpayPaymentId || `pay_${crypto.randomBytes(6).toString('hex')}`;
       const expectedTestToken = signTestOrderToken(orderId, req.user!.id, planId);
       if (!testToken || testToken !== expectedTestToken) {
         db.prepare(

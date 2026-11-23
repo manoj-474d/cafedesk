@@ -130,7 +130,13 @@ export function RazorpayCheckoutModal() {
         return;
       }
 
-      if (orderData.mode === 'razorpay' && orderData.keyId) {
+      const resolvedKeyId = (
+        orderData.keyId ||
+        import.meta.env.VITE_RAZORPAY_KEY_ID ||
+        ''
+      ).trim();
+
+      if (orderData.mode === 'razorpay' && resolvedKeyId) {
         const loaded = await loadRazorpayScript();
         if (!loaded || !window.Razorpay) {
           setError('Could not load Razorpay Checkout. Please check your connection.');
@@ -139,7 +145,7 @@ export function RazorpayCheckoutModal() {
         }
 
         const rzp = new window.Razorpay({
-          key: orderData.keyId,
+          key: resolvedKeyId,
           amount: orderData.amountPaise,
           currency: orderData.currency || 'INR',
           name: 'Cafe Desk',
@@ -155,36 +161,41 @@ export function RazorpayCheckoutModal() {
             razorpay_order_id: string;
             razorpay_signature: string;
           }) => {
-            const verRes = await fetch('/api/billing/checkout/verify', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
-              credentials: 'include',
-              body: JSON.stringify({
-                orderId: response.razorpay_order_id,
-                paymentId: orderData.paymentId,
-                razorpayPaymentId: response.razorpay_payment_id,
-                razorpaySignature: response.razorpay_signature,
-                method,
-              }),
-            });
-            const verData = (await verRes.json()) as AuthResponsePayload & {
-              error?: string;
-              payment?: {
-                receipt_number: string;
-                amount_inr: number;
-                plan_id: string;
-                method: string;
-                provider_payment_id: string;
+            try {
+              const verRes = await fetch('/api/billing/checkout/verify', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
+                credentials: 'include',
+                body: JSON.stringify({
+                  orderId: response.razorpay_order_id,
+                  paymentId: orderData.paymentId,
+                  razorpayPaymentId: response.razorpay_payment_id,
+                  razorpaySignature: response.razorpay_signature,
+                  method,
+                }),
+              });
+              const verData = (await verRes.json()) as AuthResponsePayload & {
+                error?: string;
+                payment?: {
+                  receipt_number: string;
+                  amount_inr: number;
+                  plan_id: string;
+                  method: string;
+                  provider_payment_id: string;
+                };
               };
-            };
-            if (!verRes.ok) {
-              setError(verData.error || 'Payment verification failed.');
+              if (!verRes.ok) {
+                setError(verData.error || 'Payment verification failed.');
+                setProcessing(false);
+                return;
+              }
+              applyAuthPayload(verData);
+              if (verData.payment) setReceipt(verData.payment);
+            } catch {
+              setError('Network error while verifying payment signature.');
+            } finally {
               setProcessing(false);
-              return;
             }
-            applyAuthPayload(verData);
-            if (verData.payment) setReceipt(verData.payment);
-            setProcessing(false);
           },
           modal: {
             ondismiss: async () => {
@@ -196,10 +207,29 @@ export function RazorpayCheckoutModal() {
                   paymentId: orderData.paymentId,
                   reason: 'Checkout closed before completing payment',
                 }),
-              });
+              }).catch(() => {});
+              setError('Payment cancelled. No amount was charged to your account.');
               setProcessing(false);
             },
           },
+        });
+        rzp.on('payment.failed', async (failRes: unknown) => {
+          const errObj = (
+            failRes as { error?: { description?: string; reason?: string } } | undefined
+          )?.error;
+          const failMsg =
+            errObj?.description || 'Payment failed in Razorpay Checkout. Please try again.';
+          await fetch('/api/billing/checkout/fail', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
+            credentials: 'include',
+            body: JSON.stringify({
+              paymentId: orderData.paymentId,
+              reason: failMsg,
+            }),
+          }).catch(() => {});
+          setError(failMsg);
+          setProcessing(false);
         });
         rzp.open();
         return;
