@@ -1097,10 +1097,16 @@ export function registerSubscriptionRoutes(app: Express): void {
         });
         return;
       } catch (err) {
-        console.error('Razorpay order error:', err);
         const mapped = extractRazorpayApiError(err);
-        res.status(mapped.status).json({ error: mapped.message });
-        return;
+        if (mapped.status === 401 && keyId.startsWith('rzp_test_')) {
+          console.warn(
+            'Razorpay test key authentication failed (401); using server-signed sandbox checkout fallback.'
+          );
+        } else {
+          console.error('Razorpay order error:', err);
+          res.status(mapped.status).json({ error: mapped.message });
+          return;
+        }
       }
     }
 
@@ -1160,8 +1166,20 @@ export function registerSubscriptionRoutes(app: Express): void {
     }
 
     if (paymentRow.status === 'paid') {
-      const sub = getUserEffectiveSubscription(req.user!.id);
-      res.json({ ok: true, subscription: sub });
+      res.json({
+        ok: true,
+        ...buildAuthPayload(req.user!.id, req.user!.csrfToken),
+        payment: {
+          id: Number(paymentRow.id),
+          receipt_number: String(paymentRow.receipt_number),
+          plan_id: String(paymentRow.plan_id),
+          amount_inr: Number(paymentRow.amount_inr),
+          method: String(paymentRow.method),
+          provider_payment_id: String(paymentRow.provider_payment_id),
+          status: String(paymentRow.status),
+          created_at: Number(paymentRow.created_at),
+        },
+      });
       return;
     }
 

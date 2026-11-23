@@ -94,6 +94,12 @@ function saveStaticSavedCafes(userKey: string, items: SavedCafeRecord[]): void {
 }
 
 const SESSION_TOKEN_STORAGE_KEY = 'cafedesk_user_session_token';
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').trim().replace(/\/+$/, '');
+
+export function resolveApiUrl(path: string): string {
+  if (!path.startsWith('/')) return path;
+  return API_BASE_URL ? `${API_BASE_URL}${path}` : path;
+}
 
 export function getUserSessionHeaders(): Record<string, string> {
   try {
@@ -149,8 +155,15 @@ interface AuthContextValue {
   applyAuthPayload: (payload: AuthResponsePayload) => void;
   exchangeSupabaseSession: (
     accessToken: string,
-    extra?: { fullName?: string; phone?: string; eventType?: string; session?: Session | null }
+    extra?: {
+      fullName?: string;
+      phone?: string;
+      eventType?: string;
+      session?: Session | null;
+      force?: boolean;
+    }
   ) => Promise<boolean>;
+  ensureBackendSession: () => Promise<boolean>;
   refreshAuth: () => Promise<void>;
   refreshPlans: () => Promise<void>;
   logout: () => Promise<void>;
@@ -197,6 +210,7 @@ const AuthContext = createContext<AuthContextValue>({
   closeCheckout: () => {},
   applyAuthPayload: () => {},
   exchangeSupabaseSession: async () => false,
+  ensureBackendSession: async () => false,
   refreshAuth: async () => {},
   refreshPlans: async () => {},
   logout: async () => {},
@@ -331,7 +345,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const refreshPlans = useCallback(async () => {
     try {
-      const res = await fetch('/api/plans');
+      const res = await fetch(resolveApiUrl('/api/plans'));
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
         const data = (await res.json()) as {
@@ -506,10 +520,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         phone?: string;
         eventType?: string;
         session?: Session | null;
+        force?: boolean;
       }
     ): Promise<boolean> => {
       if (!accessToken) return false;
-      if (exchangedTokenRef.current === accessToken) return true;
+      if (!extra?.force && exchangedTokenRef.current === accessToken) return true;
       if (inFlightExchangeRef.current?.token === accessToken) {
         return await inFlightExchangeRef.current.promise;
       }
@@ -545,7 +560,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         };
 
         try {
-          const res = await fetch('/api/auth/supabase-exchange', {
+          const res = await fetch(resolveApiUrl('/api/auth/supabase-exchange'), {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -645,7 +660,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
         }
       }
-      const res = await fetch('/api/auth/me', {
+      const res = await fetch(resolveApiUrl('/api/auth/me'), {
         credentials: 'include',
         headers: getUserSessionHeaders(),
       });
@@ -705,13 +720,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, [exchangeSupabaseSession]);
 
+  const ensureBackendSession = useCallback(async (): Promise<boolean> => {
+    const existingHeaders = getUserSessionHeaders();
+    if (existingHeaders['X-CafeDesk-Session']) return true;
+    if (!isSupabaseConfigured || !supabase) return Boolean(user);
+    try {
+      const { data } = await supabase.auth.getSession();
+      const accessToken = data.session?.access_token;
+      if (!accessToken) return false;
+      return await exchangeSupabaseSession(accessToken, {
+        eventType: 'checkout_session_sync',
+        session: data.session,
+        force: true,
+      });
+    } catch {
+      return false;
+    }
+  }, [exchangeSupabaseSession, user]);
+
   const logout = useCallback(async () => {
     exchangedTokenRef.current = '';
     const sessionHeaders = getUserSessionHeaders();
     if (isSupabaseConfigured && supabase) {
       await supabase.auth.signOut().catch(() => {});
     }
-    await fetch('/api/auth/logout', {
+    await fetch(resolveApiUrl('/api/auth/logout'), {
       method: 'POST',
       credentials: 'include',
       headers: sessionHeaders,
@@ -997,6 +1030,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         closeCheckout,
         applyAuthPayload,
         exchangeSupabaseSession,
+        ensureBackendSession,
         refreshAuth,
         refreshPlans,
         logout,

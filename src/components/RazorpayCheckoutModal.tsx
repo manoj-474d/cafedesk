@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import {
   getUserSessionHeaders,
+  resolveApiUrl,
   useAuth,
   type AuthResponsePayload,
 } from '../context/AuthContext';
@@ -27,15 +28,85 @@ declare global {
 
 type PayMethod = 'upi' | 'card' | 'netbanking';
 
+interface ParsedApiResponse<T> {
+  ok: boolean;
+  status: number;
+  data: T | null;
+  isMissingBackend: boolean;
+  rawText: string;
+}
+
+async function safeReadJson<T>(res: Response): Promise<ParsedApiResponse<T>> {
+  const contentType = (res.headers.get('content-type') || '').toLowerCase();
+  const rawText = await res.text().catch(() => '');
+  const trimmed = rawText.trim();
+  const looksHtml =
+    contentType.includes('text/html') ||
+    trimmed.startsWith('<!doctype') ||
+    trimmed.startsWith('<!DOCTYPE') ||
+    trimmed.startsWith('<html');
+
+  let data: T | null = null;
+  if (trimmed && !looksHtml) {
+    try {
+      data = JSON.parse(trimmed) as T;
+    } catch {
+      data = null;
+    }
+  }
+
+  const isMissingBackend =
+    res.status === 404 ||
+    res.status === 405 ||
+    (looksHtml && !contentType.includes('application/json'));
+
+  return {
+    ok: res.ok,
+    status: res.status,
+    data,
+    isMissingBackend,
+    rawText,
+  };
+}
+
 function loadRazorpayScript(): Promise<boolean> {
   if (typeof window === 'undefined') return Promise.resolve(false);
   if (window.Razorpay) return Promise.resolve(true);
+
   return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      window.clearInterval(pollTimer);
+      window.clearTimeout(timeoutTimer);
+      resolve(ok);
+    };
+
+    const pollTimer = window.setInterval(() => {
+      if (window.Razorpay) {
+        finish(true);
+      }
+    }, 100);
+
+    const timeoutTimer = window.setTimeout(() => {
+      finish(Boolean(window.Razorpay));
+    }, 10000);
+
+    const existing = document.querySelector<HTMLScriptElement>(
+      'script[src*="checkout.razorpay.com/v1/checkout.js"]'
+    );
+    if (existing) {
+      existing.addEventListener('load', () => finish(Boolean(window.Razorpay)), { once: true });
+      existing.addEventListener('error', () => finish(false), { once: true });
+      return;
+    }
+
     const script = document.createElement('script');
     script.src = 'https://checkout.razorpay.com/v1/checkout.js';
     script.async = true;
-    script.onload = () => resolve(true);
-    script.onerror = () => resolve(false);
+    script.onload = () => finish(Boolean(window.Razorpay));
+    script.onerror = () => finish(false);
     document.body.appendChild(script);
   });
 }
@@ -48,6 +119,7 @@ export function RazorpayCheckoutModal() {
     checkoutPlan,
     closeCheckout,
     applyAuthPayload,
+    ensureBackendSession,
     razorpayEnabled,
   } = useAuth();
 
@@ -89,13 +161,30 @@ export function RazorpayCheckoutModal() {
     setError('');
 
     try {
-      const orderRes = await fetch('/api/billing/checkout/create-order', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
-        credentials: 'include',
-        body: JSON.stringify({ planId: checkoutPlan, method }),
-      });
-      const orderData = (await orderRes.json()) as {
+      await ensureBackendSession();
+
+      const requestCreateOrder = () =>
+        fetch(resolveApiUrl('/api/billing/checkout/create-order'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
+          credentials: 'include',
+          body: JSON.stringify({ planId: checkoutPlan, method }),
+        });
+
+      let orderRes = await requestCreateOrder();
+      if (orderRes.status === 401) {
+        try {
+          localStorage.removeItem('cafedesk_user_session_token');
+        } catch {
+          // Ignore storage errors
+        }
+        const synced = await ensureBackendSession();
+        if (synced) {
+          orderRes = await requestCreateOrder();
+        }
+      }
+
+      const parsedOrder = await safeReadJson<{
         error?: string;
         mode?: 'razorpay' | 'test';
         keyId?: string;
@@ -105,16 +194,28 @@ export function RazorpayCheckoutModal() {
         amountPaise?: number;
         currency?: string;
         testToken?: string;
-      };
+      }>(orderRes);
 
-      if (!orderRes.ok || !orderData.orderId || !orderData.paymentId) {
-        setError(orderData.error || 'Unable to start payment checkout.');
+      if (parsedOrder.isMissingBackend) {
+        setError(
+          'Payment backend API is not active on this static host. Run the Cafe Desk full-stack server or configure VITE_API_BASE_URL to enable Razorpay checkout.'
+        );
+        setProcessing(false);
+        return;
+      }
+
+      const orderData = parsedOrder.data;
+      if (!parsedOrder.ok || !orderData?.orderId || !orderData?.paymentId) {
+        setError(
+          orderData?.error ||
+            `Unable to start payment checkout (HTTP ${parsedOrder.status}). Please try again.`
+        );
         setProcessing(false);
         return;
       }
 
       if (simulateFailure) {
-        await fetch('/api/billing/checkout/fail', {
+        await fetch(resolveApiUrl('/api/billing/checkout/fail'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
           credentials: 'include',
@@ -122,7 +223,7 @@ export function RazorpayCheckoutModal() {
             paymentId: orderData.paymentId,
             reason: `Simulated ${method.toUpperCase()} payment decline`,
           }),
-        });
+        }).catch(() => {});
         setError(
           `Payment was declined by bank (${method.toUpperCase()}). No amount was charged and your subscription remains unchanged.`
         );
@@ -139,7 +240,7 @@ export function RazorpayCheckoutModal() {
       if (orderData.mode === 'razorpay' && resolvedKeyId) {
         const loaded = await loadRazorpayScript();
         if (!loaded || !window.Razorpay) {
-          setError('Could not load Razorpay Checkout. Please check your connection.');
+          setError('Could not load Razorpay Checkout script. Please check your internet connection and disable any script blockers.');
           setProcessing(false);
           return;
         }
@@ -154,6 +255,12 @@ export function RazorpayCheckoutModal() {
           prefill: {
             name: user?.name || '',
             email: user?.email || '',
+            contact: user?.phone || '',
+            method,
+          },
+          notes: {
+            plan_id: checkoutPlan,
+            selected_method: method,
           },
           theme: { color: '#b45309' },
           handler: async (response: {
@@ -162,7 +269,7 @@ export function RazorpayCheckoutModal() {
             razorpay_signature: string;
           }) => {
             try {
-              const verRes = await fetch('/api/billing/checkout/verify', {
+              const verRes = await fetch(resolveApiUrl('/api/billing/checkout/verify'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
                 credentials: 'include',
@@ -174,22 +281,30 @@ export function RazorpayCheckoutModal() {
                   method,
                 }),
               });
-              const verData = (await verRes.json()) as AuthResponsePayload & {
-                error?: string;
-                payment?: {
-                  receipt_number: string;
-                  amount_inr: number;
-                  plan_id: string;
-                  method: string;
-                  provider_payment_id: string;
-                };
-              };
-              if (!verRes.ok) {
-                setError(verData.error || 'Payment verification failed.');
+              const parsedVer = await safeReadJson<
+                AuthResponsePayload & {
+                  error?: string;
+                  payment?: {
+                    receipt_number: string;
+                    amount_inr: number;
+                    plan_id: string;
+                    method: string;
+                    provider_payment_id: string;
+                  };
+                }
+              >(verRes);
+              const verData = parsedVer.data;
+              if (!parsedVer.ok || !verData) {
+                setError(
+                  verData?.error ||
+                    `Payment verification failed (HTTP ${parsedVer.status}).`
+                );
                 setProcessing(false);
                 return;
               }
-              applyAuthPayload(verData);
+              if (verData.authenticated && verData.user) {
+                applyAuthPayload(verData);
+              }
               if (verData.payment) setReceipt(verData.payment);
             } catch {
               setError('Network error while verifying payment signature.');
@@ -199,7 +314,7 @@ export function RazorpayCheckoutModal() {
           },
           modal: {
             ondismiss: async () => {
-              await fetch('/api/billing/checkout/fail', {
+              await fetch(resolveApiUrl('/api/billing/checkout/fail'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
                 credentials: 'include',
@@ -219,7 +334,7 @@ export function RazorpayCheckoutModal() {
           )?.error;
           const failMsg =
             errObj?.description || 'Payment failed in Razorpay Checkout. Please try again.';
-          await fetch('/api/billing/checkout/fail', {
+          await fetch(resolveApiUrl('/api/billing/checkout/fail'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
             credentials: 'include',
@@ -231,12 +346,18 @@ export function RazorpayCheckoutModal() {
           setError(failMsg);
           setProcessing(false);
         });
-        rzp.open();
+        try {
+          rzp.open();
+        } catch (openErr) {
+          console.error('Razorpay open error:', openErr);
+          setError('Unable to open Razorpay Checkout window. Please try again.');
+          setProcessing(false);
+        }
         return;
       }
 
       // Server-signed Razorpay-compatible test verification flow
-      const verifyRes = await fetch('/api/billing/checkout/verify', {
+      const verifyRes = await fetch(resolveApiUrl('/api/billing/checkout/verify'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
         credentials: 'include',
@@ -247,28 +368,41 @@ export function RazorpayCheckoutModal() {
           method,
         }),
       });
-      const verifyData = (await verifyRes.json()) as AuthResponsePayload & {
-        error?: string;
-        payment?: {
-          receipt_number: string;
-          amount_inr: number;
-          plan_id: string;
-          method: string;
-          provider_payment_id: string;
-        };
-      };
+      const parsedVerify = await safeReadJson<
+        AuthResponsePayload & {
+          error?: string;
+          payment?: {
+            receipt_number: string;
+            amount_inr: number;
+            plan_id: string;
+            method: string;
+            provider_payment_id: string;
+          };
+        }
+      >(verifyRes);
+      const verifyData = parsedVerify.data;
 
-      if (!verifyRes.ok) {
-        setError(verifyData.error || 'Payment verification failed.');
+      if (!parsedVerify.ok || !verifyData) {
+        setError(
+          verifyData?.error || `Payment verification failed (HTTP ${parsedVerify.status}).`
+        );
         setProcessing(false);
         return;
       }
 
-      applyAuthPayload(verifyData);
+      if (verifyData.authenticated && verifyData.user) {
+        applyAuthPayload(verifyData);
+      }
       if (verifyData.payment) setReceipt(verifyData.payment);
       setProcessing(false);
-    } catch {
-      setError('Network error while connecting to payment service.');
+    } catch (err) {
+      const msg =
+        typeof navigator !== 'undefined' && navigator.onLine === false
+          ? 'You appear to be offline. Please check your internet connection and try again.'
+          : err instanceof Error && err.message && !err.message.includes('Failed to fetch')
+            ? `Unable to reach payment service (${err.message}).`
+            : 'Unable to reach payment service. Please check your connection and try again.';
+      setError(msg);
       setProcessing(false);
     }
   };
@@ -278,11 +412,11 @@ export function RazorpayCheckoutModal() {
       role="dialog"
       aria-modal="true"
       aria-labelledby="checkout-modal-title"
-      className="fixed inset-0 z-50 bg-[#1c1613]/75 backdrop-blur-sm flex items-center justify-center p-4"
+      className="fixed inset-0 z-50 bg-[#1c1613]/75 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4"
       onClick={closeCheckout}
     >
       <div
-        className="w-full max-w-lg rounded-2xl bg-[#faf7f2] border border-[#e6ddd0] shadow-2xl overflow-hidden text-[#1c1613]"
+        className="w-full max-w-lg max-h-[92vh] overflow-y-auto rounded-2xl bg-[#faf7f2] border border-[#e6ddd0] shadow-2xl text-[#1c1613]"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="p-5 sm:p-6 bg-[#1c1613] text-[#faf7f2] flex items-center justify-between gap-4">
