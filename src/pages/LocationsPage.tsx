@@ -21,6 +21,7 @@ import {
   SlidersHorizontal,
   Star,
   Wifi,
+  X,
 } from 'lucide-react';
 import {
   BENGALURU_AREAS,
@@ -64,6 +65,24 @@ type SortOption =
 
 type ViewMode = 'split' | 'list' | 'map';
 
+function CardSkeletonPlaceholder() {
+  return (
+    <div className="bg-white rounded-2xl border border-[#e6ddd0] overflow-hidden animate-pulse">
+      <div className="aspect-[16/10] bg-[#efe7da]" />
+      <div className="p-4 sm:p-5 space-y-3">
+        <div className="h-3 w-28 bg-[#efe7da] rounded" />
+        <div className="h-5 w-3/4 bg-[#efe7da] rounded" />
+        <div className="h-3.5 w-full bg-[#efe7da] rounded" />
+        <div className="h-3.5 w-2/3 bg-[#efe7da] rounded" />
+        <div className="pt-3 border-t border-[#e6ddd0] flex justify-between">
+          <div className="h-8 w-24 bg-[#efe7da] rounded-xl" />
+          <div className="h-8 w-20 bg-[#efe7da] rounded-xl" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function LocationsPage() {
   const { locations, settings } = useCms();
   const {
@@ -96,6 +115,7 @@ export function LocationsPage() {
     settings.access_control?.sections?.workspace_details === 'public' ||
     hasPermission('workspace_details');
   const canCompare = isSubscribed && hasPermission('compare');
+
   const {
     userLocation,
     geoStatus,
@@ -118,44 +138,95 @@ export function LocationsPage() {
     allowIndexing: settings.seo_allow_indexing,
   });
 
-  const [viewMode, setViewMode] = useState<ViewMode>(() =>
-    searchParams.get('view') === 'map' ? 'map' : 'split'
-  );
-  const [query, setQuery] = useState(searchParams.get('q') ?? '');
-  const [area, setArea] = useState(searchParams.get('area') ?? '');
-  const [mode, setMode] = useState<string>(searchParams.get('mode') ?? '');
-  const [budget, setBudget] = useState<BudgetBracketId | ''>(
-    (searchParams.get('budget') as BudgetBracketId) || ''
-  );
-  const [maxDistanceKm, setMaxDistanceKm] = useState<number>(0);
-  const [minWifi, setMinWifi] = useState<number>(0);
-  const [minRating, setMinRating] = useState<number>(0);
+  const FILTERS_STORAGE_KEY = 'cafedesk_locations_filters_v1';
+  const readStoredFilters = (): Record<string, unknown> => {
+    try {
+      const raw = sessionStorage.getItem(FILTERS_STORAGE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
+    } catch {
+      return {};
+    }
+  };
+  const stored = useMemo(() => readStoredFilters(), []);
 
-  const [wifiOnly, setWifiOnly] = useState(searchParams.get('wifi') === '1');
-  const [laptopFriendlyOnly, setLaptopFriendlyOnly] = useState(
-    searchParams.get('workFriendly') === '1'
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    if (searchParams.get('view') === 'map') return 'map';
+    if (typeof window !== 'undefined' && window.innerWidth < 1024) return 'list';
+    return 'split';
+  });
+  const [query, setQuery] = useState(
+    () => searchParams.get('q') ?? (typeof stored.q === 'string' ? stored.q : '')
   );
-  const [socketsOnly, setSocketsOnly] = useState(searchParams.get('sockets') === '1');
-  const [quietOnly, setQuietOnly] = useState(searchParams.get('quiet') === '1');
-  const [comfortableOnly, setComfortableOnly] = useState(false);
-  const [studyOnly, setStudyOnly] = useState(false);
-  const [workOnly, setWorkOnly] = useState(searchParams.get('workFriendly') === '1');
-  const [meetingOnly, setMeetingOnly] = useState(searchParams.get('meeting') === '1');
-  const [teaCoffeeOnly, setTeaCoffeeOnly] = useState(searchParams.get('teaCoffee') === '1');
+  const [area, setArea] = useState(
+    () => searchParams.get('area') ?? (typeof stored.area === 'string' ? stored.area : '')
+  );
+  const [mode, setMode] = useState<string>(
+    () => searchParams.get('mode') ?? (typeof stored.mode === 'string' ? stored.mode : '')
+  );
+  const [budget, setBudget] = useState<BudgetBracketId | ''>(
+    () =>
+      (searchParams.get('budget') as BudgetBracketId) ||
+      (typeof stored.budget === 'string' ? (stored.budget as BudgetBracketId) : '')
+  );
+  const [maxDistanceKm, setMaxDistanceKm] = useState<number>(() =>
+    typeof stored.maxDistanceKm === 'number' ? stored.maxDistanceKm : 0
+  );
+  const [minWifi, setMinWifi] = useState<number>(() =>
+    typeof stored.minWifi === 'number' ? stored.minWifi : 0
+  );
+  const [minRating, setMinRating] = useState<number>(() =>
+    typeof stored.minRating === 'number' ? stored.minRating : 0
+  );
+
+  const [wifiOnly, setWifiOnly] = useState(
+    () => searchParams.get('wifi') === '1' || Boolean(stored.wifiOnly)
+  );
+  const [laptopFriendlyOnly, setLaptopFriendlyOnly] = useState(
+    () => searchParams.get('workFriendly') === '1' || Boolean(stored.laptopFriendlyOnly)
+  );
+  const [socketsOnly, setSocketsOnly] = useState(
+    () => searchParams.get('sockets') === '1' || Boolean(stored.socketsOnly)
+  );
+  const [quietOnly, setQuietOnly] = useState(
+    () => searchParams.get('quiet') === '1' || Boolean(stored.quietOnly)
+  );
+  const [comfortableOnly, setComfortableOnly] = useState(() => Boolean(stored.comfortableOnly));
+  const [studyOnly, setStudyOnly] = useState(() => Boolean(stored.studyOnly));
+  const [workOnly, setWorkOnly] = useState(
+    () => searchParams.get('workFriendly') === '1' || Boolean(stored.workOnly)
+  );
+  const [meetingOnly, setMeetingOnly] = useState(
+    () => searchParams.get('meeting') === '1' || Boolean(stored.meetingOnly)
+  );
+  const [teaCoffeeOnly, setTeaCoffeeOnly] = useState(
+    () => searchParams.get('teaCoffee') === '1' || Boolean(stored.teaCoffeeOnly)
+  );
   const [bakerySnacksOnly, setBakerySnacksOnly] = useState(
-    searchParams.get('bakerySnacks') === '1'
+    () => searchParams.get('bakerySnacks') === '1' || Boolean(stored.bakerySnacksOnly)
   );
   const [burgersSandwichesOnly, setBurgersSandwichesOnly] = useState(
-    searchParams.get('burgersSandwiches') === '1'
+    () => searchParams.get('burgersSandwiches') === '1' || Boolean(stored.burgersSandwichesOnly)
   );
-  const [openNowOnly, setOpenNowOnly] = useState(false);
-  const [verifiedOnly, setVerifiedOnly] = useState(false);
-  const [outdoorOnly, setOutdoorOnly] = useState(searchParams.get('outdoor') === '1');
-  const [collectionFilter, setCollectionFilter] = useState(searchParams.get('collection') ?? '');
-  const [atmosphere, setAtmosphere] = useState<'any' | 'quiet' | 'lively'>('any');
+  const [openNowOnly, setOpenNowOnly] = useState(() => Boolean(stored.openNowOnly));
+  const [verifiedOnly, setVerifiedOnly] = useState(() => Boolean(stored.verifiedOnly));
+  const [outdoorOnly, setOutdoorOnly] = useState(
+    () => searchParams.get('outdoor') === '1' || Boolean(stored.outdoorOnly)
+  );
+  const [collectionFilter, setCollectionFilter] = useState(
+    () => searchParams.get('collection') ?? (typeof stored.collectionFilter === 'string' ? stored.collectionFilter : '')
+  );
+  const [atmosphere, setAtmosphere] = useState<'any' | 'quiet' | 'lively'>(() =>
+    stored.atmosphere === 'quiet' || stored.atmosphere === 'lively' ? stored.atmosphere : 'any'
+  );
 
   const [sortBy, setSortBy] = useState<SortOption>(() =>
-    searchParams.get('nearby') === '1' ? 'distance' : 'featured'
+    searchParams.get('nearby') === '1'
+      ? 'distance'
+      : typeof stored.sortBy === 'string'
+      ? (stored.sortBy as SortOption)
+      : 'featured'
   );
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const [focusCenter, setFocusCenter] = useState<{ lat: number; lng: number } | null>(null);
@@ -163,7 +234,75 @@ export function LocationsPage() {
   const autoNearbyTriggeredRef = useRef(false);
   const autoLiveQueryTriggeredRef = useRef(false);
 
-  // Trigger GPS + nearby search automatically when navigated via "Find Near Me" (?nearby=1)
+  useEffect(() => {
+    if (searchParams.get('view') === 'map') {
+      setViewMode('map');
+    } else if (typeof window !== 'undefined' && window.innerWidth < 1024 && viewMode === 'split') {
+      setViewMode('list');
+    }
+  }, [searchParams]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(
+        FILTERS_STORAGE_KEY,
+        JSON.stringify({
+          q: query,
+          area,
+          mode,
+          budget,
+          maxDistanceKm,
+          minWifi,
+          minRating,
+          wifiOnly,
+          laptopFriendlyOnly,
+          socketsOnly,
+          quietOnly,
+          comfortableOnly,
+          studyOnly,
+          workOnly,
+          meetingOnly,
+          teaCoffeeOnly,
+          bakerySnacksOnly,
+          burgersSandwichesOnly,
+          openNowOnly,
+          verifiedOnly,
+          outdoorOnly,
+          collectionFilter,
+          atmosphere,
+          sortBy,
+        })
+      );
+    } catch {
+      // Ignore storage errors
+    }
+  }, [
+    query,
+    area,
+    mode,
+    budget,
+    maxDistanceKm,
+    minWifi,
+    minRating,
+    wifiOnly,
+    laptopFriendlyOnly,
+    socketsOnly,
+    quietOnly,
+    comfortableOnly,
+    studyOnly,
+    workOnly,
+    meetingOnly,
+    teaCoffeeOnly,
+    bakerySnacksOnly,
+    burgersSandwichesOnly,
+    openNowOnly,
+    verifiedOnly,
+    outdoorOnly,
+    collectionFilter,
+    atmosphere,
+    sortBy,
+  ]);
+
   useEffect(() => {
     if (searchParams.get('nearby') !== '1' || autoNearbyTriggeredRef.current) return;
     autoNearbyTriggeredRef.current = true;
@@ -178,7 +317,6 @@ export function LocationsPage() {
     })();
   }, [searchParams, userLocation, requestUserLocation, discoverCafesNear]);
 
-  // Trigger live Bengaluru Google Places search automatically if navigated with ?live=1&q=...
   useEffect(() => {
     if (!placesReady || autoLiveQueryTriggeredRef.current) return;
     const liveParam = searchParams.get('live');
@@ -284,6 +422,11 @@ export function LocationsPage() {
     setAtmosphere('any');
     setSortBy('featured');
     setFocusCenter(null);
+    try {
+      sessionStorage.removeItem(FILTERS_STORAGE_KEY);
+    } catch {
+      // Ignore
+    }
     setSearchParams({}, { replace: true });
   };
 
@@ -461,7 +604,6 @@ export function LocationsPage() {
     sortBy,
   ]);
 
-  // Automatically query live Bengaluru places if curated matches are zero for a specific search
   useEffect(() => {
     const trimmed = query.trim();
     if (!placesReady || trimmed.length < 3 || filteredLocations.length > 0) return;
@@ -488,37 +630,367 @@ export function LocationsPage() {
     });
   }, [nearbyPlaces, nearbyLabel, maxDistanceKm, minRating, query]);
 
+  const filterControlsBody = (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-[#e6ddd0]">
+        <div className="flex flex-wrap items-center gap-2">
+          {[
+            { id: '', label: 'All Cafes' },
+            { id: 'trending', label: 'Trending' },
+            { id: 'hidden-gems', label: 'Hidden Gems' },
+            { id: 'outdoor', label: 'Outdoor Corners' },
+            { id: 'dates', label: 'Dates & Catchups' },
+          ].map((colChip) => (
+            <button
+              key={colChip.id || 'all'}
+              type="button"
+              onClick={() => setCollectionFilter(colChip.id)}
+              className={`min-h-[38px] px-3.5 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
+                collectionFilter === colChip.id
+                  ? 'bg-[#1c1613] text-white border-[#1c1613]'
+                  : 'bg-[#faf7f2] text-[#5c4e45] border-[#e6ddd0] hover:border-[#b45309] hover:text-[#1c1613]'
+              }`}
+            >
+              {colChip.label}
+            </button>
+          ))}
+        </div>
+        <Link
+          to="/finder"
+          className="text-xs font-semibold text-[#b45309] hover:underline whitespace-nowrap"
+        >
+          Need tailored picks? Open Cafe Finder &rarr;
+        </Link>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+        <div className="sm:col-span-2">
+          <label htmlFor="loc-q" className="block text-xs font-medium text-[#5c4e45] mb-1.5">
+            Search any Bengaluru cafe, street, item, or locality
+          </label>
+          <div className="flex gap-2 items-center">
+            <div className="flex-1 min-w-0">
+              <CafeAutocompleteSearch
+                id="loc-q"
+                value={query}
+                onChange={(val) => {
+                  setQuery(val);
+                  syncQueryParams({ q: val });
+                }}
+                onSubmitQuery={(q) => void searchLiveCafesInBengaluru(q)}
+                placeholder="Search Third Wave, Indiranagar, tea, coffee, burgers..."
+              />
+            </div>
+            {query.trim().length >= 2 && (
+              <button
+                type="button"
+                disabled={nearbyLoading}
+                onClick={() => void searchLiveCafesInBengaluru(query)}
+                className="h-12 px-4 rounded-xl bg-[#1b4d3e] hover:bg-[#133a2e] disabled:opacity-60 text-white text-xs font-semibold inline-flex items-center gap-1.5 shrink-0 transition-colors"
+              >
+                <Search className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>{nearbyLoading ? 'Searching...' : 'Search Live'}</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div>
+          <label htmlFor="loc-area" className="block text-xs font-medium text-[#5c4e45] mb-1.5">
+            Bengaluru Locality
+          </label>
+          <select
+            id="loc-area"
+            value={area}
+            onChange={(e) => {
+              setArea(e.target.value);
+              syncQueryParams({ area: e.target.value });
+            }}
+            className="w-full h-12 px-3 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-sm font-medium text-[#1c1613]"
+          >
+            <option value="">All Bengaluru Areas</option>
+            {areaOptions.map((a) => (
+              <option key={a} value={a}>
+                {a}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label htmlFor="loc-dist" className="block text-xs font-medium text-[#5c4e45] mb-1.5">
+            Distance From Me
+          </label>
+          <select
+            id="loc-dist"
+            value={maxDistanceKm}
+            onChange={(e) => handleDistanceChange(Number(e.target.value))}
+            className="w-full h-12 px-3 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-sm font-medium text-[#1c1613]"
+          >
+            <option value={0}>Any distance</option>
+            <option value={2}>Within 2 km</option>
+            <option value={5}>Within 5 km</option>
+            <option value={10}>Within 10 km</option>
+          </select>
+        </div>
+
+        <div>
+          <label htmlFor="loc-mode" className="block text-xs font-medium text-[#5c4e45] mb-1.5">
+            Purpose / Atmosphere
+          </label>
+          <select
+            id="loc-mode"
+            value={mode}
+            onChange={(e) => {
+              setMode(e.target.value);
+              syncQueryParams({ mode: e.target.value });
+            }}
+            className="w-full h-12 px-3 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-sm font-medium text-[#1c1613]"
+          >
+            <option value="">Any purpose</option>
+            {BROWSING_MODES.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.title}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label
+            htmlFor="loc-budget"
+            className="flex items-center justify-between text-xs font-medium text-[#5c4e45] mb-1.5"
+          >
+            <span>Budget Per Person</span>
+            {!canViewPricing && (
+              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-[#b45309]">
+                <Lock className="w-3 h-3" aria-hidden="true" />
+                {isExpired ? 'Expired' : 'Subscribers'}
+              </span>
+            )}
+          </label>
+          <select
+            id="loc-budget"
+            value={canViewPricing ? budget : ''}
+            onChange={(e) => {
+              if (!canViewPricing) {
+                openUpgradeModal({
+                  featureName: 'Budget Per Person Filter',
+                  requiredPlan: 'plus',
+                  description:
+                    'Filter cafes by average spend per person and compare full food & beverage prices with an active Cafe Desk subscription.',
+                });
+                return;
+              }
+              const val = e.target.value as BudgetBracketId | '';
+              setBudget(val);
+              syncQueryParams({ budget: val });
+            }}
+            className="w-full h-12 px-3 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-sm font-medium text-[#1c1613]"
+          >
+            <option value="">Any budget</option>
+            {BUDGET_BRACKETS.map((b) => (
+              <option key={b.id} value={b.id}>
+                {canViewPricing ? b.label : `🔒 ${b.label}`}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label
+            htmlFor="loc-wifi"
+            className="flex items-center justify-between text-xs font-medium text-[#5c4e45] mb-1.5"
+          >
+            <span>Minimum Wi-Fi Speed</span>
+            {!canViewWifi && (
+              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-[#b45309]">
+                <Lock className="w-3 h-3" aria-hidden="true" />
+                {isExpired ? 'Expired' : 'Subscribers'}
+              </span>
+            )}
+          </label>
+          <select
+            id="loc-wifi"
+            value={canViewWifi ? minWifi : 0}
+            onChange={(e) => {
+              if (!canViewWifi) {
+                openUpgradeModal({
+                  featureName: 'Minimum Wi-Fi Speed Filter',
+                  requiredPlan: 'plus',
+                  description:
+                    'Filter cafes by measured Wi-Fi speeds (50+, 80+, 100+ Mbps) with an active Cafe Desk subscription.',
+                });
+                return;
+              }
+              setMinWifi(Number(e.target.value));
+            }}
+            className="w-full h-12 px-3 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-sm font-medium text-[#1c1613]"
+          >
+            <option value={0}>Any speed</option>
+            <option value={50}>{canViewWifi ? '50+ Mbps (Measured)' : '🔒 50+ Mbps (Subscribers)'}</option>
+            <option value={80}>{canViewWifi ? '80+ Mbps (Measured)' : '🔒 80+ Mbps (Subscribers)'}</option>
+            <option value={100}>{canViewWifi ? '100+ Mbps (Measured)' : '🔒 100+ Mbps (Subscribers)'}</option>
+          </select>
+        </div>
+
+        <div>
+          <label htmlFor="loc-rating" className="block text-xs font-medium text-[#5c4e45] mb-1.5">
+            Google Rating
+          </label>
+          <select
+            id="loc-rating"
+            value={minRating}
+            onChange={(e) => setMinRating(Number(e.target.value))}
+            className="w-full h-12 px-3 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-sm font-medium text-[#1c1613]"
+          >
+            <option value={0}>Any rating</option>
+            <option value={4.0}>4.0+ stars</option>
+            <option value={4.5}>4.5+ stars</option>
+          </select>
+        </div>
+      </div>
+
+      {/* Amenity & Suitability Filter Chips */}
+      <div className="pt-3 border-t border-[#e6ddd0] space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          {[
+            { label: 'Laptop-friendly', checked: laptopFriendlyOnly, onChange: setLaptopFriendlyOnly, allowed: canViewWorkspace },
+            { label: 'Comfortable seating', checked: comfortableOnly, onChange: setComfortableOnly, allowed: canViewWorkspace },
+            { label: 'Suitable for studying', checked: studyOnly, onChange: setStudyOnly, allowed: canViewWorkspace },
+            { label: 'Quiet environment', checked: quietOnly, onChange: setQuietOnly, allowed: canViewWorkspace },
+            { label: 'Charging sockets', checked: socketsOnly, onChange: setSocketsOnly, allowed: canViewSockets },
+            { label: 'Outdoor seating', checked: outdoorOnly, onChange: setOutdoorOnly, allowed: true },
+            { label: 'Wi-Fi available', checked: wifiOnly, onChange: setWifiOnly, allowed: canViewWifi },
+            { label: 'Suitable for working', checked: workOnly, onChange: setWorkOnly, allowed: canViewWorkspace },
+            { label: 'Meeting-friendly', checked: meetingOnly, onChange: setMeetingOnly, allowed: canViewWorkspace },
+            { label: 'Tea & coffee', checked: teaCoffeeOnly, onChange: setTeaCoffeeOnly, allowed: canViewPricing },
+            { label: 'Bakery & snacks', checked: bakerySnacksOnly, onChange: setBakerySnacksOnly, allowed: canViewPricing },
+            { label: 'Burgers & sandwiches', checked: burgersSandwichesOnly, onChange: setBurgersSandwichesOnly, allowed: canViewPricing },
+            { label: 'Open now', checked: openNowOnly, onChange: setOpenNowOnly, allowed: true },
+            { label: 'Verified in person', checked: verifiedOnly, onChange: setVerifiedOnly, allowed: true },
+          ].map((item) => {
+            const locked = !item.allowed;
+            const active = !locked && item.checked;
+            return (
+              <button
+                key={item.label}
+                type="button"
+                aria-pressed={active}
+                onClick={() => {
+                  if (locked) {
+                    openUpgradeModal({
+                      featureName: `${item.label} Filter`,
+                      requiredPlan: 'plus',
+                    });
+                    return;
+                  }
+                  item.onChange(!item.checked);
+                }}
+                className={`inline-flex items-center gap-1.5 min-h-[38px] px-3.5 py-1.5 rounded-full text-xs font-medium border transition-colors ${
+                  active
+                    ? 'bg-[#1b4d3e] text-white border-[#1b4d3e]'
+                    : 'bg-[#faf7f2] text-[#5c4e45] border-[#e6ddd0] hover:border-[#b45309] hover:text-[#1c1613]'
+                }`}
+              >
+                {locked && <Lock className="w-3 h-3 text-[#b45309]" aria-hidden="true" />}
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="flex flex-wrap items-center justify-end gap-2.5 pt-2">
+          <select
+            aria-label="Atmosphere vibe"
+            value={canViewWorkspace ? atmosphere : 'any'}
+            onChange={(e) => {
+              if (!canViewWorkspace) {
+                openUpgradeModal({
+                  featureName: 'Atmosphere & Noise Filters',
+                  requiredPlan: 'plus',
+                });
+                return;
+              }
+              setAtmosphere(e.target.value as 'any' | 'quiet' | 'lively');
+            }}
+            className="h-10 px-3.5 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-xs font-medium text-[#1c1613]"
+          >
+            <option value="any">Any Vibe</option>
+            <option value="quiet">{canViewWorkspace ? 'Quiet Acoustics' : '🔒 Quiet Acoustics (Plus)'}</option>
+            <option value="lively">{canViewWorkspace ? 'Lively Buzz' : '🔒 Lively Buzz (Plus)'}</option>
+          </select>
+
+          <label htmlFor="loc-sort" className="text-xs font-medium text-[#5c4e45]">
+            Sort by
+          </label>
+          <select
+            id="loc-sort"
+            value={sortBy}
+            onChange={(e) => {
+              const nextSort = e.target.value as SortOption;
+              if (nextSort === 'wifi' && !canViewWifi) {
+                openUpgradeModal({ featureName: 'Sort by Fastest Wi-Fi', requiredPlan: 'plus' });
+                return;
+              }
+              if (nextSort === 'cheapest' && !canViewPricing) {
+                openUpgradeModal({ featureName: 'Sort by Lowest Budget', requiredPlan: 'plus' });
+                return;
+              }
+              if (nextSort === 'quietest' && !canViewWorkspace) {
+                openUpgradeModal({ featureName: 'Sort by Quietest First', requiredPlan: 'plus' });
+                return;
+              }
+              setSortBy(nextSort);
+            }}
+            className="h-10 px-3.5 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-xs sm:text-sm font-semibold text-[#1c1613]"
+          >
+            <option value="distance" disabled={!userLocation}>
+              Closest First {!userLocation ? '(Requires GPS)' : ''}
+            </option>
+            <option value="featured">Recommended</option>
+            <option value="rating">Highest Rated</option>
+            <option value="wifi">{canViewWifi ? 'Fastest Wi-Fi' : '🔒 Fastest Wi-Fi (Plus)'}</option>
+            <option value="cheapest">{canViewPricing ? 'Lowest Budget' : '🔒 Lowest Budget (Plus)'}</option>
+            <option value="quietest">{canViewWorkspace ? 'Quietest First' : '🔒 Quietest First (Plus)'}</option>
+            <option value="recent">Recently Verified</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  );
+
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 sm:py-12 space-y-6">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-10 space-y-5 sm:space-y-6">
       {/* Header + GPS & View Switcher */}
-      <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 border-b border-[#e6ddd0] pb-6">
+      <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 border-b border-[#e6ddd0] pb-5 sm:pb-6">
         <div className="space-y-1.5 max-w-2xl">
           <div className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.16em] text-[#b45309]">
-            <Wifi className="w-3.5 h-3.5 text-[#1b4d3e]" aria-hidden="true" />
+            <Wifi className="w-3.5 h-3.5" aria-hidden="true" />
             <span>Bengaluru Cafe Discovery</span>
           </div>
-          <h1 className="font-serif-display text-3xl sm:text-5xl font-bold text-[#1c1613]">
+          <h1 className="font-serif-display text-3xl sm:text-4xl font-bold text-[#1c1613]">
             Find cafes in Bengaluru
           </h1>
-          <p className="text-sm sm:text-base text-[#5c4e45]">
-            Compare affordable neighbourhood tea &amp; coffee spots, bakery cafes, Wi-Fi workspaces,
-            live distance, charging sockets, and official menu links.
+          <p className="text-xs sm:text-base text-[#5c4e45]">
+            Compare neighbourhood coffee spots, Wi-Fi workspaces, live distance, charging sockets,
+            and official menus.
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={handleFindNearMe}
             disabled={geoStatus === 'requesting'}
-            className="inline-flex items-center gap-2 min-h-[42px] px-4 py-2 rounded-lg bg-[#1b4d3e] hover:bg-[#163f33] disabled:opacity-60 text-white text-xs font-semibold transition-colors"
+            className="inline-flex items-center gap-1.5 min-h-[42px] px-4 py-2 rounded-xl bg-[#1b4d3e] hover:bg-[#133a2e] disabled:opacity-60 text-white text-xs font-semibold transition-colors"
           >
             <LocateFixed className="w-4 h-4" aria-hidden="true" />
             <span>
               {geoStatus === 'requesting'
-                ? 'Detecting location...'
+                ? 'Detecting...'
                 : userLocation
-                ? 'Refresh My Location'
+                ? 'Refresh GPS'
                 : 'Find Near Me'}
             </span>
           </button>
@@ -526,14 +998,14 @@ export function LocationsPage() {
           <div
             role="group"
             aria-label="View mode"
-            className="inline-flex items-center p-1 rounded-lg bg-[#f3ede3] border border-[#e6ddd0]"
+            className="inline-flex items-center p-1 rounded-xl bg-[#f3ede3] border border-[#e6ddd0]"
           >
             <button
               type="button"
               onClick={() => setViewMode('split')}
-              className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${
+              className={`hidden lg:inline-flex items-center gap-1 min-h-[36px] px-3 py-1 rounded-lg text-xs font-semibold transition-colors ${
                 viewMode === 'split'
-                  ? 'bg-white text-[#1c1613] shadow-sm'
+                  ? 'bg-white text-[#1c1613] shadow-xs'
                   : 'text-[#5c4e45] hover:text-[#1c1613]'
               }`}
             >
@@ -543,9 +1015,9 @@ export function LocationsPage() {
             <button
               type="button"
               onClick={() => setViewMode('list')}
-              className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${
+              className={`inline-flex items-center gap-1 min-h-[36px] px-3.5 py-1 rounded-lg text-xs font-semibold transition-colors ${
                 viewMode === 'list'
-                  ? 'bg-white text-[#1c1613] shadow-sm'
+                  ? 'bg-white text-[#1c1613] shadow-xs'
                   : 'text-[#5c4e45] hover:text-[#1c1613]'
               }`}
             >
@@ -555,9 +1027,9 @@ export function LocationsPage() {
             <button
               type="button"
               onClick={() => setViewMode('map')}
-              className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${
+              className={`inline-flex items-center gap-1 min-h-[36px] px-3.5 py-1 rounded-lg text-xs font-semibold transition-colors ${
                 viewMode === 'map'
-                  ? 'bg-white text-[#1c1613] shadow-sm'
+                  ? 'bg-white text-[#1c1613] shadow-xs'
                   : 'text-[#5c4e45] hover:text-[#1c1613]'
               }`}
             >
@@ -568,17 +1040,17 @@ export function LocationsPage() {
 
           <button
             type="button"
-            onClick={() => setMobileFiltersOpen((v) => !v)}
-            className="md:hidden inline-flex items-center gap-1.5 min-h-[42px] px-3.5 py-2 rounded-lg border border-[#d6cbba] bg-white text-xs font-semibold text-[#1c1613]"
+            onClick={() => setMobileFiltersOpen(true)}
+            className="md:hidden inline-flex items-center gap-1.5 min-h-[42px] px-4 py-2 rounded-xl bg-[#b45309] text-white text-xs font-semibold"
           >
             <SlidersHorizontal className="w-4 h-4" aria-hidden="true" />
-            <span>{mobileFiltersOpen ? 'Hide filters' : 'Filters'}</span>
+            <span>Filters</span>
           </button>
 
           <button
             type="button"
             onClick={resetAll}
-            className="inline-flex items-center gap-1.5 min-h-[42px] px-3.5 py-2 rounded-lg border border-[#d6cbba] bg-white hover:bg-[#f3ede3] text-xs font-semibold text-[#1c1613] transition-colors"
+            className="inline-flex items-center gap-1.5 min-h-[42px] px-3.5 py-2 rounded-xl bg-white border border-[#e6ddd0] text-xs font-semibold text-[#5c4e45] hover:text-[#1c1613]"
           >
             <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
             <span>Reset</span>
@@ -586,20 +1058,147 @@ export function LocationsPage() {
         </div>
       </div>
 
+      {/* Mobile Always-Accessible Search Bar + Swipeable Quick Preset Filter Chips */}
+      <div className="md:hidden space-y-2.5">
+        <CafeAutocompleteSearch
+          id="loc-q-mobile"
+          value={query}
+          onChange={(val) => {
+            setQuery(val);
+            syncQueryParams({ q: val });
+          }}
+          onSubmitQuery={(q) => void searchLiveCafesInBengaluru(q)}
+          placeholder="Search cafe, Indiranagar, study, coffee..."
+          inputClassName="w-full h-12 pl-10 pr-10 rounded-xl border border-[#d6cbba] bg-white text-sm text-[#1c1613] shadow-xs"
+        />
+      </div>
+
+      <div className="flex overflow-x-auto no-scrollbar gap-2 -mx-4 px-4 pb-1 md:mx-0 md:px-0 md:flex-wrap">
+        {[
+          {
+            id: 'nearby',
+            label: 'Nearby',
+            active: Boolean(userLocation && sortBy === 'distance'),
+            onTap: () => void handleFindNearMe(),
+          },
+          {
+            id: 'budget',
+            label: canViewPricing ? 'Budget' : '🔒 Budget',
+            active: canViewPricing && budget === 'under-200',
+            onTap: () => {
+              if (!canViewPricing) {
+                openUpgradeModal({ featureName: 'Budget Per Person Filter', requiredPlan: 'plus' });
+                return;
+              }
+              const next = budget === 'under-200' ? '' : 'under-200';
+              setBudget(next);
+              syncQueryParams({ budget: next });
+            },
+          },
+          {
+            id: 'quiet',
+            label: canViewWorkspace ? 'Quiet' : '🔒 Quiet',
+            active: canViewWorkspace && quietOnly,
+            onTap: () => {
+              if (!canViewWorkspace) {
+                openUpgradeModal({ featureName: 'Quiet Acoustics Filter', requiredPlan: 'plus' });
+                return;
+              }
+              setQuietOnly((v) => !v);
+            },
+          },
+          {
+            id: 'study',
+            label: canViewWorkspace ? 'Study-friendly' : '🔒 Study-friendly',
+            active: canViewWorkspace && studyOnly,
+            onTap: () => {
+              if (!canViewWorkspace) {
+                openUpgradeModal({ featureName: 'Study Suitability Filter', requiredPlan: 'plus' });
+                return;
+              }
+              setStudyOnly((v) => !v);
+            },
+          },
+          {
+            id: 'work',
+            label: canViewWorkspace ? 'Work-friendly' : '🔒 Work-friendly',
+            active: canViewWorkspace && workOnly,
+            onTap: () => {
+              if (!canViewWorkspace) {
+                openUpgradeModal({ featureName: 'Work Suitability Filter', requiredPlan: 'plus' });
+                return;
+              }
+              setWorkOnly((v) => !v);
+            },
+          },
+          {
+            id: 'wifi',
+            label: canViewWifi ? 'Wi-Fi' : '🔒 Wi-Fi',
+            active: canViewWifi && wifiOnly,
+            onTap: () => {
+              if (!canViewWifi) {
+                openUpgradeModal({ featureName: 'Wi-Fi Filter', requiredPlan: 'plus' });
+                return;
+              }
+              setWifiOnly((v) => !v);
+            },
+          },
+          {
+            id: 'sockets',
+            label: canViewSockets ? 'Power sockets' : '🔒 Power sockets',
+            active: canViewSockets && socketsOnly,
+            onTap: () => {
+              if (!canViewSockets) {
+                openUpgradeModal({ featureName: 'Power Socket Filter', requiredPlan: 'plus' });
+                return;
+              }
+              setSocketsOnly((v) => !v);
+            },
+          },
+          {
+            id: 'food',
+            label: canViewPricing ? 'Food & Drinks' : '🔒 Food & Drinks',
+            active: canViewPricing && (teaCoffeeOnly || bakerySnacksOnly),
+            onTap: () => {
+              if (!canViewPricing) {
+                openUpgradeModal({ featureName: 'Menu & Beverage Filters', requiredPlan: 'plus' });
+                return;
+              }
+              const next = !(teaCoffeeOnly || bakerySnacksOnly);
+              setTeaCoffeeOnly(next);
+              setBakerySnacksOnly(next);
+            },
+          },
+        ].map((chip) => (
+          <button
+            key={chip.id}
+            type="button"
+            onClick={chip.onTap}
+            className={`min-h-[38px] px-3.5 py-1.5 rounded-full text-xs font-semibold border transition-colors whitespace-nowrap shrink-0 ${
+              chip.active
+                ? 'bg-[#1c1613] text-white border-[#1c1613]'
+                : 'bg-white text-[#5c4e45] border-[#e6ddd0] hover:border-[#b45309] hover:text-[#1c1613]'
+            }`}
+          >
+            {chip.label}
+          </button>
+        ))}
+      </div>
+
       {/* Expired / Suspended Subscription Banner */}
       {(isExpired || isSuspended) && (
         <div
           role="alert"
-          className={`p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+          className={`p-4 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
             isSuspended
               ? 'bg-[#fef2f2] border-[#fecaca] text-[#991b1b]'
-              : 'bg-amber-50 border-amber-200 text-[#92400e]'
+              : 'bg-[#fffbeb] border-[#fde68a] text-[#92400e]'
           }`}
         >
           <div className="flex items-start gap-2.5 text-xs">
             <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
             <div>
-              <p className="font-bold text-sm">
+              <p className="font-semibold text-sm">
                 {isSuspended
                   ? 'Your subscription access is suspended'
                   : 'Your subscription has expired'}
@@ -615,7 +1214,7 @@ export function LocationsPage() {
             <button
               type="button"
               onClick={() => openCheckout(subscription?.expired_from_plan || 'plus')}
-              className="shrink-0 inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#b45309] hover:bg-[#92400e] text-white text-xs font-semibold"
+              className="shrink-0 inline-flex items-center gap-1.5 min-h-[40px] px-4 py-2 rounded-xl bg-[#b45309] hover:bg-[#92400e] text-white text-xs font-semibold"
             >
               <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
               <span>Renew Subscription</span>
@@ -623,7 +1222,7 @@ export function LocationsPage() {
           ) : (
             <Link
               to="/account"
-              className="shrink-0 inline-flex items-center px-4 py-2 rounded-lg bg-[#991b1b] text-white text-xs font-semibold"
+              className="shrink-0 inline-flex items-center min-h-[40px] px-4 py-2 rounded-xl bg-[#1c1613] text-white text-xs font-semibold"
             >
               View Account
             </Link>
@@ -634,7 +1233,7 @@ export function LocationsPage() {
       {/* GPS Status Banner */}
       {(userLocation || geoError) && (
         <div
-          className={`px-4 py-2.5 rounded-xl border text-xs flex flex-wrap items-center justify-between gap-2 ${
+          className={`px-4 py-3 rounded-2xl border text-xs flex flex-wrap items-center justify-between gap-2 ${
             geoError
               ? 'bg-[#fef2f2] border-[#fecaca] text-[#991b1b]'
               : 'bg-[#ecfdf5] border-[#a7f3d0] text-[#1b4d3e]'
@@ -657,364 +1256,84 @@ export function LocationsPage() {
         </div>
       )}
 
-      {/* Search & Discovery Filter Panel */}
+      {/* Desktop Inline Filter Panel */}
       <section
         aria-label="Cafe discovery filters"
-        className={`rounded-2xl border border-[#e6ddd0] bg-white p-5 space-y-4 ${
-          mobileFiltersOpen ? 'block' : 'hidden md:block'
-        }`}
+        className="hidden md:block bg-white rounded-2xl border border-[#e6ddd0] p-5"
       >
-        {/* Quick Curated Collection Chips + Interactive Cafe Finder Link */}
-        <div className="flex flex-wrap items-center justify-between gap-2 pb-1 border-b border-[#f3ede3]">
-          <div className="flex flex-wrap items-center gap-2">
-            {[
-              { id: '', label: 'All Cafes' },
-              { id: 'trending', label: 'Trending' },
-              { id: 'hidden-gems', label: 'Hidden Gems' },
-              { id: 'outdoor', label: 'Outdoor Corners' },
-              { id: 'dates', label: 'Dates & Catchups' },
-            ].map((colChip) => (
-              <button
-                key={colChip.id || 'all'}
-                type="button"
-                onClick={() => setCollectionFilter(colChip.id)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
-                  collectionFilter === colChip.id
-                    ? 'bg-[#1c1613] text-white border-[#1c1613]'
-                    : 'bg-[#faf7f2] text-[#5c4e45] border-[#e6ddd0] hover:border-[#b45309] hover:text-[#1c1613]'
-                }`}
-              >
-                {colChip.label}
-              </button>
-            ))}
-          </div>
-          <Link
-            to="/finder"
-            className="text-xs font-semibold text-[#b45309] hover:underline whitespace-nowrap"
-          >
-            Need tailored picks? Open Cafe Finder &rarr;
-          </Link>
-        </div>
+        {filterControlsBody}
+      </section>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-          <div className="sm:col-span-2">
-            <label htmlFor="loc-q" className="block text-xs font-semibold text-[#5c4e45] mb-1">
-              Search any Bengaluru cafe, street, item, or locality
-            </label>
-            <div className="flex gap-2 items-center">
-              <div className="flex-1 min-w-0">
-                <CafeAutocompleteSearch
-                  id="loc-q"
-                  value={query}
-                  onChange={(val) => {
-                    setQuery(val);
-                    syncQueryParams({ q: val });
-                  }}
-                  onSubmitQuery={(q) => void searchLiveCafesInBengaluru(q)}
-                  placeholder="Search Third Wave, CCD, Indiranagar, tea, coffee, burgers..."
-                  inputClassName="w-full h-11 pl-9 pr-9 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-sm text-[#1c1613]"
-                />
+      {/* Mobile Slide-Up Filter Sheet Modal */}
+      {mobileFiltersOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Filter Bengaluru cafes"
+          className="md:hidden fixed inset-0 z-50 bg-[#1c1613]/60 backdrop-blur-xs flex items-end justify-center"
+          onClick={() => setMobileFiltersOpen(false)}
+        >
+          <div
+            className="w-full max-h-[88vh] flex flex-col rounded-t-3xl bg-white border-t border-[#e6ddd0] shadow-2xl animate-sheet-up pb-[env(safe-area-inset-bottom)]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="pt-2.5 pb-1 flex justify-center">
+              <span className="w-10 h-1 rounded-full bg-[#d6cbba]" />
+            </div>
+            <div className="px-5 py-3 border-b border-[#e6ddd0] flex items-center justify-between gap-3">
+              <div>
+                <h2 className="font-serif-display text-lg font-bold text-[#1c1613]">
+                  Filter Bengaluru Cafes
+                </h2>
+                <p className="text-xs text-[#5c4e45]">
+                  Refine by neighbourhood, budget, Wi-Fi, or seating
+                </p>
               </div>
-              {query.trim().length >= 2 && (
-                <button
-                  type="button"
-                  disabled={nearbyLoading}
-                  onClick={() => void searchLiveCafesInBengaluru(query)}
-                  className="h-11 px-3.5 rounded-lg bg-[#1b4d3e] hover:bg-[#163f33] disabled:opacity-60 text-white text-xs font-semibold inline-flex items-center gap-1.5 shrink-0 transition-colors"
-                >
-                  <Search className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>{nearbyLoading ? 'Searching...' : 'Search Live'}</span>
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => setMobileFiltersOpen(false)}
+                aria-label="Close filters"
+                className="w-9 h-9 rounded-lg border border-[#e6ddd0] bg-[#faf7f2] text-[#1c1613] flex items-center justify-center"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-5 overflow-y-auto flex-1">{filterControlsBody}</div>
+            <div className="px-5 py-3.5 border-t border-[#e6ddd0] bg-[#faf7f2] flex items-center gap-3">
+              <button
+                type="button"
+                onClick={resetAll}
+                className="min-h-[44px] px-4 rounded-xl bg-white border border-[#e6ddd0] text-xs font-semibold text-[#1c1613]"
+              >
+                Reset
+              </button>
+              <button
+                type="button"
+                onClick={() => setMobileFiltersOpen(false)}
+                className="flex-1 min-h-[44px] px-4 rounded-xl bg-[#b45309] hover:bg-[#92400e] text-white text-xs font-semibold transition-colors"
+              >
+                Show {filteredLocations.length}{' '}
+                {filteredLocations.length === 1 ? 'Cafe' : 'Cafes'}
+              </button>
             </div>
           </div>
-
-          <div>
-            <label htmlFor="loc-area" className="block text-xs font-semibold text-[#5c4e45] mb-1">
-              Bengaluru Locality
-            </label>
-            <select
-              id="loc-area"
-              value={area}
-              onChange={(e) => {
-                setArea(e.target.value);
-                syncQueryParams({ area: e.target.value });
-              }}
-              className="w-full h-11 px-3 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-sm font-medium text-[#1c1613]"
-            >
-              <option value="">All Bengaluru Areas</option>
-              {areaOptions.map((a) => (
-                <option key={a} value={a}>
-                  {a}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label htmlFor="loc-dist" className="block text-xs font-semibold text-[#5c4e45] mb-1">
-              Distance From Me
-            </label>
-            <select
-              id="loc-dist"
-              value={maxDistanceKm}
-              onChange={(e) => handleDistanceChange(Number(e.target.value))}
-              className="w-full h-11 px-3 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-sm font-medium text-[#1c1613]"
-            >
-              <option value={0}>Any distance</option>
-              <option value={2}>Within 2 km</option>
-              <option value={5}>Within 5 km</option>
-              <option value={10}>Within 10 km</option>
-            </select>
-          </div>
-
-          <div>
-            <label htmlFor="loc-mode" className="block text-xs font-semibold text-[#5c4e45] mb-1">
-              Purpose / Atmosphere
-            </label>
-            <select
-              id="loc-mode"
-              value={mode}
-              onChange={(e) => {
-                setMode(e.target.value);
-                syncQueryParams({ mode: e.target.value });
-              }}
-              className="w-full h-11 px-3 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-sm font-medium text-[#1c1613]"
-            >
-              <option value="">Any purpose</option>
-              {BROWSING_MODES.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.title}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label
-              htmlFor="loc-budget"
-              className="flex items-center justify-between text-xs font-semibold text-[#5c4e45] mb-1"
-            >
-              <span>Budget Per Person</span>
-              {!canViewPricing && (
-                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-[#b45309]">
-                  <Lock className="w-3 h-3" aria-hidden="true" />
-                  {isExpired ? 'Expired' : 'Subscribers'}
-                </span>
-              )}
-            </label>
-            <select
-              id="loc-budget"
-              value={canViewPricing ? budget : ''}
-              onChange={(e) => {
-                if (!canViewPricing) {
-                  openUpgradeModal({
-                    featureName: 'Budget Per Person Filter',
-                    requiredPlan: 'plus',
-                    description:
-                      'Filter cafes by average spend per person and compare full food & beverage prices with an active Cafe Desk subscription.',
-                  });
-                  return;
-                }
-                const val = e.target.value as BudgetBracketId | '';
-                setBudget(val);
-                syncQueryParams({ budget: val });
-              }}
-              className="w-full h-11 px-3 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-sm font-medium text-[#1c1613]"
-            >
-              <option value="">Any budget</option>
-              {BUDGET_BRACKETS.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {canViewPricing ? b.label : `🔒 ${b.label}`}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label
-              htmlFor="loc-wifi"
-              className="flex items-center justify-between text-xs font-semibold text-[#5c4e45] mb-1"
-            >
-              <span>Minimum Wi-Fi Speed</span>
-              {!canViewWifi && (
-                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-[#b45309]">
-                  <Lock className="w-3 h-3" aria-hidden="true" />
-                  {isExpired ? 'Expired' : 'Subscribers'}
-                </span>
-              )}
-            </label>
-            <select
-              id="loc-wifi"
-              value={canViewWifi ? minWifi : 0}
-              onChange={(e) => {
-                if (!canViewWifi) {
-                  openUpgradeModal({
-                    featureName: 'Minimum Wi-Fi Speed Filter',
-                    requiredPlan: 'plus',
-                    description:
-                      'Filter cafes by measured Wi-Fi speeds (50+, 80+, 100+ Mbps) with an active Cafe Desk subscription.',
-                  });
-                  return;
-                }
-                setMinWifi(Number(e.target.value));
-              }}
-              className="w-full h-11 px-3 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-sm font-medium text-[#1c1613]"
-            >
-              <option value={0}>Any speed</option>
-              <option value={50}>{canViewWifi ? '50+ Mbps (Measured)' : '🔒 50+ Mbps (Subscribers)'}</option>
-              <option value={80}>{canViewWifi ? '80+ Mbps (Measured)' : '🔒 80+ Mbps (Subscribers)'}</option>
-              <option value={100}>{canViewWifi ? '100+ Mbps (Measured)' : '🔒 100+ Mbps (Subscribers)'}</option>
-            </select>
-          </div>
-
-          <div>
-            <label htmlFor="loc-rating" className="block text-xs font-semibold text-[#5c4e45] mb-1">
-              Google Rating
-            </label>
-            <select
-              id="loc-rating"
-              value={minRating}
-              onChange={(e) => setMinRating(Number(e.target.value))}
-              className="w-full h-11 px-3 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-sm font-medium text-[#1c1613]"
-            >
-              <option value={0}>Any rating</option>
-              <option value={4.0}>4.0+ stars</option>
-              <option value={4.5}>4.5+ stars</option>
-            </select>
-          </div>
         </div>
-
-        {/* Amenity & Suitability Filter Toggles */}
-        <div className="pt-3 border-t border-[#e6ddd0] flex flex-wrap items-center justify-between gap-4">
-          <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-            {[
-              { label: 'Laptop-friendly', checked: laptopFriendlyOnly, onChange: setLaptopFriendlyOnly, allowed: canViewWorkspace },
-              { label: 'Comfortable seating', checked: comfortableOnly, onChange: setComfortableOnly, allowed: canViewWorkspace },
-              { label: 'Suitable for studying', checked: studyOnly, onChange: setStudyOnly, allowed: canViewWorkspace },
-              { label: 'Quiet environment', checked: quietOnly, onChange: setQuietOnly, allowed: canViewWorkspace },
-              { label: 'Charging sockets', checked: socketsOnly, onChange: setSocketsOnly, allowed: canViewSockets },
-              { label: 'Outdoor seating', checked: outdoorOnly, onChange: setOutdoorOnly, allowed: true },
-              { label: 'Wi-Fi available', checked: wifiOnly, onChange: setWifiOnly, allowed: canViewWifi },
-              { label: 'Suitable for working', checked: workOnly, onChange: setWorkOnly, allowed: canViewWorkspace },
-              { label: 'Meeting-friendly', checked: meetingOnly, onChange: setMeetingOnly, allowed: canViewWorkspace },
-              { label: 'Tea & coffee', checked: teaCoffeeOnly, onChange: setTeaCoffeeOnly, allowed: canViewPricing },
-              { label: 'Bakery & snacks', checked: bakerySnacksOnly, onChange: setBakerySnacksOnly, allowed: canViewPricing },
-              { label: 'Burgers & sandwiches', checked: burgersSandwichesOnly, onChange: setBurgersSandwichesOnly, allowed: canViewPricing },
-              { label: 'Open now', checked: openNowOnly, onChange: setOpenNowOnly, allowed: true },
-              { label: 'Verified in person', checked: verifiedOnly, onChange: setVerifiedOnly, allowed: true },
-            ].map((item) => {
-              const locked = !item.allowed;
-              return (
-                <label
-                  key={item.label}
-                  className="inline-flex items-center gap-2 text-xs sm:text-sm font-medium text-[#1c1613] cursor-pointer min-h-[34px]"
-                >
-                  <input
-                    type="checkbox"
-                    checked={!locked && item.checked}
-                    onChange={(e) => {
-                      if (locked) {
-                        openUpgradeModal({
-                          featureName: `${item.label} Filter`,
-                          requiredPlan: 'plus',
-                        });
-                        return;
-                      }
-                      item.onChange(e.target.checked);
-                    }}
-                    className="w-4 h-4 accent-[#b45309] rounded"
-                  />
-                  <span>{item.label}</span>
-                  {locked && (
-                    <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-[#faf7f2] border border-[#e6ddd0] text-[10px] font-bold text-[#b45309]">
-                      <Lock className="w-2.5 h-2.5" aria-hidden="true" />
-                      {isExpired ? 'Renew' : 'Plus'}
-                    </span>
-                  )}
-                </label>
-              );
-            })}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-            <select
-              aria-label="Atmosphere vibe"
-              value={canViewWorkspace ? atmosphere : 'any'}
-              onChange={(e) => {
-                if (!canViewWorkspace) {
-                  openUpgradeModal({
-                    featureName: 'Atmosphere & Noise Filters',
-                    requiredPlan: 'plus',
-                  });
-                  return;
-                }
-                setAtmosphere(e.target.value as 'any' | 'quiet' | 'lively');
-              }}
-              className="h-10 px-3 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-xs font-semibold text-[#1c1613]"
-            >
-              <option value="any">Any Vibe</option>
-              <option value="quiet">{canViewWorkspace ? 'Quiet Acoustics' : '🔒 Quiet Acoustics (Plus)'}</option>
-              <option value="lively">{canViewWorkspace ? 'Lively Buzz' : '🔒 Lively Buzz (Plus)'}</option>
-            </select>
-
-            <label htmlFor="loc-sort" className="text-xs font-semibold text-[#5c4e45]">
-              Sort by
-            </label>
-            <select
-              id="loc-sort"
-              value={sortBy}
-              onChange={(e) => {
-                const nextSort = e.target.value as SortOption;
-                if (nextSort === 'wifi' && !canViewWifi) {
-                  openUpgradeModal({
-                    featureName: 'Sort by Fastest Wi-Fi',
-                    requiredPlan: 'plus',
-                  });
-                  return;
-                }
-                if (nextSort === 'cheapest' && !canViewPricing) {
-                  openUpgradeModal({
-                    featureName: 'Sort by Lowest Budget',
-                    requiredPlan: 'plus',
-                  });
-                  return;
-                }
-                if (nextSort === 'quietest' && !canViewWorkspace) {
-                  openUpgradeModal({
-                    featureName: 'Sort by Quietest First',
-                    requiredPlan: 'plus',
-                  });
-                  return;
-                }
-                setSortBy(nextSort);
-              }}
-              className="h-10 px-3 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-sm font-medium text-[#1c1613]"
-            >
-              <option value="distance" disabled={!userLocation}>
-                Closest First {!userLocation ? '(Requires GPS)' : ''}
-              </option>
-              <option value="featured">Recommended</option>
-              <option value="rating">Highest Rated</option>
-              <option value="wifi">{canViewWifi ? 'Fastest Wi-Fi' : '🔒 Fastest Wi-Fi (Plus)'}</option>
-              <option value="cheapest">{canViewPricing ? 'Lowest Budget' : '🔒 Lowest Budget (Plus)'}</option>
-              <option value="quietest">{canViewWorkspace ? 'Quietest First' : '🔒 Quietest First (Plus)'}</option>
-              <option value="recent">Recently Verified</option>
-            </select>
-          </div>
-        </div>
-      </section>
+      )}
 
       {/* Results Summary + Live Area Discovery Trigger */}
       <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-[#5c4e45]">
         <p>
-          Showing <strong className="text-[#1c1613] font-mono-data">{filteredLocations.length}</strong>{' '}
+          Showing{' '}
+          <strong className="text-[#1c1613] font-mono-data">{filteredLocations.length}</strong>{' '}
           curated {filteredLocations.length === 1 ? 'cafe' : 'cafes'}
           {area ? ` in ${area}` : ' across Bengaluru'}
           {filteredGooglePlaces.length > 0 && (
             <>
               {' '}
-              + <strong className="text-[#1b4d3e] font-mono-data">{filteredGooglePlaces.length}</strong>{' '}
+              +{' '}
+              <strong className="text-[#1b4d3e] font-mono-data">
+                {filteredGooglePlaces.length}
+              </strong>{' '}
               live on Google Maps
             </>
           )}
@@ -1024,7 +1343,7 @@ export function LocationsPage() {
           type="button"
           disabled={nearbyLoading}
           onClick={() => handleDiscoverAreaLive()}
-          className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-white border border-[#d6cbba] hover:border-[#b45309] text-xs font-semibold text-[#1c1613] transition-colors"
+          className="inline-flex items-center gap-1.5 min-h-[40px] px-3.5 py-1.5 rounded-xl bg-white border border-[#e6ddd0] hover:border-[#b45309] text-xs font-semibold text-[#1c1613] transition-colors"
         >
           <MapPin className="w-3.5 h-3.5 text-[#b45309]" aria-hidden="true" />
           <span>
@@ -1048,7 +1367,11 @@ export function LocationsPage() {
             syncQueryParams({ area: val });
           }}
           onRequestNearMe={handleFindNearMe}
-          heightClassName="h-[560px]"
+          onSearchThisArea={(center) => {
+            setFocusCenter(center);
+            void discoverCafesNear(center, 'Map Area', 4000);
+          }}
+          heightClassName="h-[62vh] min-h-[420px] sm:h-[560px]"
         />
       )}
 
@@ -1056,33 +1379,40 @@ export function LocationsPage() {
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           <div className="lg:col-span-7 space-y-6">
             {filteredLocations.length === 0 ? (
-              <div className="rounded-2xl border border-[#e6ddd0] bg-white p-10 text-center space-y-3">
-                <h2 className="font-serif-display text-2xl font-bold text-[#1c1613]">
-                  No curated cafes match these filters
-                </h2>
-                <p className="text-sm text-[#5c4e45]">
-                  Try relaxing your Wi-Fi speed or amenity filters, or search live cafes in{' '}
-                  {area || 'this neighbourhood'} via Google Maps.
-                </p>
-                <div className="flex flex-wrap justify-center gap-3 pt-1">
-                  <button
-                    type="button"
-                    onClick={resetAll}
-                    className="min-h-[42px] px-4 py-2 rounded-lg bg-[#1c1613] text-white text-xs font-semibold"
-                  >
-                    Clear all filters
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleDiscoverAreaLive()}
-                    className="min-h-[42px] px-4 py-2 rounded-lg bg-[#1b4d3e] text-white text-xs font-semibold"
-                  >
-                    Discover live cafes in {area || 'Bengaluru'}
-                  </button>
+              nearbyLoading ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                  <CardSkeletonPlaceholder />
+                  <CardSkeletonPlaceholder />
                 </div>
-              </div>
+              ) : (
+                <div className="bg-white rounded-2xl border border-[#e6ddd0] p-10 text-center space-y-3">
+                  <h2 className="font-serif-display text-2xl font-bold text-[#1c1613]">
+                    No curated cafes match these filters
+                  </h2>
+                  <p className="text-sm text-[#5c4e45]">
+                    Try relaxing your Wi-Fi speed or amenity filters, or search live cafes in{' '}
+                    {area || 'this neighbourhood'} via Google Maps.
+                  </p>
+                  <div className="flex flex-wrap justify-center gap-3 pt-1">
+                    <button
+                      type="button"
+                      onClick={resetAll}
+                      className="min-h-[44px] px-5 py-2 rounded-xl bg-[#1c1613] text-white text-xs font-semibold"
+                    >
+                      Clear all filters
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDiscoverAreaLive()}
+                      className="min-h-[44px] px-5 py-2 rounded-xl bg-[#1b4d3e] text-white text-xs font-semibold"
+                    >
+                      Discover live cafes in {area || 'Bengaluru'}
+                    </button>
+                  </div>
+                </div>
+              )
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {filteredLocations.map((loc) => (
                   <LocationCard key={loc.id} location={loc} />
                 ))}
@@ -1102,47 +1432,67 @@ export function LocationsPage() {
                 syncQueryParams({ area: val });
               }}
               onRequestNearMe={handleFindNearMe}
+              onSearchThisArea={(center) => {
+                setFocusCenter(center);
+                void discoverCafesNear(center, 'Map Area', 4000);
+              }}
               heightClassName="h-[540px]"
             />
           </div>
         </div>
       )}
 
-      {viewMode === 'list' && (
-        filteredLocations.length === 0 ? (
-          <div className="rounded-2xl border border-[#e6ddd0] bg-white p-12 text-center space-y-3">
-            <h2 className="font-serif-display text-2xl font-bold text-[#1c1613]">
-              No curated cafes match these filters
-            </h2>
-            <p className="text-sm text-[#5c4e45]">
-              Try relaxing your minimum Wi-Fi or budget filters.
-            </p>
-            <button
-              type="button"
-              onClick={resetAll}
-              className="inline-flex items-center justify-center min-h-[44px] px-5 py-2.5 rounded-lg bg-[#1c1613] text-white text-sm font-semibold"
-            >
-              Clear all filters
-            </button>
-          </div>
+      {viewMode === 'list' &&
+        (filteredLocations.length === 0 ? (
+          nearbyLoading ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              <CardSkeletonPlaceholder />
+              <CardSkeletonPlaceholder />
+              <CardSkeletonPlaceholder />
+            </div>
+          ) : (
+            <div className="bg-white rounded-2xl border border-[#e6ddd0] p-12 text-center space-y-3">
+              <h2 className="font-serif-display text-2xl font-bold text-[#1c1613]">
+                No curated cafes match these filters
+              </h2>
+              <p className="text-sm text-[#5c4e45]">
+                Try relaxing your minimum Wi-Fi or budget filters.
+              </p>
+              <button
+                type="button"
+                onClick={resetAll}
+                className="inline-flex items-center justify-center min-h-[44px] px-5 py-2.5 rounded-xl bg-[#b45309] text-white text-sm font-semibold"
+              >
+                Clear all filters
+              </button>
+            </div>
+          )
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {filteredLocations.map((loc) => (
               <LocationCard key={loc.id} location={loc} />
             ))}
           </div>
-        )
+        ))}
+
+      {/* Skeleton Loader Row when Searching Live Google Places */}
+      {nearbyLoading && filteredGooglePlaces.length === 0 && (
+        <div className="pt-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+          <CardSkeletonPlaceholder />
+          <CardSkeletonPlaceholder />
+          <CardSkeletonPlaceholder />
+        </div>
       )}
 
       {/* Live Google Maps Discovery Cards */}
       {filteredGooglePlaces.length > 0 && (
         <section
           aria-labelledby="nearby-google-heading"
-          className="pt-6 border-t border-[#e6ddd0] space-y-4"
+          className="pt-8 border-t border-[#e6ddd0] space-y-4"
         >
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#1b4d3e]">
+              <p className="text-xs font-semibold uppercase tracking-wider text-[#1b4d3e] mb-1">
                 Live From Google Maps
               </p>
               <h2
@@ -1173,10 +1523,13 @@ export function LocationsPage() {
               return (
                 <article
                   key={gc.id}
-                  className="bg-white rounded-2xl border border-[#e6ddd0] overflow-hidden flex flex-col justify-between hover:shadow-md transition-shadow"
+                  className="bg-white rounded-2xl border border-[#e6ddd0] shadow-xs overflow-hidden flex flex-col justify-between hover:border-[#b45309]/40 transition-colors"
                 >
                   <div>
-                    <Link to={detailPath} className="block relative aspect-[16/10] bg-[#f3ede3] overflow-hidden">
+                    <Link
+                      to={detailPath}
+                      className="block relative aspect-[16/10] bg-[#f3ede3] overflow-hidden"
+                    >
                       {gc.photos[0] ? (
                         <>
                           <ResilientPhoto
@@ -1186,15 +1539,15 @@ export function LocationsPage() {
                             imgClassName="w-full h-full object-cover"
                           />
                           {gc.photos.length > 1 && (
-                            <span className="absolute bottom-2 right-2 inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#1c1613]/75 text-white text-[11px] font-mono-data">
-                              <Images className="w-3 h-3" aria-hidden="true" />
+                            <span className="absolute bottom-2 right-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#1c1613]/80 text-white text-[11px] font-mono-data font-medium">
+                              <Images className="w-3 h-3 text-[#f59e0b]" aria-hidden="true" />
                               <span>{gc.photos.length}</span>
                             </span>
                           )}
                         </>
                       ) : (
-                        <div className="w-full h-full p-4 flex flex-col justify-between bg-gradient-to-br from-[#f3ede3] to-[#e6ddd0]">
-                          <span className="text-[11px] font-mono-data uppercase text-[#5c4e45]">
+                        <div className="w-full h-full p-4 flex flex-col justify-between">
+                          <span className="text-[11px] font-mono-data uppercase font-medium text-[#5c4e45]">
                             {gc.areaLabel} · Google Maps
                           </span>
                           <p className="font-serif-display text-lg font-bold text-[#1c1613] line-clamp-1">
@@ -1205,13 +1558,13 @@ export function LocationsPage() {
                     </Link>
 
                     <div className="p-4 space-y-2">
-                      <div className="flex items-center justify-between gap-2 text-xs text-[#5c4e45]">
+                      <div className="flex items-center justify-between gap-2 text-xs">
                         <span className="font-semibold text-[#1b4d3e] truncate">
                           {gc.areaLabel}
                         </span>
                         {distText && (
-                          <span className="inline-flex items-center gap-1 font-mono-data font-semibold text-[#1c1613] shrink-0">
-                            <Navigation className="w-3 h-3 text-[#1b4d3e]" aria-hidden="true" />
+                          <span className="inline-flex items-center gap-1 font-mono-data font-semibold text-[#1b4d3e] shrink-0">
+                            <Navigation className="w-3 h-3" aria-hidden="true" />
                             {distText}
                           </span>
                         )}
@@ -1266,7 +1619,7 @@ export function LocationsPage() {
                         )}
                       </div>
 
-                      <div className="pt-2 border-t border-[#f3ede3] flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[#5c4e45]">
+                      <div className="pt-2 border-t border-[#e6ddd0] flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[#5c4e45]">
                         <span>Wi-Fi: {canViewWifi ? 'Not verified' : 'Subscribers only'}</span>
                         <span>·</span>
                         <span>Sockets: {canViewSockets ? 'Not verified' : 'Subscribers only'}</span>
@@ -1275,46 +1628,49 @@ export function LocationsPage() {
                   </div>
 
                   <div className="px-4 pb-4 space-y-2.5">
-                    <div className="pt-2 border-t border-[#f3ede3] flex items-center justify-between gap-2 text-[11px]">
+                    <div className="pt-2 border-t border-[#e6ddd0] flex items-center justify-between gap-2 text-xs">
                       <div className="flex items-center gap-1.5">
                         <button
                           type="button"
                           onClick={() => void toggleSaveCafe(snapshot, false)}
-                          className={`inline-flex items-center gap-1 px-2 py-1 rounded-md border font-semibold ${
+                          className={`inline-flex items-center gap-1.5 min-h-[40px] px-3 rounded-xl border font-medium ${
                             saved
-                              ? 'bg-[#1c1613] text-white border-[#1c1613]'
-                              : 'bg-[#faf7f2] text-[#5c4e45] border-[#e6ddd0] hover:border-[#b45309]'
+                              ? 'bg-[#fef3c7] border-[#f59e0b]/50 text-[#92400e]'
+                              : 'bg-[#faf7f2] border-[#e6ddd0] text-[#5c4e45]'
                           }`}
                         >
-                          <Bookmark className="w-3 h-3" aria-hidden="true" />
+                          <Bookmark className="w-3.5 h-3.5" aria-hidden="true" />
                           <span>{saved ? 'Saved' : 'Save'}</span>
                         </button>
                         <button
                           type="button"
                           onClick={() => void toggleSaveCafe(snapshot, true)}
                           aria-label={favourited ? 'Remove favourite' : 'Mark favourite'}
-                          className={`inline-flex items-center gap-1 px-2 py-1 rounded-md border font-semibold ${
+                          className={`inline-flex items-center justify-center w-10 h-10 rounded-xl border ${
                             favourited
-                              ? 'bg-[#fef2f2] text-[#b91c1c] border-[#fecaca]'
-                              : 'bg-[#faf7f2] text-[#5c4e45] border-[#e6ddd0] hover:border-[#b45309]'
+                              ? 'bg-[#fef2f2] border-[#fecaca] text-[#b91c1c]'
+                              : 'bg-[#faf7f2] border-[#e6ddd0] text-[#5c4e45]'
                           }`}
                         >
-                          <Heart className={`w-3 h-3 ${favourited ? 'fill-[#b91c1c]' : ''}`} aria-hidden="true" />
+                          <Heart
+                            className={`w-4 h-4 ${favourited ? 'fill-[#b91c1c]' : ''}`}
+                            aria-hidden="true"
+                          />
                         </button>
                       </div>
                       <button
                         type="button"
                         onClick={() => toggleCompareCafe(locItem)}
-                        className={`inline-flex items-center gap-1 px-2 py-1 rounded-md border font-semibold ${
+                        className={`inline-flex items-center gap-1.5 min-h-[40px] px-3 rounded-xl border font-medium ${
                           inCompare
-                            ? 'bg-[#1b4d3e] text-white border-[#1b4d3e]'
-                            : 'bg-[#faf7f2] text-[#5c4e45] border-[#e6ddd0] hover:border-[#b45309]'
+                            ? 'bg-[#1b4d3e] border-[#1b4d3e] text-white'
+                            : 'bg-[#faf7f2] border-[#e6ddd0] text-[#5c4e45]'
                         }`}
                       >
                         {!canCompare ? (
-                          <Lock className="w-3 h-3 text-[#b45309]" aria-hidden="true" />
+                          <Lock className="w-3.5 h-3.5 text-[#b45309]" aria-hidden="true" />
                         ) : (
-                          <GitCompareArrows className="w-3 h-3" aria-hidden="true" />
+                          <GitCompareArrows className="w-3.5 h-3.5" aria-hidden="true" />
                         )}
                         <span>{inCompare ? 'Comparing' : 'Compare'}</span>
                       </button>
@@ -1326,7 +1682,7 @@ export function LocationsPage() {
                           href={gc.websiteUrl}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 font-semibold text-[#5c4e45] hover:text-[#1c1613]"
+                          className="inline-flex items-center gap-1 font-medium text-[#5c4e45] hover:text-[#1c1613]"
                         >
                           <Globe className="w-3.5 h-3.5" aria-hidden="true" />
                           <span>Website</span>
@@ -1340,7 +1696,7 @@ export function LocationsPage() {
                           href={gc.mapLink}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 font-semibold text-[#5c4e45] hover:text-[#1c1613]"
+                          className="inline-flex items-center gap-1 font-medium text-[#5c4e45] hover:text-[#1c1613]"
                         >
                           <span>Directions</span>
                           <ArrowUpRight className="w-3.5 h-3.5" aria-hidden="true" />

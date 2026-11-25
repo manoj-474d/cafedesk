@@ -62,11 +62,15 @@ AS $$
 DECLARE
   jwt_role TEXT;
   app_role TEXT;
+  sess_user TEXT;
 BEGIN
   jwt_role := COALESCE(auth.role(), '');
   app_role := COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', '');
+  sess_user := COALESCE(session_user, '');
 
-  IF jwt_role <> 'service_role' AND app_role NOT IN ('admin', 'super_admin') THEN
+  IF sess_user NOT IN ('postgres', 'supabase_auth_admin', 'supabase_admin', 'service_role')
+     AND jwt_role <> 'service_role'
+     AND app_role NOT IN ('admin', 'super_admin') THEN
     NEW.account_status := OLD.account_status;
     NEW.email_verified := OLD.email_verified;
     NEW.auth_provider := OLD.auth_provider;
@@ -94,11 +98,17 @@ DECLARE
   meta_phone TEXT;
   meta_avatar TEXT;
   meta_provider TEXT;
+  resolved_email TEXT;
 BEGIN
+  resolved_email := COALESCE(
+    NULLIF(LOWER(TRIM(COALESCE(NEW.email, ''))), ''),
+    CONCAT(NEW.id::text, '@noemail.cafedesk.local')
+  );
   meta_name := COALESCE(
     NULLIF(TRIM(NEW.raw_user_meta_data ->> 'full_name'), ''),
     NULLIF(TRIM(NEW.raw_user_meta_data ->> 'name'), ''),
-    SPLIT_PART(COALESCE(NEW.email, ''), '@', 1)
+    SPLIT_PART(resolved_email, '@', 1),
+    'Cafe Desk Member'
   );
   meta_phone := COALESCE(NEW.raw_user_meta_data ->> 'phone', NEW.phone, '');
   meta_avatar := COALESCE(
@@ -107,6 +117,12 @@ BEGIN
     ''
   );
   meta_provider := COALESCE(NEW.raw_app_meta_data ->> 'provider', 'email');
+
+  -- Clean up any stale orphaned profile with the same email whose auth user no longer exists
+  DELETE FROM public.profiles p
+  WHERE LOWER(p.email) = resolved_email
+    AND p.id <> NEW.id
+    AND NOT EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id);
 
   INSERT INTO public.profiles (
     id,
@@ -123,11 +139,11 @@ BEGIN
   ) VALUES (
     NEW.id,
     meta_name,
-    LOWER(COALESCE(NEW.email, '')),
+    resolved_email,
     meta_phone,
     meta_avatar,
     CASE WHEN meta_provider = 'google' THEN 'google' ELSE 'email' END,
-    (NEW.email_confirmed_at IS NOT NULL),
+    (NEW.email_confirmed_at IS NOT NULL OR meta_provider = 'google'),
     'active',
     NEW.last_sign_in_at,
     COALESCE(NEW.created_at, NOW()),
@@ -135,9 +151,10 @@ BEGIN
   )
   ON CONFLICT (id) DO UPDATE SET
     full_name = CASE WHEN EXCLUDED.full_name <> '' THEN EXCLUDED.full_name ELSE public.profiles.full_name END,
+    email = CASE WHEN EXCLUDED.email <> '' THEN EXCLUDED.email ELSE public.profiles.email END,
     phone = CASE WHEN EXCLUDED.phone <> '' THEN EXCLUDED.phone ELSE public.profiles.phone END,
     avatar_url = CASE WHEN EXCLUDED.avatar_url <> '' THEN EXCLUDED.avatar_url ELSE public.profiles.avatar_url END,
-    email_verified = (NEW.email_confirmed_at IS NOT NULL),
+    email_verified = (NEW.email_confirmed_at IS NOT NULL OR meta_provider = 'google' OR public.profiles.email_verified),
     last_login_at = COALESCE(NEW.last_sign_in_at, public.profiles.last_login_at),
     updated_at = NOW();
 

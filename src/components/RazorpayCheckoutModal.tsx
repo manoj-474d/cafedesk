@@ -11,7 +11,7 @@ import {
   X,
 } from 'lucide-react';
 import {
-  getUserSessionHeaders,
+  getUserAuthHeaders,
   resolveApiUrl,
   useAuth,
   type AuthResponsePayload,
@@ -163,10 +163,10 @@ export function RazorpayCheckoutModal() {
     try {
       await ensureBackendSession();
 
-      const requestCreateOrder = () =>
+      const requestCreateOrder = async () =>
         fetch(resolveApiUrl('/api/billing/checkout/create-order'), {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
+          headers: { 'Content-Type': 'application/json', ...(await getUserAuthHeaders()) },
           credentials: 'include',
           body: JSON.stringify({ planId: checkoutPlan, method }),
         });
@@ -194,11 +194,12 @@ export function RazorpayCheckoutModal() {
         amountPaise?: number;
         currency?: string;
         testToken?: string;
+        orderToken?: string;
       }>(orderRes);
 
       if (parsedOrder.isMissingBackend) {
         setError(
-          'Payment backend API is not active on this static host. Run the Cafe Desk full-stack server or configure VITE_API_BASE_URL to enable Razorpay checkout.'
+          'Payment backend API is not active on this host yet. Deploy with wrangler.jsonc / worker.ts (or server.ts) to enable Razorpay checkout.'
         );
         setProcessing(false);
         return;
@@ -217,7 +218,7 @@ export function RazorpayCheckoutModal() {
       if (simulateFailure) {
         await fetch(resolveApiUrl('/api/billing/checkout/fail'), {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
+          headers: { 'Content-Type': 'application/json', ...(await getUserAuthHeaders()) },
           credentials: 'include',
           body: JSON.stringify({
             paymentId: orderData.paymentId,
@@ -240,7 +241,9 @@ export function RazorpayCheckoutModal() {
       if (orderData.mode === 'razorpay' && resolvedKeyId) {
         const loaded = await loadRazorpayScript();
         if (!loaded || !window.Razorpay) {
-          setError('Could not load Razorpay Checkout script. Please check your internet connection and disable any script blockers.');
+          setError(
+            'Could not load Razorpay Checkout script. Please check your internet connection and disable any script blockers.'
+          );
           setProcessing(false);
           return;
         }
@@ -271,13 +274,14 @@ export function RazorpayCheckoutModal() {
             try {
               const verRes = await fetch(resolveApiUrl('/api/billing/checkout/verify'), {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
+                headers: { 'Content-Type': 'application/json', ...(await getUserAuthHeaders()) },
                 credentials: 'include',
                 body: JSON.stringify({
                   orderId: response.razorpay_order_id,
                   paymentId: orderData.paymentId,
                   razorpayPaymentId: response.razorpay_payment_id,
                   razorpaySignature: response.razorpay_signature,
+                  orderToken: orderData.orderToken,
                   method,
                 }),
               });
@@ -316,9 +320,10 @@ export function RazorpayCheckoutModal() {
             ondismiss: async () => {
               await fetch(resolveApiUrl('/api/billing/checkout/fail'), {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
+                headers: { 'Content-Type': 'application/json', ...(await getUserAuthHeaders()) },
                 credentials: 'include',
                 body: JSON.stringify({
+                  orderId: orderData.orderId,
                   paymentId: orderData.paymentId,
                   reason: 'Checkout closed before completing payment',
                 }),
@@ -336,9 +341,10 @@ export function RazorpayCheckoutModal() {
             errObj?.description || 'Payment failed in Razorpay Checkout. Please try again.';
           await fetch(resolveApiUrl('/api/billing/checkout/fail'), {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
+            headers: { 'Content-Type': 'application/json', ...(await getUserAuthHeaders()) },
             credentials: 'include',
             body: JSON.stringify({
+              orderId: orderData.orderId,
               paymentId: orderData.paymentId,
               reason: failMsg,
             }),
@@ -359,12 +365,13 @@ export function RazorpayCheckoutModal() {
       // Server-signed Razorpay-compatible test verification flow
       const verifyRes = await fetch(resolveApiUrl('/api/billing/checkout/verify'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
+        headers: { 'Content-Type': 'application/json', ...(await getUserAuthHeaders()) },
         credentials: 'include',
         body: JSON.stringify({
           orderId: orderData.orderId,
           paymentId: orderData.paymentId,
           testToken: orderData.testToken,
+          orderToken: orderData.orderToken,
           method,
         }),
       });
@@ -412,19 +419,22 @@ export function RazorpayCheckoutModal() {
       role="dialog"
       aria-modal="true"
       aria-labelledby="checkout-modal-title"
-      className="fixed inset-0 z-50 bg-[#1c1613]/75 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4"
+      className="fixed inset-0 z-50 bg-[#1c1613]/65 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4"
       onClick={closeCheckout}
     >
       <div
-        className="w-full max-w-lg max-h-[92vh] overflow-y-auto rounded-2xl bg-[#faf7f2] border border-[#e6ddd0] shadow-2xl text-[#1c1613]"
+        className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl bg-[#faf7f2] border border-[#e6ddd0] shadow-2xl text-[#1c1613] animate-sheet-up"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="p-5 sm:p-6 bg-[#1c1613] text-[#faf7f2] flex items-center justify-between gap-4">
-          <div>
-            <p className="text-[11px] font-bold uppercase tracking-wider text-[#f59e0b]">
+        <div className="px-5 py-4 sm:p-6 bg-[#1c1613] text-[#faf7f2] flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-[#f59e0b]">
               Razorpay Subscription Checkout
             </p>
-            <h2 id="checkout-modal-title" className="font-serif-display text-2xl font-bold text-white">
+            <h2
+              id="checkout-modal-title"
+              className="font-serif-display text-xl sm:text-2xl font-bold text-white leading-tight"
+            >
               {receipt ? 'Payment Confirmed' : `${planName} · ₹${amountInr}/${intervalLabel}`}
             </h2>
           </div>
@@ -432,13 +442,13 @@ export function RazorpayCheckoutModal() {
             type="button"
             onClick={closeCheckout}
             aria-label="Close checkout"
-            className="w-9 h-9 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center justify-center"
+            className="w-9 h-9 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center justify-center shrink-0 transition-colors"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        <div className="p-6 space-y-5">
+        <div className="p-5 sm:p-6 pb-[calc(1.25rem+env(safe-area-inset-bottom))] sm:pb-6 space-y-5">
           {!authenticated ? (
             <div className="space-y-4 text-center py-4">
               <p className="text-sm text-[#5c4e45]">
@@ -449,14 +459,14 @@ export function RazorpayCheckoutModal() {
                 <Link
                   to={`/login?mode=signup&upgrade=${checkoutPlan}`}
                   onClick={closeCheckout}
-                  className="px-5 py-2.5 rounded-lg bg-[#b45309] text-white text-sm font-semibold"
+                  className="min-h-[44px] px-5 py-2.5 rounded-xl bg-[#b45309] hover:bg-[#92400e] text-white text-sm font-semibold inline-flex items-center transition-colors"
                 >
                   Create Account &amp; Continue
                 </Link>
                 <Link
                   to={`/login?mode=login&upgrade=${checkoutPlan}`}
                   onClick={closeCheckout}
-                  className="px-5 py-2.5 rounded-lg bg-white border border-[#d6cbba] text-[#1c1613] text-sm font-semibold"
+                  className="min-h-[44px] px-5 py-2.5 rounded-xl bg-white border border-[#e6ddd0] text-[#1c1613] text-sm font-semibold inline-flex items-center"
                 >
                   Sign In
                 </Link>
@@ -465,12 +475,10 @@ export function RazorpayCheckoutModal() {
           ) : receipt ? (
             <div className="space-y-4">
               <div className="p-4 rounded-xl bg-[#ecfdf5] border border-[#a7f3d0] flex items-start gap-3">
-                <CheckCircle2 className="w-6 h-6 text-[#1b4d3e] shrink-0 mt-0.5" />
+                <CheckCircle2 className="w-5 h-5 text-[#1b4d3e] shrink-0 mt-0.5" />
                 <div className="space-y-1">
-                  <p className="text-sm font-bold text-[#1b4d3e]">
-                    {planName} is now active!
-                  </p>
-                  <p className="text-xs text-[#1c1613]">
+                  <p className="text-sm font-bold text-[#1c1613]">{planName} is now active!</p>
+                  <p className="text-xs text-[#5c4e45]">
                     All plan features have been unlocked across your Cafe Desk account.
                   </p>
                 </div>
@@ -499,14 +507,14 @@ export function RazorpayCheckoutModal() {
                 <Link
                   to="/account"
                   onClick={closeCheckout}
-                  className="flex-1 min-h-[42px] px-4 py-2 rounded-lg bg-[#1c1613] text-white text-sm font-semibold inline-flex items-center justify-center"
+                  className="flex-1 min-h-[44px] px-4 py-2 rounded-xl bg-[#b45309] hover:bg-[#92400e] text-white text-sm font-semibold inline-flex items-center justify-center transition-colors"
                 >
                   Open My Account
                 </Link>
                 <button
                   type="button"
                   onClick={closeCheckout}
-                  className="min-h-[42px] px-4 py-2 rounded-lg bg-white border border-[#d6cbba] text-sm font-semibold"
+                  className="min-h-[44px] px-4 py-2 rounded-xl bg-white border border-[#e6ddd0] text-sm font-semibold text-[#1c1613]"
                 >
                   Continue Exploring
                 </button>
@@ -516,7 +524,7 @@ export function RazorpayCheckoutModal() {
             <>
               <div className="p-4 rounded-xl bg-white border border-[#e6ddd0] flex items-center justify-between text-sm">
                 <div>
-                  <p className="font-bold text-[#1c1613]">{planName}</p>
+                  <p className="font-semibold text-[#1c1613]">{planName}</p>
                   <p className="text-xs text-[#5c4e45]">{durationLabel}</p>
                 </div>
                 <p className="font-mono-data text-xl font-bold text-[#b45309]">₹{amountInr}</p>
@@ -524,7 +532,7 @@ export function RazorpayCheckoutModal() {
 
               {/* Payment Method Tabs */}
               <div className="space-y-2">
-                <p className="text-xs font-semibold text-[#5c4e45]">Select Payment Method</p>
+                <p className="text-xs font-medium text-[#5c4e45]">Select Payment Method</p>
                 <div className="grid grid-cols-3 gap-2">
                   {[
                     { id: 'upi' as PayMethod, label: 'UPI / QR', icon: Smartphone },
@@ -538,10 +546,10 @@ export function RazorpayCheckoutModal() {
                         key={opt.id}
                         type="button"
                         onClick={() => setMethod(opt.id)}
-                        className={`p-3 rounded-xl border text-xs font-semibold flex flex-col items-center gap-1.5 transition-colors ${
+                        className={`min-h-[60px] p-3 rounded-xl border text-xs font-semibold flex flex-col items-center justify-center gap-1.5 transition-colors ${
                           active
                             ? 'bg-[#1c1613] text-white border-[#1c1613]'
-                            : 'bg-white text-[#1c1613] border-[#e6ddd0] hover:border-[#b45309]'
+                            : 'bg-white text-[#1c1613] border-[#e6ddd0] hover:border-[#b45309]/50'
                         }`}
                       >
                         <Icon className="w-4 h-4" />
@@ -553,10 +561,10 @@ export function RazorpayCheckoutModal() {
               </div>
 
               {!razorpayEnabled && (
-                <div className="p-3.5 rounded-xl bg-white border border-[#e6ddd0] space-y-3 text-xs">
+                <div className="p-4 rounded-xl bg-white border border-[#e6ddd0] space-y-3 text-xs">
                   {method === 'upi' && (
                     <div>
-                      <label htmlFor="pay-upi" className="block font-semibold text-[#5c4e45] mb-1">
+                      <label htmlFor="pay-upi" className="block font-medium text-[#5c4e45] mb-1.5">
                         UPI ID (GPay, PhonePe, Paytm, BHIM)
                       </label>
                       <input
@@ -564,14 +572,14 @@ export function RazorpayCheckoutModal() {
                         type="text"
                         value={upiId}
                         onChange={(e) => setUpiId(e.target.value)}
-                        className="w-full h-10 px-3 rounded-lg border border-[#d6cbba] bg-[#faf7f2] font-mono-data text-xs"
+                        className="w-full h-11 px-3 rounded-xl bg-[#faf7f2] border border-[#d6cbba] font-mono-data text-xs text-[#1c1613]"
                       />
                     </div>
                   )}
                   {method === 'card' && (
                     <div className="grid grid-cols-2 gap-2.5">
                       <div className="col-span-2">
-                        <label htmlFor="pay-card" className="block font-semibold text-[#5c4e45] mb-1">
+                        <label htmlFor="pay-card" className="block font-medium text-[#5c4e45] mb-1.5">
                           Credit / Debit Card (Last 4 digits)
                         </label>
                         <input
@@ -579,21 +587,21 @@ export function RazorpayCheckoutModal() {
                           type="text"
                           value={`•••• •••• •••• ${cardLast4}`}
                           onChange={(e) => setCardLast4(e.target.value.slice(-4) || '4242')}
-                          className="w-full h-10 px-3 rounded-lg border border-[#d6cbba] bg-[#faf7f2] font-mono-data text-xs"
+                          className="w-full h-11 px-3 rounded-xl bg-[#faf7f2] border border-[#d6cbba] font-mono-data text-xs text-[#1c1613]"
                         />
                       </div>
                     </div>
                   )}
                   {method === 'netbanking' && (
                     <div>
-                      <label htmlFor="pay-bank" className="block font-semibold text-[#5c4e45] mb-1">
+                      <label htmlFor="pay-bank" className="block font-medium text-[#5c4e45] mb-1.5">
                         Select Indian Bank
                       </label>
                       <select
                         id="pay-bank"
                         value={bankName}
                         onChange={(e) => setBankName(e.target.value)}
-                        className="w-full h-10 px-3 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-xs font-medium"
+                        className="w-full h-11 px-3 rounded-xl bg-[#faf7f2] border border-[#d6cbba] text-xs font-medium text-[#1c1613]"
                       >
                         <option value="HDFC Bank">HDFC Bank</option>
                         <option value="ICICI Bank">ICICI Bank</option>
@@ -604,7 +612,8 @@ export function RazorpayCheckoutModal() {
                     </div>
                   )}
                   <p className="text-[11px] text-[#5c4e45]">
-                    Sandbox Test Checkout active — payments are cryptographically verified on server before activating your tier.
+                    Sandbox Test Checkout active — payments are cryptographically verified on server
+                    before activating your tier.
                   </p>
                 </div>
               )}
@@ -612,7 +621,7 @@ export function RazorpayCheckoutModal() {
               {error && (
                 <div
                   role="alert"
-                  className="p-3 rounded-xl bg-[#fef2f2] border border-[#fecaca] text-xs font-semibold text-[#991b1b] flex items-start gap-2"
+                  className="p-3.5 rounded-xl bg-[#fef2f2] border border-[#fecaca] text-xs font-medium text-[#991b1b] flex items-start gap-2.5"
                 >
                   <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
                   <span>{error}</span>
@@ -624,7 +633,7 @@ export function RazorpayCheckoutModal() {
                   type="button"
                   disabled={processing}
                   onClick={() => handlePayNow(false)}
-                  className="w-full min-h-[46px] px-5 py-2.5 rounded-lg bg-[#b45309] hover:bg-[#92400e] disabled:opacity-60 text-white text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors"
+                  className="w-full min-h-[48px] px-5 py-2.5 rounded-xl bg-[#b45309] hover:bg-[#92400e] disabled:opacity-60 text-white text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors"
                 >
                   {processing ? (
                     <>
@@ -644,7 +653,7 @@ export function RazorpayCheckoutModal() {
                     type="button"
                     disabled={processing}
                     onClick={() => handlePayNow(true)}
-                    className="w-full py-2 text-[11px] font-semibold text-[#5c4e45] hover:text-[#991b1b] underline underline-offset-4"
+                    className="w-full py-2 text-[11px] font-medium text-[#5c4e45] hover:text-[#b91c1c] underline underline-offset-4"
                   >
                     Test declined payment handling
                   </button>

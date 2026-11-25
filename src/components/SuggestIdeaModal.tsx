@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { CheckCircle2, Lightbulb, Loader2, Send, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import type { SuggestionCategory } from '../types/subscription';
@@ -12,7 +12,7 @@ const CATEGORIES: SuggestionCategory[] = [
 ];
 
 export function SuggestIdeaModal() {
-  const { user, compareList, hasPlus } = useAuth();
+  const { user, compareList, hasPermission } = useAuth();
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState<SuggestionCategory>('New Feature');
@@ -22,7 +22,7 @@ export function SuggestIdeaModal() {
   const [error, setError] = useState('');
   const [submitted, setSubmitted] = useState(false);
 
-  const compareBarVisible = hasPlus && compareList.length > 0;
+  const compareBarVisible = hasPermission('compare') && compareList.length > 0;
 
   const resetForm = () => {
     setTitle('');
@@ -33,12 +33,18 @@ export function SuggestIdeaModal() {
     setSubmitted(false);
   };
 
-  const handleOpen = () => {
+  const handleOpen = useCallback(() => {
     setEmail((prev) => prev || user?.email || '');
     setSubmitted(false);
     setError('');
     setOpen(true);
-  };
+  }, [user?.email]);
+
+  useEffect(() => {
+    const onOpenEvent = () => handleOpen();
+    window.addEventListener('cafedesk:open-suggest-idea', onOpenEvent);
+    return () => window.removeEventListener('cafedesk:open-suggest-idea', onOpenEvent);
+  }, [handleOpen]);
 
   const handleClose = () => {
     setOpen(false);
@@ -86,16 +92,16 @@ export function SuggestIdeaModal() {
 
   return (
     <>
-      {/* Persistent Floating Button */}
+      {/* Desktop/Tablet Floating Button */}
       <button
         type="button"
         onClick={handleOpen}
         aria-label="Suggest an idea or feature for Cafe Desk"
-        className={`fixed right-4 sm:right-6 z-40 inline-flex items-center gap-2 min-h-[44px] px-4 py-2.5 rounded-full bg-[#1c1613] hover:bg-[#312722] text-[#faf7f2] border border-[#3a2f2a] shadow-lg text-xs sm:text-sm font-semibold transition-all ${
-          compareBarVisible ? 'bottom-20 sm:bottom-20' : 'bottom-5 sm:bottom-6'
+        className={`hidden md:inline-flex fixed right-6 z-40 items-center gap-2 rounded-full bg-[#1c1613] hover:bg-[#312722] text-white border border-[#3d312a] shadow-lg px-4 py-2.5 text-xs font-semibold transition-all ${
+          compareBarVisible ? 'bottom-20' : 'bottom-6'
         }`}
       >
-        <Lightbulb className="w-4 h-4 text-[#f59e0b] shrink-0" aria-hidden="true" />
+        <Lightbulb className="w-3.5 h-3.5 text-[#f59e0b] shrink-0" aria-hidden="true" />
         <span>Suggest an Idea</span>
       </button>
 
@@ -105,26 +111,26 @@ export function SuggestIdeaModal() {
           role="dialog"
           aria-modal="true"
           aria-labelledby="suggest-idea-title"
-          className="fixed inset-0 z-50 bg-[#1c1613]/75 backdrop-blur-sm flex items-center justify-center p-4"
+          className="fixed inset-0 z-50 bg-[#1c1613]/65 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4"
           onClick={handleClose}
         >
           <div
-            className="w-full max-w-lg rounded-2xl bg-[#faf7f2] border border-[#e6ddd0] shadow-2xl overflow-hidden text-[#1c1613]"
+            className="w-full max-w-lg max-h-[92vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl bg-[#faf7f2] border border-[#e6ddd0] shadow-2xl text-[#1c1613] animate-sheet-up pb-[env(safe-area-inset-bottom)] sm:pb-0"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="p-5 sm:p-6 bg-[#1c1613] text-[#faf7f2] flex items-start justify-between gap-4">
               <div className="space-y-1">
-                <p className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-[#f59e0b]">
+                <p className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-[#f59e0b]">
                   <Lightbulb className="w-3.5 h-3.5" aria-hidden="true" />
                   <span>Community Product Feedback</span>
                 </p>
                 <h2
                   id="suggest-idea-title"
-                  className="font-serif-display text-2xl font-bold text-white"
+                  className="font-serif-display text-xl sm:text-2xl font-bold text-white"
                 >
                   Help Us Make Cafe Desk Better
                 </h2>
-                <p className="text-xs text-[#faf7f2]/80 leading-relaxed">
+                <p className="text-xs text-[#d6cbba] leading-relaxed">
                   Have an idea, feature request or suggestion? We would love to hear it.
                 </p>
               </div>
@@ -132,7 +138,7 @@ export function SuggestIdeaModal() {
                 type="button"
                 onClick={handleClose}
                 aria-label="Close suggestion form"
-                className="w-9 h-9 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center justify-center shrink-0"
+                className="w-9 h-9 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center justify-center shrink-0 transition-colors"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -154,14 +160,14 @@ export function SuggestIdeaModal() {
                     <button
                       type="button"
                       onClick={resetForm}
-                      className="min-h-[40px] px-4 py-2 rounded-lg bg-white border border-[#d6cbba] text-xs font-semibold text-[#1c1613]"
+                      className="min-h-[44px] px-4 py-2 rounded-xl bg-white border border-[#e6ddd0] text-xs font-semibold text-[#1c1613]"
                     >
                       Submit Another Idea
                     </button>
                     <button
                       type="button"
                       onClick={handleClose}
-                      className="min-h-[40px] px-5 py-2 rounded-lg bg-[#1c1613] text-white text-xs font-semibold"
+                      className="min-h-[44px] px-5 py-2 rounded-xl bg-[#b45309] hover:bg-[#92400e] text-white text-xs font-semibold transition-colors"
                     >
                       Back to Cafe Desk
                     </button>
@@ -172,7 +178,7 @@ export function SuggestIdeaModal() {
                   <div>
                     <label
                       htmlFor="idea-title"
-                      className="block text-xs font-semibold text-[#5c4e45] mb-1"
+                      className="block text-xs font-medium text-[#5c4e45] mb-1.5"
                     >
                       Suggestion title *
                     </label>
@@ -184,14 +190,14 @@ export function SuggestIdeaModal() {
                       value={title}
                       onChange={(e) => setTitle(e.target.value)}
                       placeholder="e.g. Filter cafes open past 11 PM in Koramangala"
-                      className="w-full h-10 px-3 rounded-lg border border-[#d6cbba] bg-white text-sm text-[#1c1613]"
+                      className="w-full h-11 px-3 rounded-xl bg-white border border-[#d6cbba] text-sm text-[#1c1613]"
                     />
                   </div>
 
                   <div>
                     <label
                       htmlFor="idea-category"
-                      className="block text-xs font-semibold text-[#5c4e45] mb-1"
+                      className="block text-xs font-medium text-[#5c4e45] mb-1.5"
                     >
                       Category *
                     </label>
@@ -199,7 +205,7 @@ export function SuggestIdeaModal() {
                       id="idea-category"
                       value={category}
                       onChange={(e) => setCategory(e.target.value as SuggestionCategory)}
-                      className="w-full h-10 px-3 rounded-lg border border-[#d6cbba] bg-white text-sm font-medium text-[#1c1613]"
+                      className="w-full h-11 px-3 rounded-xl bg-white border border-[#d6cbba] text-sm font-medium text-[#1c1613]"
                     >
                       {CATEGORIES.map((cat) => (
                         <option key={cat} value={cat}>
@@ -212,7 +218,7 @@ export function SuggestIdeaModal() {
                   <div>
                     <label
                       htmlFor="idea-details"
-                      className="block text-xs font-semibold text-[#5c4e45] mb-1"
+                      className="block text-xs font-medium text-[#5c4e45] mb-1.5"
                     >
                       Detailed suggestion *
                     </label>
@@ -224,14 +230,14 @@ export function SuggestIdeaModal() {
                       value={details}
                       onChange={(e) => setDetails(e.target.value)}
                       placeholder="Describe what would make Cafe Desk more useful for discovering Bengaluru cafes..."
-                      className="w-full p-3 rounded-lg border border-[#d6cbba] bg-white text-sm text-[#1c1613] resize-y"
+                      className="w-full p-3 rounded-xl bg-white border border-[#d6cbba] text-sm text-[#1c1613] resize-y"
                     />
                   </div>
 
                   <div>
                     <label
                       htmlFor="idea-email"
-                      className="block text-xs font-semibold text-[#5c4e45] mb-1"
+                      className="block text-xs font-medium text-[#5c4e45] mb-1.5"
                     >
                       Email address (optional — only if you want updates)
                     </label>
@@ -242,14 +248,14 @@ export function SuggestIdeaModal() {
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       placeholder="you@example.com (leave blank to submit anonymously)"
-                      className="w-full h-10 px-3 rounded-lg border border-[#d6cbba] bg-white text-sm text-[#1c1613]"
+                      className="w-full h-11 px-3 rounded-xl bg-white border border-[#d6cbba] text-sm text-[#1c1613]"
                     />
                   </div>
 
                   {error && (
                     <p
                       role="alert"
-                      className="p-2.5 rounded-lg bg-[#fef2f2] border border-[#fecaca] text-xs font-semibold text-[#991b1b]"
+                      className="p-3 rounded-xl bg-[#fef2f2] border border-[#fecaca] text-xs font-medium text-[#991b1b]"
                     >
                       {error}
                     </p>
@@ -259,14 +265,14 @@ export function SuggestIdeaModal() {
                     <button
                       type="button"
                       onClick={handleClose}
-                      className="min-h-[42px] px-4 py-2 rounded-lg bg-white border border-[#d6cbba] hover:bg-[#f3ede3] text-xs font-semibold text-[#1c1613]"
+                      className="min-h-[44px] px-4 py-2 rounded-xl bg-white border border-[#e6ddd0] text-xs font-semibold text-[#1c1613]"
                     >
                       Cancel
                     </button>
                     <button
                       type="submit"
                       disabled={submitting}
-                      className="min-h-[42px] px-5 py-2 rounded-lg bg-[#b45309] hover:bg-[#92400e] disabled:opacity-60 text-white text-xs font-semibold inline-flex items-center gap-1.5"
+                      className="min-h-[44px] px-5 py-2 rounded-xl bg-[#b45309] hover:bg-[#92400e] disabled:opacity-60 text-white text-xs font-semibold inline-flex items-center gap-1.5 transition-colors"
                     >
                       {submitting ? (
                         <>

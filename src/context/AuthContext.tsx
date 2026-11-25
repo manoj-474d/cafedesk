@@ -102,12 +102,30 @@ export function resolveApiUrl(path: string): string {
 }
 
 export function getUserSessionHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {};
   try {
     const token = localStorage.getItem(SESSION_TOKEN_STORAGE_KEY) || '';
-    return token ? { 'X-CafeDesk-Session': token } : {};
+    if (token) headers['X-CafeDesk-Session'] = token;
   } catch {
-    return {};
+    // Ignore storage errors
   }
+  return headers;
+}
+
+export async function getUserAuthHeaders(): Promise<Record<string, string>> {
+  const headers = getUserSessionHeaders();
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data } = await supabase.auth.getSession();
+      const accessToken = data.session?.access_token;
+      if (accessToken) {
+        headers.Authorization = `Bearer ${accessToken}`;
+      }
+    } catch {
+      // Ignore auth lookup errors
+    }
+  }
+  return headers;
 }
 
 export interface AuthResponsePayload {
@@ -564,6 +582,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
+              ...getUserSessionHeaders(),
               Authorization: `Bearer ${accessToken}`,
             },
             credentials: 'include',
@@ -662,7 +681,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       const res = await fetch(resolveApiUrl('/api/auth/me'), {
         credentials: 'include',
-        headers: getUserSessionHeaders(),
+        headers: await getUserAuthHeaders(),
       });
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
@@ -797,7 +816,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const staticUserKey = user.supabase_id || String(user.id || '');
       if (existing && (!asFavourite || existing.is_favourite)) {
         try {
-          const res = await fetch(`/api/user/saved/${encodeURIComponent(snapshot.key)}`, {
+          const res = await fetch(resolveApiUrl(`/api/user/saved/${encodeURIComponent(snapshot.key)}`), {
             method: 'DELETE',
             credentials: 'include',
             headers: getUserSessionHeaders(),
@@ -822,7 +841,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       try {
-        const res = await fetch('/api/user/saved', {
+        const res = await fetch(resolveApiUrl('/api/user/saved'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
           credentials: 'include',
@@ -880,7 +899,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         });
         return null;
       }
-      const res = await fetch('/api/user/collections', {
+      const res = await fetch(resolveApiUrl('/api/user/collections'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
         credentials: 'include',
@@ -899,7 +918,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const deleteCollection = useCallback(async (id: number) => {
-    const res = await fetch(`/api/user/collections/${id}`, {
+    const res = await fetch(resolveApiUrl(`/api/user/collections/${id}`), {
       method: 'DELETE',
       credentials: 'include',
       headers: getUserSessionHeaders(),
@@ -923,7 +942,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         });
         return;
       }
-      const res = await fetch(`/api/user/collections/${collectionId}/items`, {
+      const res = await fetch(resolveApiUrl(`/api/user/collections/${collectionId}/items`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getUserSessionHeaders() },
         credentials: 'include',
@@ -944,7 +963,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const removeCafeFromCollection = useCallback(
     async (collectionId: number, cafeKey: string) => {
       const res = await fetch(
-        `/api/user/collections/${collectionId}/items/${encodeURIComponent(cafeKey)}`,
+        resolveApiUrl(`/api/user/collections/${collectionId}/items/${encodeURIComponent(cafeKey)}`),
         {
           method: 'DELETE',
           credentials: 'include',

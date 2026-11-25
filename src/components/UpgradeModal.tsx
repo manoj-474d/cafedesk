@@ -1,6 +1,15 @@
 import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { AlertTriangle, ArrowRight, CheckCircle2, Heart, Lock, RefreshCw, Sparkles, X } from 'lucide-react';
+import {
+  AlertTriangle,
+  ArrowRight,
+  CheckCircle2,
+  Heart,
+  Lock,
+  RefreshCw,
+  Sparkles,
+  X,
+} from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 export function UpgradeModal() {
@@ -25,20 +34,23 @@ export function UpgradeModal() {
         role="dialog"
         aria-modal="true"
         aria-labelledby="upgrade-modal-title"
-        className="fixed inset-0 z-50 bg-[#1c1613]/75 backdrop-blur-sm flex items-center justify-center p-4"
+        className="fixed inset-0 z-50 bg-[#1c1613]/65 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4"
         onClick={closeUpgradeModal}
       >
         <div
-          className="w-full max-w-md rounded-2xl bg-[#faf7f2] border border-[#e6ddd0] shadow-2xl overflow-hidden text-[#1c1613]"
+          className="w-full max-w-md max-h-[92vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl bg-[#faf7f2] border border-[#e6ddd0] shadow-2xl text-[#1c1613] animate-sheet-up"
           onClick={(e) => e.stopPropagation()}
         >
-          <div className="p-6 bg-[#1c1613] text-[#faf7f2] flex items-start justify-between gap-4">
-            <div className="space-y-1.5">
-              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-[#1b4d3e] text-white text-[11px] font-bold uppercase tracking-wider">
+          <div className="px-5 py-4 sm:p-6 bg-[#1c1613] text-[#faf7f2] flex items-start justify-between gap-4">
+            <div className="space-y-1.5 min-w-0">
+              <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-[#86efac]">
                 <Heart className="w-3.5 h-3.5" aria-hidden="true" />
                 <span>Free Explorer Feature</span>
               </div>
-              <h2 id="upgrade-modal-title" className="font-serif-display text-2xl font-bold text-white">
+              <h2
+                id="upgrade-modal-title"
+                className="font-serif-display text-xl sm:text-2xl font-bold text-white"
+              >
                 Sign in free to {upgradePrompt.featureName}
               </h2>
             </div>
@@ -47,13 +59,13 @@ export function UpgradeModal() {
               type="button"
               onClick={closeUpgradeModal}
               aria-label="Close modal"
-              className="w-9 h-9 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center justify-center shrink-0"
+              className="w-9 h-9 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center justify-center shrink-0 transition-colors"
             >
               <X className="w-4 h-4" />
             </button>
           </div>
 
-          <div className="p-6 space-y-5">
+          <div className="p-5 sm:p-6 pb-[calc(1.25rem+env(safe-area-inset-bottom))] sm:pb-6 space-y-5">
             <p className="text-sm text-[#5c4e45] leading-relaxed">
               {upgradePrompt.description ||
                 'Saving & favouriting Bengaluru cafes is 100% free. Create a free account or sign in so your saved spots sync across every visit.'}
@@ -63,7 +75,7 @@ export function UpgradeModal() {
               <Link
                 to="/login?mode=signup"
                 onClick={closeUpgradeModal}
-                className="w-full min-h-[46px] px-5 py-2.5 rounded-lg bg-[#1b4d3e] hover:bg-[#163f33] text-white text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors"
+                className="w-full min-h-[48px] px-5 py-2.5 rounded-xl bg-[#b45309] hover:bg-[#92400e] text-white text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors"
               >
                 <span>Create Free Account</span>
                 <ArrowRight className="w-4 h-4" aria-hidden="true" />
@@ -71,7 +83,7 @@ export function UpgradeModal() {
               <Link
                 to="/login?mode=login"
                 onClick={closeUpgradeModal}
-                className="w-full min-h-[42px] px-4 py-2 rounded-lg bg-white border border-[#d6cbba] hover:bg-[#f3ede3] text-[#1c1613] text-xs font-semibold inline-flex items-center justify-center transition-colors"
+                className="w-full min-h-[44px] px-4 py-2 rounded-xl bg-white border border-[#e6ddd0] text-[#1c1613] text-xs font-semibold inline-flex items-center justify-center hover:border-[#b45309] transition-colors"
               >
                 Already have an account? Sign In
               </Link>
@@ -102,22 +114,18 @@ export function UpgradeModal() {
       role="dialog"
       aria-modal="true"
       aria-labelledby="upgrade-modal-title"
-      className="fixed inset-0 z-50 bg-[#1c1613]/75 backdrop-blur-sm flex items-center justify-center p-4"
+      className="fixed inset-0 z-50 bg-[#1c1613]/65 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4"
       onClick={closeUpgradeModal}
     >
       <div
-        className="w-full max-w-md rounded-2xl bg-[#faf7f2] border border-[#e6ddd0] shadow-2xl overflow-hidden text-[#1c1613]"
+        className="w-full max-w-md max-h-[92vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl bg-[#faf7f2] border border-[#e6ddd0] shadow-2xl text-[#1c1613] animate-sheet-up"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="p-6 bg-[#1c1613] text-[#faf7f2] flex items-start justify-between gap-4">
-          <div className="space-y-1.5">
+        <div className="px-5 py-4 sm:p-6 bg-[#1c1613] text-[#faf7f2] flex items-start justify-between gap-4">
+          <div className="space-y-1.5 min-w-0">
             <div
-              className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-white text-[11px] font-bold uppercase tracking-wider ${
-                isSuspended
-                  ? 'bg-[#991b1b]'
-                  : isExpired
-                  ? 'bg-[#d97706]'
-                  : 'bg-[#b45309]'
+              className={`inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider ${
+                isSuspended ? 'text-[#fca5a5]' : 'text-[#f59e0b]'
               }`}
             >
               {isExpired || isSuspended ? (
@@ -133,7 +141,10 @@ export function UpgradeModal() {
                   : 'Cafe Desk Plus'}
               </span>
             </div>
-            <h2 id="upgrade-modal-title" className="font-serif-display text-2xl font-bold text-white">
+            <h2
+              id="upgrade-modal-title"
+              className="font-serif-display text-xl sm:text-2xl font-bold text-white"
+            >
               {isSuspended
                 ? 'Subscription Access Paused'
                 : isExpired
@@ -146,15 +157,15 @@ export function UpgradeModal() {
             type="button"
             onClick={closeUpgradeModal}
             aria-label="Close upgrade prompt"
-            className="w-9 h-9 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center justify-center shrink-0"
+            className="w-9 h-9 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center justify-center shrink-0 transition-colors"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        <div className="p-6 space-y-5">
+        <div className="p-5 sm:p-6 pb-[calc(1.25rem+env(safe-area-inset-bottom))] sm:pb-6 space-y-5">
           <div className="flex items-start gap-3 p-3.5 rounded-xl bg-white border border-[#e6ddd0]">
-            <Lock className="w-5 h-5 text-[#b45309] shrink-0 mt-0.5" aria-hidden="true" />
+            <Lock className="w-4 h-4 text-[#b45309] shrink-0 mt-0.5" aria-hidden="true" />
             <div className="space-y-1 text-sm">
               <p className="font-semibold text-[#1c1613]">
                 {isSuspended
@@ -198,7 +209,7 @@ export function UpgradeModal() {
               <button
                 type="button"
                 onClick={() => handleCheckoutOrSignup(renewPlanId)}
-                className="w-full min-h-[46px] px-5 py-2.5 rounded-lg bg-[#b45309] hover:bg-[#92400e] text-white text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors"
+                className="w-full min-h-[48px] px-5 py-2.5 rounded-xl bg-[#b45309] hover:bg-[#92400e] text-white text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors"
               >
                 <RefreshCw className="w-4 h-4" aria-hidden="true" />
                 <span>Renew Now</span>
@@ -207,7 +218,7 @@ export function UpgradeModal() {
               <button
                 type="button"
                 onClick={() => handleCheckoutOrSignup('plus')}
-                className="w-full min-h-[46px] px-5 py-2.5 rounded-lg bg-[#b45309] hover:bg-[#92400e] text-white text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors"
+                className="w-full min-h-[48px] px-5 py-2.5 rounded-xl bg-[#b45309] hover:bg-[#92400e] text-white text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors"
               >
                 <span>
                   {authenticated
@@ -222,7 +233,7 @@ export function UpgradeModal() {
               <button
                 type="button"
                 onClick={() => handleCheckoutOrSignup('premium')}
-                className="w-full min-h-[42px] px-4 py-2 rounded-lg bg-[#1c1613] hover:bg-[#312722] text-white text-xs font-semibold inline-flex items-center justify-center gap-2 transition-colors"
+                className="w-full min-h-[44px] px-4 py-2 rounded-xl bg-[#1c1613] hover:bg-[#312722] text-white text-xs font-semibold inline-flex items-center justify-center gap-2 transition-colors"
               >
                 <span>Or Save 47% with Annual Plus (₹{annualPrice}/year)</span>
               </button>
@@ -231,7 +242,7 @@ export function UpgradeModal() {
             <Link
               to="/pricing"
               onClick={closeUpgradeModal}
-              className="w-full min-h-[38px] px-4 py-2 rounded-lg bg-white border border-[#d6cbba] hover:bg-[#f3ede3] text-[#1c1613] text-xs font-semibold inline-flex items-center justify-center transition-colors"
+              className="w-full min-h-[44px] px-4 py-2 rounded-xl bg-white border border-[#e6ddd0] text-[#1c1613] text-xs font-semibold inline-flex items-center justify-center hover:border-[#b45309] transition-colors"
             >
               View Plans &amp; Permissions
             </Link>
@@ -241,4 +252,3 @@ export function UpgradeModal() {
     </div>
   );
 }
-

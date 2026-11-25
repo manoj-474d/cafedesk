@@ -9,7 +9,7 @@ import type {
 } from '../types/cms';
 import { CAFES } from '../data/cafes';
 import { SITE_CONFIG } from '../config/constants';
-import { getUserSessionHeaders } from './AuthContext';
+import { getUserSessionHeaders, resolveApiUrl } from './AuthContext';
 
 const FALLBACK_SETTINGS: SiteSettings = {
   brand_name: 'Cafe Desk',
@@ -31,9 +31,8 @@ const FALLBACK_SETTINGS: SiteSettings = {
   twitter_url: 'https://x.com/cafedesk_space',
   linkedin_url: 'https://linkedin.com/company/cafedesk',
   hero_kicker: 'Bengaluru · Cafe & Workspace Discovery Platform',
-  hero_tagline: 'Find Your Perfect Cafe in Bengaluru.',
-  hero_subtitle:
-    "Discover Bengaluru's cafes for affordable coffee, tea, study, casual meetings, and laptop work.",
+  hero_tagline: 'Find Your Perfect Workspace.',
+  hero_subtitle: 'Discover cafes to work, study, meet and relax.',
   hero_image_url: '/src/assets/images/hero_cafedesk_interior_1794976059561.jpg',
   hero_bg_image_url: '/src/assets/images/hero_cafedesk_interior_1794976059561.jpg',
   hero_cta_primary_label: 'Explore Cafes',
@@ -242,7 +241,7 @@ export function CmsProvider({ children }: { children: React.ReactNode }) {
 
   const refreshCms = useCallback(async () => {
     try {
-      const res = await fetch('/api/public/bootstrap', {
+      const res = await fetch(resolveApiUrl('/api/public/bootstrap'), {
         credentials: 'include',
         headers: getUserSessionHeaders(),
       });
@@ -263,7 +262,10 @@ export function CmsProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     void refreshCms();
-    void fetch('/api/analytics/visit', { method: 'POST', credentials: 'include' }).catch(() => {});
+    void fetch(resolveApiUrl('/api/analytics/visit'), {
+      method: 'POST',
+      credentials: 'include',
+    }).catch(() => {});
     const onAuthChanged = () => {
       void refreshCms();
     };

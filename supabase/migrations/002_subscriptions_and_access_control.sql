@@ -132,9 +132,31 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
+  INSERT INTO public.subscription_plans (
+    id, name, tagline, price_inr, interval_days, badge_text, is_recommended, features, permissions, cafe_access_scope, active, sort_order
+  ) VALUES (
+    'free',
+    'Free Explorer',
+    'Browse public Bengaluru cafe overviews, maps, and save favourites.',
+    0,
+    0,
+    'Free Forever',
+    FALSE,
+    '["Browse public cafe listings & photos","Explore Bengaluru localities & map pins","Save & bookmark favourite cafes"]'::jsonb,
+    '{"wifi_details":false,"power_sockets":false,"workspace_details":false,"food_menu":false,"menu_pricing":false,"amenities":false,"subscriber_benefits":false,"booking":false,"collections":false,"compare":false}'::jsonb,
+    'all',
+    TRUE,
+    1
+  )
+  ON CONFLICT (id) DO NOTHING;
+
+  PERFORM set_config('cafedesk.internal_free_sub_init', '1', true);
+
   INSERT INTO public.user_subscriptions (user_id, plan_id, subscribed_price_inr, status, started_at, expires_at, auto_renew)
   VALUES (NEW.id, 'free', 0, 'active', NOW(), NULL, FALSE)
   ON CONFLICT (user_id) DO NOTHING;
+
+  PERFORM set_config('cafedesk.internal_free_sub_init', '', true);
   RETURN NEW;
 END;
 $$;
@@ -155,16 +177,31 @@ AS $$
 DECLARE
   jwt_role TEXT;
   app_role TEXT;
+  sess_user TEXT;
+  internal_free_init TEXT;
 BEGIN
   jwt_role := COALESCE(auth.role(), '');
   app_role := COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', '');
+  sess_user := COALESCE(session_user, '');
+  internal_free_init := COALESCE(current_setting('cafedesk.internal_free_sub_init', true), '');
 
-  IF jwt_role <> 'service_role' AND app_role NOT IN ('admin', 'super_admin') THEN
-    RAISE EXCEPTION 'Direct subscription modification is prohibited. Complete verified payment or contact an administrator.';
+  IF sess_user IN ('postgres', 'supabase_auth_admin', 'supabase_admin', 'service_role')
+     OR jwt_role = 'service_role'
+     OR app_role IN ('admin', 'super_admin')
+     OR (
+       internal_free_init = '1'
+       AND TG_OP = 'INSERT'
+       AND NEW.plan_id = 'free'
+       AND COALESCE(NEW.subscribed_price_inr, 0) = 0
+     ) THEN
+    IF TG_OP = 'DELETE' THEN
+      RETURN OLD;
+    END IF;
+    NEW.updated_at := NOW();
+    RETURN NEW;
   END IF;
 
-  NEW.updated_at := NOW();
-  RETURN NEW;
+  RAISE EXCEPTION 'Direct subscription modification is prohibited. Complete verified payment or contact an administrator.';
 END;
 $$;
 

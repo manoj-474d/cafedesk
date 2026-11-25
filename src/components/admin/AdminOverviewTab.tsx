@@ -646,7 +646,7 @@ export function AdminOverviewTab({
       )}
 
       {/* Recent Audit Log Preview */}
-      <div className="p-6 rounded-xl border border-[#e2e8f0] bg-white space-y-4">
+      <div className="p-4 sm:p-6 rounded-xl border border-[#e2e8f0] bg-white space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <Activity className="w-4 h-4 text-[#0f172a]" aria-hidden="true" />
@@ -664,20 +664,45 @@ export function AdminOverviewTab({
                 value={logSearch}
                 onChange={(e) => setLogSearch(e.target.value)}
                 placeholder="Filter recent log..."
-                className="w-full h-9 pl-8 pr-3 rounded-lg border border-[#cbd5e1] bg-[#f8fafc] text-xs"
+                className="w-full h-11 sm:h-9 pl-8 pr-3 rounded-lg border border-[#cbd5e1] bg-[#f8fafc] text-xs"
               />
             </div>
             <button
               type="button"
               onClick={() => onNavigateTab('audit')}
-              className="text-xs font-semibold text-[#b45309] hover:underline whitespace-nowrap"
+              className="min-h-[44px] sm:min-h-0 inline-flex items-center text-xs font-semibold text-[#b45309] hover:underline whitespace-nowrap"
             >
               Full Audit Log &rarr;
             </button>
           </div>
         </div>
 
-        <div className="overflow-x-auto">
+        {/* Mobile stacked log cards */}
+        <div className="md:hidden space-y-2.5">
+          {filteredLogs.slice(0, 12).map((log) => (
+            <div
+              key={log.id}
+              className="p-3.5 rounded-lg border border-[#e2e8f0] bg-[#f8fafc] space-y-1.5 text-xs"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-semibold text-[#0f172a] truncate">{log.actor}</span>
+                <span className="font-mono-data tabular-nums text-[11px] text-[#64748b] shrink-0">
+                  {new Date(log.created_at).toLocaleDateString('en-IN')}
+                </span>
+              </div>
+              <p className="text-[#334155] font-medium">
+                {log.action} · <span className="text-[#475569] font-normal">{log.target}</span>
+              </p>
+              {(log.previous_value || log.new_value) && (
+                <p className="text-[11px] text-[#64748b] break-words">
+                  {log.previous_value || '—'} → {log.new_value || '—'}
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+
+        <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-left border-collapse text-xs">
             <thead>
               <tr className="border-b border-[#e2e8f0] text-[#64748b] font-semibold">

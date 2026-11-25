@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cafedesk",
+  "main": "worker.ts",
+  "compatibility_date": "2026-04-01",
+  "vars": {
+    "SUPABASE_URL": "https://avsdaviludflfedkxzys.supabase.co",
+    "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_UAlk63CEsWWL1rFOhJi6aA_ntkz9FqV"
+  },
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  }
+}

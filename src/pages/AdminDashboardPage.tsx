@@ -371,7 +371,8 @@ export function AdminDashboardPage() {
             type="button"
             onClick={() => setMobileMenuOpen((v) => !v)}
             aria-label="Toggle owner menu"
-            className="h-9 w-9 rounded-lg border border-[#3a2f2a] flex items-center justify-center"
+            aria-expanded={mobileMenuOpen}
+            className="h-11 w-11 rounded-lg border border-[#3a2f2a] flex items-center justify-center"
           >
             {mobileMenuOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
           </button>
@@ -383,18 +384,56 @@ export function AdminDashboardPage() {
         </div>
         <Link
           to="/"
-          className="inline-flex items-center gap-1 text-xs font-semibold text-[#d6cbbe] hover:text-white"
+          className="inline-flex items-center gap-1 min-h-[44px] px-2 text-xs font-semibold text-[#d6cbbe] hover:text-white"
         >
           <span>Live Site</span>
           <ExternalLink className="w-3.5 h-3.5" aria-hidden="true" />
         </Link>
       </header>
 
+      {/* Mobile Horizontal Quick-Tab Strip */}
+      <div className="lg:hidden bg-[#261d19] border-b border-[#3a2f2a] px-3 py-2 flex items-center gap-2 overflow-x-auto no-scrollbar">
+        {NAV_GROUPS.flatMap((g) => g.items).map(({ key, label, icon: Icon }) => {
+          const active = activeTab === key;
+          const badge =
+            key === 'bookings'
+              ? pendingBookings
+              : key === 'enquiries'
+              ? unreadEnquiries
+              : key === 'suggestions'
+              ? newSuggestions
+              : 0;
+          return (
+            <button
+              key={key}
+              type="button"
+              onClick={() => {
+                setActiveTab(key);
+                setMobileMenuOpen(false);
+              }}
+              className={`min-h-[40px] px-3 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
+                active
+                  ? 'bg-[#b45309] text-white'
+                  : 'bg-[#1c1613] text-[#d6cbbe] border border-[#3a2f2a]'
+              }`}
+            >
+              <Icon className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              <span>{label}</span>
+              {badge > 0 && (
+                <span className="px-1.5 py-0.5 rounded bg-white text-[#1c1613] text-[10px] font-bold font-mono-data tabular-nums">
+                  {badge}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
       {/* Sidebar Navigation */}
       <aside
         className={`${
-          mobileMenuOpen ? 'block' : 'hidden'
-        } lg:block w-full lg:w-64 shrink-0 bg-[#1c1613] text-[#faf7f2] lg:min-h-screen flex flex-col justify-between border-r border-[#2d241f]`}
+          mobileMenuOpen ? 'flex max-h-[calc(100vh-4rem)] overflow-y-auto' : 'hidden'
+        } lg:flex lg:max-h-none lg:overflow-visible w-full lg:w-64 shrink-0 bg-[#1c1613] text-[#faf7f2] lg:min-h-screen flex-col justify-between border-r border-[#2d241f]`}
       >
         <div className="p-5 space-y-5">
           <div className="hidden lg:block space-y-1">
@@ -432,7 +471,7 @@ export function AdminDashboardPage() {
                         setActiveTab(key);
                         setMobileMenuOpen(false);
                       }}
-                      className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold transition-colors ${
+                      className={`w-full min-h-[44px] lg:min-h-0 flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold transition-colors ${
                         active
                           ? 'bg-[#b45309] text-white'
                           : 'text-[#d6cbbe] hover:bg-[#2a211c] hover:text-white'
@@ -468,7 +507,7 @@ export function AdminDashboardPage() {
         <div className="p-5 border-t border-[#2d241f] space-y-2.5 text-xs">
           <Link
             to="/"
-            className="w-full h-10 px-3 rounded-lg border border-[#3a2f2a] text-[#faf7f2] hover:bg-[#2a211c] font-semibold inline-flex items-center justify-center gap-2"
+            className="w-full h-11 lg:h-10 px-3 rounded-lg border border-[#3a2f2a] text-[#faf7f2] hover:bg-[#2a211c] font-semibold inline-flex items-center justify-center gap-2"
           >
             <ExternalLink className="w-3.5 h-3.5" aria-hidden="true" />
             <span>View Public Website</span>
@@ -476,7 +515,7 @@ export function AdminDashboardPage() {
           <button
             type="button"
             onClick={handleLogout}
-            className="w-full h-10 px-3 rounded-lg bg-[#2a211c] hover:bg-[#3a2d26] text-[#fca5a5] font-semibold inline-flex items-center justify-center gap-2"
+            className="w-full h-11 lg:h-10 px-3 rounded-lg bg-[#2a211c] hover:bg-[#3a2d26] text-[#fca5a5] font-semibold inline-flex items-center justify-center gap-2"
           >
             <LogOut className="w-3.5 h-3.5" aria-hidden="true" />
             <span>Sign Out</span>

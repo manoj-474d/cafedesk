@@ -63,27 +63,27 @@ export function PremiumLockCard({
     <div
       className={`relative overflow-hidden rounded-2xl border ${
         resolvedReason === 'expired'
-          ? 'border-[#fecaca] bg-[#fffaf9]'
+          ? 'bg-[#fef2f2] border-[#fecaca]'
           : resolvedReason === 'suspended'
-          ? 'border-[#fed7aa] bg-[#fffaf5]'
-          : 'border-[#e6ddd0] bg-[#fcfaf6]'
+          ? 'bg-[#fffbeb] border-[#fde68a]'
+          : 'bg-white border-[#e6ddd0]'
       } ${compact ? 'p-4' : 'p-6'}`}
     >
-      {/* Decorative blurred teaser bars (zero sensitive data rendered) */}
+      {/* Subtle blurred teaser bars */}
       {!compact && (
         <div
           aria-hidden="true"
           className="mb-4 grid grid-cols-2 sm:grid-cols-3 gap-2.5 select-none pointer-events-none opacity-60 blur-[3px]"
         >
-          <div className="h-9 rounded-lg bg-[#ede5d8]" />
-          <div className="h-9 rounded-lg bg-[#e6ddd0]" />
-          <div className="hidden sm:block h-9 rounded-lg bg-[#ede5d8]" />
+          <div className="h-9 rounded-xl bg-[#f3ede3]" />
+          <div className="h-9 rounded-xl bg-[#fef3c7]" />
+          <div className="hidden sm:block h-9 rounded-xl bg-[#ecfdf5]" />
         </div>
       )}
 
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="space-y-1.5 min-w-0">
-          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider bg-[#1c1613] text-[#faf7f2]">
+          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#1c1613] text-[#faf7f2] text-[11px] font-semibold">
             {resolvedReason === 'expired' ? (
               <>
                 <AlertTriangle className="w-3 h-3 text-[#f59e0b]" aria-hidden="true" />
@@ -127,7 +127,7 @@ export function PremiumLockCard({
           </p>
 
           {previewHints.length > 0 && (
-            <ul className="pt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[#5c4e45]">
+            <ul className="pt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[#5c4e45] font-medium">
               {previewHints.map((hint) => (
                 <li key={hint} className="inline-flex items-center gap-1.5">
                   <Sparkles className="w-3 h-3 text-[#b45309] shrink-0" aria-hidden="true" />
@@ -144,14 +144,14 @@ export function PremiumLockCard({
               <button
                 type="button"
                 onClick={() => openCheckout(renewTargetPlanId)}
-                className="inline-flex items-center gap-1.5 min-h-[42px] px-4 py-2 rounded-lg bg-[#b45309] hover:bg-[#92400e] text-white text-xs sm:text-sm font-semibold transition-colors"
+                className="inline-flex items-center gap-1.5 min-h-[44px] px-4 py-2 rounded-xl bg-[#b45309] hover:bg-[#92400e] text-white text-xs sm:text-sm font-semibold transition-colors"
               >
                 <RefreshCw className="w-4 h-4" aria-hidden="true" />
                 <span>Renew Subscription</span>
               </button>
               <Link
                 to="/pricing"
-                className="inline-flex items-center justify-center min-h-[42px] px-3.5 py-2 rounded-lg border border-[#d6cbba] bg-white hover:bg-[#f3ede3] text-xs font-semibold text-[#1c1613]"
+                className="inline-flex items-center justify-center min-h-[44px] px-3.5 py-2 rounded-xl border border-[#e6ddd0] bg-[#faf7f2] text-xs font-semibold text-[#1c1613] hover:border-[#b45309]"
               >
                 Compare Plans
               </Link>
@@ -159,7 +159,7 @@ export function PremiumLockCard({
           ) : resolvedReason === 'suspended' ? (
             <Link
               to="/contact"
-              className="inline-flex items-center justify-center min-h-[42px] px-4 py-2 rounded-lg bg-[#1c1613] hover:bg-[#332924] text-white text-xs sm:text-sm font-semibold"
+              className="inline-flex items-center justify-center min-h-[44px] px-4 py-2 rounded-xl bg-[#1c1613] text-white text-xs sm:text-sm font-semibold"
             >
               Contact Support
             </Link>
@@ -167,14 +167,14 @@ export function PremiumLockCard({
             <>
               <Link
                 to="/pricing"
-                className="inline-flex items-center gap-1.5 min-h-[42px] px-4 py-2 rounded-lg bg-[#b45309] hover:bg-[#92400e] text-white text-xs sm:text-sm font-semibold transition-colors"
+                className="inline-flex items-center gap-1.5 min-h-[44px] px-4 py-2 rounded-xl bg-[#b45309] hover:bg-[#92400e] text-white text-xs sm:text-sm font-semibold transition-colors"
               >
                 <Crown className="w-4 h-4" aria-hidden="true" />
                 <span>View Plans</span>
               </Link>
               <Link
                 to={loginUrl}
-                className="inline-flex items-center gap-1.5 min-h-[42px] px-3.5 py-2 rounded-lg border border-[#d6cbba] bg-white hover:bg-[#f3ede3] text-xs font-semibold text-[#1c1613]"
+                className="inline-flex items-center gap-1.5 min-h-[44px] px-3.5 py-2 rounded-xl border border-[#e6ddd0] bg-[#faf7f2] text-xs font-semibold text-[#1c1613] hover:border-[#b45309]"
               >
                 <LogIn className="w-3.5 h-3.5" aria-hidden="true" />
                 <span>Sign In</span>
@@ -186,7 +186,7 @@ export function PremiumLockCard({
                 <button
                   type="button"
                   onClick={() => openCheckout(defaultPaidPlan.id)}
-                  className="inline-flex items-center gap-1.5 min-h-[42px] px-4 py-2 rounded-lg bg-[#b45309] hover:bg-[#92400e] text-white text-xs sm:text-sm font-semibold transition-colors"
+                  className="inline-flex items-center gap-1.5 min-h-[44px] px-4 py-2 rounded-xl bg-[#b45309] hover:bg-[#92400e] text-white text-xs sm:text-sm font-semibold transition-colors"
                 >
                   <Crown className="w-4 h-4" aria-hidden="true" />
                   <span>Unlock · ₹{defaultPaidPlan.price_inr}</span>
@@ -194,7 +194,7 @@ export function PremiumLockCard({
               )}
               <Link
                 to="/pricing"
-                className="inline-flex items-center justify-center min-h-[42px] px-3.5 py-2 rounded-lg border border-[#d6cbba] bg-white hover:bg-[#f3ede3] text-xs font-semibold text-[#1c1613]"
+                className="inline-flex items-center justify-center min-h-[44px] px-3.5 py-2 rounded-xl border border-[#e6ddd0] bg-[#faf7f2] text-xs font-semibold text-[#1c1613] hover:border-[#b45309]"
               >
                 View All Plans
               </Link>

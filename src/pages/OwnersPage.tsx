@@ -123,15 +123,15 @@ export function OwnersPage() {
   );
 
   return (
-    <div className="max-w-6xl mx-auto px-4 sm:px-6 py-12 sm:py-16 space-y-14">
+    <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 sm:py-16 space-y-12 sm:space-y-14">
       <div className="max-w-3xl space-y-3">
-        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#b45309]">
+        <span className="inline-block text-xs uppercase tracking-[0.14em] font-semibold text-[#b45309]">
           Partner With {settings.brand_name}
-        </p>
-        <h1 className="font-serif-display text-3xl sm:text-5xl font-bold text-[#1c1613] leading-tight">
+        </span>
+        <h1 className="font-serif-display text-3xl sm:text-5xl font-semibold text-[#1c1613] leading-tight">
           Welcome reliable weekday desk guests to your tables
         </h1>
-        <p className="text-base text-[#5c4e45] leading-relaxed">
+        <p className="text-base text-[#57493f] leading-relaxed">
           Remote professionals, founders, and students actively seek dependable fiber WiFi,
           accessible wall outlets, and honest minimum-spend policies. Every featured listing carries
           a clear disclosure so guests trust every cafe listing before they visit.
@@ -146,29 +146,31 @@ export function OwnersPage() {
         {OWNER_PLANS.map((plan) => (
           <div
             key={plan.id}
-            className={`p-6 sm:p-7 rounded-2xl border flex flex-col justify-between ${
+            className={`rounded-2xl p-5 sm:p-7 flex flex-col justify-between transition-shadow ${
               plan.highlighted
-                ? 'bg-[#1c1613] text-[#faf7f2] border-[#1c1613]'
-                : 'bg-white text-[#1c1613] border-[#e6ddd0]'
+                ? 'bg-[#1c1613] text-[#faf7f2] border border-[#3a2f28] shadow-lg'
+                : 'bg-white text-[#1c1613] border border-[#e6ddd0] shadow-xs'
             }`}
           >
             <div className="space-y-4">
               <div>
-                <p
-                  className={`text-xs font-semibold uppercase tracking-wider ${
-                    plan.highlighted ? 'text-[#f59e0b]' : 'text-[#b45309]'
+                <span
+                  className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-semibold uppercase tracking-wider ${
+                    plan.highlighted
+                      ? 'bg-[#b45309] text-white'
+                      : 'bg-[#ecfdf5] text-[#1b4d3e] border border-[#bbf7d0]'
                   }`}
                 >
                   {plan.audience}
-                </p>
-                <h3 className="font-serif-display text-2xl font-bold mt-1">{plan.name}</h3>
+                </span>
+                <h3 className="font-serif-display text-2xl font-semibold mt-2.5">{plan.name}</h3>
               </div>
 
               <div className="flex items-baseline gap-1">
                 <span className="font-mono-data text-3xl font-bold">{plan.price}</span>
                 <span
-                  className={`text-xs ${
-                    plan.highlighted ? 'text-[#faf7f2]/70' : 'text-[#5c4e45]'
+                  className={`text-xs font-medium ${
+                    plan.highlighted ? 'text-[#d6cbba]' : 'text-[#57493f]'
                   }`}
                 >
                   {plan.period}
@@ -177,7 +179,9 @@ export function OwnersPage() {
 
               <ul
                 className={`space-y-2.5 text-sm pt-4 border-t ${
-                  plan.highlighted ? 'border-white/15 text-[#faf7f2]/90' : 'border-[#e6ddd0] text-[#5c4e45]'
+                  plan.highlighted
+                    ? 'border-[#3a2f28] text-[#e6ddd0]'
+                    : 'border-[#e6ddd0] text-[#57493f]'
                 }`}
               >
                 {plan.features.map((feat) => (
@@ -199,10 +203,10 @@ export function OwnersPage() {
               onClick={() => handlePlanSelect(plan.id)}
               className={`mt-6 w-full min-h-[44px] px-4 py-2.5 rounded-lg text-sm font-semibold transition-colors ${
                 selectedPlan === plan.id
-                  ? 'bg-[#b45309] text-white'
+                  ? 'bg-[#1b4d3e] text-white'
                   : plan.highlighted
-                  ? 'bg-white text-[#1c1613] hover:bg-[#faf7f2]'
-                  : 'bg-[#f3ede3] text-[#1c1613] hover:bg-[#e6ddd0]'
+                  ? 'bg-[#b45309] hover:bg-[#92400e] text-white'
+                  : 'bg-[#faf7f2] border border-[#d6cbba] hover:border-[#b45309] text-[#1c1613]'
               }`}
             >
               {selectedPlan === plan.id ? 'Selected in form below' : `Select ${plan.name}`}
@@ -218,10 +222,13 @@ export function OwnersPage() {
         className="max-w-3xl scroll-mt-24 space-y-5"
       >
         <div className="space-y-1">
-          <h2 id="owner-form-heading" className="font-serif-display text-2xl sm:text-3xl font-bold text-[#1c1613]">
+          <h2
+            id="owner-form-heading"
+            className="font-serif-display text-2xl sm:text-3xl font-semibold text-[#1c1613]"
+          >
             Partner Enquiry Form
           </h2>
-          <p className="text-sm text-[#5c4e45]">
+          <p className="text-sm text-[#57493f]">
             Submit your branch details below to save an enquiry directly with our partnerships team.
           </p>
         </div>
@@ -229,9 +236,9 @@ export function OwnersPage() {
         {status === 'sent' ? (
           <div
             role="status"
-            className="p-6 sm:p-8 rounded-2xl bg-[#ecfdf5] border border-[#a7f3d0] text-[#1b4d3e] space-y-4"
+            className="rounded-2xl border border-[#bbf7d0] p-6 sm:p-8 bg-[#ecfdf5] text-[#1b4d3e] space-y-4"
           >
-            <div className="flex items-center gap-2 font-bold text-lg">
+            <div className="flex items-center gap-2 font-semibold text-lg">
               <CheckCircle2 className="w-5 h-5" aria-hidden="true" />
               <span>Partner enquiry received!</span>
             </div>
@@ -244,7 +251,7 @@ export function OwnersPage() {
                 href={waUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-2 min-h-[42px] px-4 py-2 rounded-lg bg-[#1b4d3e] text-white text-sm font-semibold"
+                className="inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2 rounded-lg bg-[#1b4d3e] hover:bg-[#143a2f] text-white text-sm font-semibold transition-colors"
               >
                 <MessageCircle className="w-4 h-4" aria-hidden="true" />
                 <span>Fast-track on WhatsApp</span>
@@ -258,7 +265,7 @@ export function OwnersPage() {
                   setPhone('');
                   setNotes('');
                 }}
-                className="min-h-[42px] px-4 py-2 rounded-lg border border-[#1b4d3e]/30 text-sm font-semibold"
+                className="inline-flex items-center justify-center min-h-[44px] px-4 py-2 rounded-lg bg-white border border-[#d6cbba] text-[#1c1613] text-sm font-semibold hover:border-[#b45309] transition-colors"
               >
                 Send another enquiry
               </button>
@@ -268,17 +275,17 @@ export function OwnersPage() {
           <form
             onSubmit={handleSubmit}
             noValidate
-            className="p-6 sm:p-8 rounded-2xl bg-white border border-[#e6ddd0] space-y-4"
+            className="rounded-2xl border border-[#e6ddd0] p-5 sm:p-8 bg-white space-y-4 shadow-xs"
           >
             <div>
-              <label htmlFor="own-plan" className="block text-xs font-semibold text-[#5c4e45] mb-1">
+              <label htmlFor="own-plan" className="block text-xs font-semibold text-[#57493f] mb-1">
                 Selected Plan
               </label>
               <select
                 id="own-plan"
                 value={selectedPlan}
                 onChange={(e) => setSelectedPlan(e.target.value as PlanOption['id'])}
-                className="w-full h-11 px-3 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-sm text-[#1c1613]"
+                className="w-full h-11 px-3 rounded-lg bg-[#faf7f2] border border-[#d6cbba] text-sm font-medium text-[#1c1613] focus:outline-none focus:border-[#b45309]"
               >
                 {OWNER_PLANS.map((p) => (
                   <option key={p.id} value={p.id}>
@@ -292,7 +299,7 @@ export function OwnersPage() {
               <div>
                 <label
                   htmlFor="own-cafe"
-                  className="block text-xs font-semibold text-[#5c4e45] mb-1"
+                  className="block text-xs font-semibold text-[#57493f] mb-1"
                 >
                   Cafe / Brand Name *
                 </label>
@@ -303,14 +310,14 @@ export function OwnersPage() {
                   value={cafeName}
                   onChange={(e) => setCafeName(e.target.value)}
                   placeholder="Your cafe name"
-                  className="w-full h-11 px-3.5 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-sm text-[#1c1613]"
+                  className="w-full h-11 px-3.5 rounded-lg bg-[#faf7f2] border border-[#d6cbba] text-sm text-[#1c1613] focus:outline-none focus:border-[#b45309]"
                 />
               </div>
 
               <div>
                 <label
                   htmlFor="own-area"
-                  className="block text-xs font-semibold text-[#5c4e45] mb-1"
+                  className="block text-xs font-semibold text-[#57493f] mb-1"
                 >
                   City / Area
                 </label>
@@ -318,7 +325,7 @@ export function OwnersPage() {
                   id="own-area"
                   value={area}
                   onChange={(e) => setArea(e.target.value)}
-                  className="w-full h-11 px-3 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-sm text-[#1c1613]"
+                  className="w-full h-11 px-3 rounded-lg bg-[#faf7f2] border border-[#d6cbba] text-sm font-medium text-[#1c1613] focus:outline-none focus:border-[#b45309]"
                 >
                   <option value="">Select area</option>
                   {BENGALURU_AREAS.map((a) => (
@@ -335,7 +342,7 @@ export function OwnersPage() {
               <div>
                 <label
                   htmlFor="own-person"
-                  className="block text-xs font-semibold text-[#5c4e45] mb-1"
+                  className="block text-xs font-semibold text-[#57493f] mb-1"
                 >
                   Your Name *
                 </label>
@@ -346,31 +353,36 @@ export function OwnersPage() {
                   value={contactName}
                   onChange={(e) => setContactName(e.target.value)}
                   placeholder="Owner or manager name"
-                  className="w-full h-11 px-3.5 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-sm text-[#1c1613]"
+                  className="w-full h-11 px-3.5 rounded-lg bg-[#faf7f2] border border-[#d6cbba] text-sm text-[#1c1613] focus:outline-none focus:border-[#b45309]"
                 />
               </div>
 
               <div>
                 <label
                   htmlFor="own-phone"
-                  className="block text-xs font-semibold text-[#5c4e45] mb-1"
+                  className="block text-xs font-semibold text-[#57493f] mb-1"
                 >
                   Phone / WhatsApp Number *
                 </label>
                 <input
                   id="own-phone"
                   type="tel"
+                  inputMode="tel"
+                  autoComplete="tel"
                   required
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
                   placeholder="+91 98..."
-                  className="w-full h-11 px-3.5 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-sm text-[#1c1613]"
+                  className="w-full h-11 px-3.5 rounded-lg bg-[#faf7f2] border border-[#d6cbba] text-sm text-[#1c1613] focus:outline-none focus:border-[#b45309]"
                 />
               </div>
             </div>
 
             <div>
-              <label htmlFor="own-notes" className="block text-xs font-semibold text-[#5c4e45] mb-1">
+              <label
+                htmlFor="own-notes"
+                className="block text-xs font-semibold text-[#57493f] mb-1"
+              >
                 Student offers, seating capacity, or questions
               </label>
               <textarea
@@ -379,12 +391,12 @@ export function OwnersPage() {
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
                 placeholder="e.g. 45 seats, 200 Mbps fiber, 15% student coffee perk..."
-                className="w-full p-3.5 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-sm text-[#1c1613]"
+                className="w-full p-3.5 rounded-lg bg-[#faf7f2] border border-[#d6cbba] text-sm text-[#1c1613] focus:outline-none focus:border-[#b45309]"
               />
             </div>
 
             {status === 'error' && errorMsg && (
-              <p role="alert" className="text-xs font-semibold text-[#b91c1c]">
+              <p role="alert" className="text-xs font-medium text-[#dc2626]">
                 {errorMsg}
               </p>
             )}
@@ -392,8 +404,7 @@ export function OwnersPage() {
             <button
               type="submit"
               disabled={status === 'submitting'}
-              style={{ backgroundColor: settings.accent_color || '#b45309' }}
-              className="w-full sm:w-auto min-h-[46px] px-7 py-2.5 rounded-lg text-white text-sm font-semibold hover:opacity-95 disabled:opacity-60 transition-opacity"
+              className="inline-flex items-center justify-center w-full sm:w-auto min-h-[44px] px-7 py-2.5 rounded-lg bg-[#b45309] hover:bg-[#92400e] disabled:opacity-60 text-white text-sm font-semibold transition-colors"
             >
               {status === 'submitting' ? 'Sending...' : 'Submit Partner Enquiry'}
             </button>
