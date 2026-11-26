@@ -39,6 +39,7 @@ import {
   type AdminRole,
 } from './server/auth.ts';
 import { registerSubscriptionRoutes } from './server/subscriptionRoutes.ts';
+import { registerPlacesDiscoveryRoutes } from './server/placesDiscoveryRoutes.ts';
 import {
   ACCESS_SECTION_KEYS,
   evaluateCafeAccess,
@@ -51,6 +52,7 @@ import type {
   AccessSectionKey,
   AmenityState,
   CafeAccessRule,
+  CafeSourceType,
   DietaryType,
   LocationItem,
   SectionOverrideMode,
@@ -217,7 +219,7 @@ async function startServer() {
     const locations = listLocationsFromDb(false);
     const host = process.env.APP_URL || `${req.protocol}://${req.get('host') || 'cafedesk.space'}`;
     const baseUrl = host.replace(/\/$/, '');
-    const staticRoutes = ['/', '/locations', '/pricing', '/about', '/contact', '/submit', '/owners'];
+    const staticRoutes = ['/', '/discover', '/locations', '/pricing', '/about', '/contact', '/submit', '/owners'];
 
     const urls = [
       ...staticRoutes.map((r) => `  <url><loc>${baseUrl}${r}</loc><changefreq>weekly</changefreq></url>`),
@@ -238,6 +240,7 @@ async function startServer() {
   // ============================================================================
 
   registerSubscriptionRoutes(app);
+  registerPlacesDiscoveryRoutes(app, requireAdminAuth);
 
   // ============================================================================
   // PUBLIC CMS PREVIEW & AUTH-GATED CAFE DETAILS API
@@ -296,9 +299,12 @@ async function startServer() {
     }
 
     const { isAdmin, viewer } = getViewerContextForRequest(req, res);
-    const all = listLocationsFromDb(isAdmin);
-    const cafe = all.find((loc) => loc.slug === lookup || loc.id === lookup);
-    if (!cafe) {
+    const all = listLocationsFromDb(true);
+    let cafe = all.find((loc) => loc.slug === lookup || loc.id === lookup);
+    if (cafe?.merged_into_id) {
+      cafe = all.find((loc) => loc.id === cafe?.merged_into_id) || cafe;
+    }
+    if (!cafe || (!isAdmin && (!cafe.published || cafe.merged_into_id))) {
       res.status(404).json({ error: 'Cafe not found.' });
       return;
     }
@@ -1622,6 +1628,15 @@ async function startServer() {
       }
     }
 
+    const sourceType: CafeSourceType =
+      body.source_type === 'cafedesk_verified' ||
+      body.source_type === 'google_places' ||
+      body.source_type === 'community_updated'
+        ? body.source_type
+        : /google/i.test(sourceName) && !body.verified
+        ? 'google_places'
+        : 'cafedesk_verified';
+
     return {
       cafe: {
         id: existingId ?? slugifyId(name),
@@ -1689,6 +1704,7 @@ async function startServer() {
         claims,
         source_name: sourceName,
         source_url: sourceUrl,
+        source_type: sourceType,
         sample: Boolean(body.sample),
         access_rule: accessRule,
         allowed_plan_ids: allowedPlanIds,
@@ -1725,9 +1741,9 @@ async function startServer() {
         modes_json, facilities_json, offers_json, subscriber_benefits_json, menu_services_json,
         best_for_json, verdict, avoid_if, student_discount,
         verified, featured, published, display_order, last_verified_date, claims_json,
-        source_name, source_url, sample, access_rule, allowed_plan_ids_json, locked_sections_override_json,
+        source_name, source_url, source_type, sample, access_rule, allowed_plan_ids_json, locked_sections_override_json,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       c.id,
       finalSlug,
@@ -1793,6 +1809,7 @@ async function startServer() {
       JSON.stringify(c.claims),
       c.source_name,
       c.source_url,
+      c.source_type,
       c.sample ? 1 : 0,
       c.access_rule,
       JSON.stringify(c.allowed_plan_ids),
@@ -1859,7 +1876,7 @@ async function startServer() {
         modes_json = ?, facilities_json = ?, offers_json = ?, subscriber_benefits_json = ?, menu_services_json = ?,
         best_for_json = ?, verdict = ?, avoid_if = ?, student_discount = ?, verified = ?,
         featured = ?, published = ?, display_order = ?, last_verified_date = ?,
-        claims_json = ?, source_name = ?, source_url = ?, sample = ?,
+        claims_json = ?, source_name = ?, source_url = ?, source_type = ?, sample = ?,
         access_rule = ?, allowed_plan_ids_json = ?, locked_sections_override_json = ?, updated_at = ?
        WHERE id = ?`
     ).run(
@@ -1926,6 +1943,7 @@ async function startServer() {
       JSON.stringify(c.claims),
       c.source_name,
       c.source_url,
+      c.source_type,
       c.sample ? 1 : 0,
       c.access_rule,
       JSON.stringify(c.allowed_plan_ids),

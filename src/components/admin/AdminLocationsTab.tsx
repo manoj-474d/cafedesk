@@ -19,17 +19,19 @@ import {
   X,
   Zap,
 } from 'lucide-react';
-import type { CafeMode } from '../../config/constants';
+import { DISCOVERY_BUSINESS_CATEGORIES, type CafeMode } from '../../config/constants';
 import type {
   AccessSectionKey,
   AmenityState,
   CafeAccessRule,
+  CafeSourceType,
   LocationItem,
   MediaAsset,
   MenuServiceItem,
   SectionOverrideMode,
 } from '../../types/cms';
 import type { SubscriptionPlan } from '../../types/subscription';
+import { getCafeSourceMeta } from '../../utils/cafeHelpers';
 import { MediaPickerModal } from './MediaPickerModal';
 
 const SECTION_OVERRIDE_FIELDS: Array<{ key: AccessSectionKey; label: string }> = [
@@ -118,6 +120,7 @@ const EMPTY_LOCATION: LocationItem = {
   claims: [],
   source_name: '',
   source_url: '',
+  source_type: 'cafedesk_verified',
   sample: false,
   access_rule: 'inherit',
   allowed_plan_ids: [],
@@ -231,6 +234,7 @@ export function AdminLocationsTab({
         interior_photos: loc.interior_photos ?? [],
         exterior_photos: loc.exterior_photos ?? [],
         outdoor_seating: loc.outdoor_seating ?? 'unknown',
+        source_type: loc.source_type ?? 'cafedesk_verified',
       });
       setFacilitiesText(loc.facilities.join(', '));
       setOffersText(loc.offers.join('\n'));
@@ -531,7 +535,12 @@ export function AdminLocationsTab({
                   <tr key={loc.id} className="hover:bg-[#f8fafc]">
                     <td className="py-3 px-4 font-mono-data text-[#64748b]">{loc.display_order}</td>
                     <td className="py-3 px-4">
-                      <p className="font-semibold text-[#0f172a] text-sm">{loc.name}</p>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <p className="font-semibold text-[#0f172a] text-sm">{loc.name}</p>
+                        <span className="px-1.5 py-0.5 rounded bg-[#f8fafc] border border-[#cbd5e1] text-[10px] font-semibold text-[#475569]">
+                          {getCafeSourceMeta(loc).label}
+                        </span>
+                      </div>
                       <p className="text-[#64748b]">
                         {loc.area}, {loc.city} · /{loc.slug}
                         {loc.category ? ` · ${loc.category}` : ''}
@@ -647,7 +656,12 @@ export function AdminLocationsTab({
               <div key={loc.id} className="p-4 space-y-3 text-xs">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <p className="font-bold text-sm text-[#0f172a]">{loc.name}</p>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <p className="font-bold text-sm text-[#0f172a]">{loc.name}</p>
+                      <span className="px-1.5 py-0.5 rounded bg-[#f8fafc] border border-[#cbd5e1] text-[10px] font-semibold text-[#475569]">
+                        {getCafeSourceMeta(loc).label}
+                      </span>
+                    </div>
                     <p className="text-[#64748b]">
                       {loc.area}, {loc.city}
                       {loc.category ? ` · ${loc.category}` : ''}
@@ -1004,11 +1018,17 @@ export function AdminLocationsTab({
                   <label className="block font-semibold text-[#475569] mb-1">Category</label>
                   <input
                     type="text"
+                    list="admin-discovery-categories"
                     value={editing.category ?? ''}
                     onChange={(e) => setEditing({ ...editing, category: e.target.value })}
-                    placeholder="e.g. Specialty Coffee, Bakery Cafe"
+                    placeholder="e.g. Coffee shops, Tea shops, Bakery"
                     className="w-full h-10 px-3 rounded-lg border border-[#cbd5e1] bg-[#f8fafc] text-sm"
                   />
+                  <datalist id="admin-discovery-categories">
+                    {DISCOVERY_BUSINESS_CATEGORIES.map((c) => (
+                      <option key={c.id} value={c.label} />
+                    ))}
+                  </datalist>
                 </div>
                 <div>
                   <label className="block font-semibold text-[#475569] mb-1">URL Slug</label>
@@ -1590,7 +1610,7 @@ export function AdminLocationsTab({
                       type="text"
                       value={editing.source_name}
                       onChange={(e) => setEditing({ ...editing, source_name: e.target.value })}
-                      placeholder="e.g. eChai, Curly Tales"
+                      placeholder="e.g. CafeDesk, Google Places Discovery"
                       className="w-full h-10 px-3 rounded-lg border border-[#cbd5e1] bg-[#f8fafc]"
                     />
                   </div>
@@ -1603,6 +1623,22 @@ export function AdminLocationsTab({
                       placeholder="https://..."
                       className="w-full h-10 px-3 rounded-lg border border-[#cbd5e1] bg-[#f8fafc]"
                     />
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-[#475569] mb-1">
+                      Verification / Source Attribution
+                    </label>
+                    <select
+                      value={editing.source_type ?? 'cafedesk_verified'}
+                      onChange={(e) =>
+                        setEditing({ ...editing, source_type: e.target.value as CafeSourceType })
+                      }
+                      className="w-full h-10 px-3 rounded-lg border border-[#cbd5e1] bg-[#f8fafc] font-semibold"
+                    >
+                      <option value="cafedesk_verified">CafeDesk Verified</option>
+                      <option value="google_places">Google Places Discovery</option>
+                      <option value="community_updated">Community Updated</option>
+                    </select>
                   </div>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">

@@ -2,6 +2,8 @@ import type { CafeMode } from '../config/constants';
 
 export type DietaryType = 'veg' | 'non_veg' | 'vegan' | 'na';
 
+export type CafeSourceType = 'cafedesk_verified' | 'google_places' | 'community_updated';
+
 export interface MenuServiceItem {
   name: string;
   price: string;
@@ -125,6 +127,11 @@ export interface LocationItem {
   claims: string[];
   source_name: string;
   source_url: string;
+  source_type?: CafeSourceType;
+  merged_into_id?: string | null;
+  opening_hours_list?: string[];
+  price_level_label?: string;
+  isLiveGooglePlace?: boolean;
   sample: boolean;
   access_rule?: CafeAccessRule;
   allowed_plan_ids?: string[];
@@ -132,6 +139,50 @@ export interface LocationItem {
   access?: CafeAccessInfo;
   created_at?: number;
   updated_at?: number;
+}
+
+export interface CommunityCorrectionRecord {
+  id: number;
+  cafe_key: string;
+  cafe_name: string;
+  issue_type: string;
+  details: string;
+  suggested_value: string;
+  reporter_name: string;
+  reporter_email: string;
+  status: 'pending' | 'approved' | 'rejected' | 'resolved';
+  admin_note: string;
+  created_at: number;
+  updated_at?: number;
+}
+
+export interface ExplorerAchievementStatus {
+  id: string;
+  title: string;
+  description: string;
+  unlocked: boolean;
+  unlocked_at: number | null;
+  progress: number;
+  target: number;
+}
+
+export interface PlacesApiUsageSummary {
+  has_server_key: boolean;
+  total_calls: number;
+  calls_24h: number;
+  cache_hits_24h: number;
+  errors_24h: number;
+  last_error: string;
+  recent_logs: Array<{
+    id: number;
+    endpoint: string;
+    query_text: string;
+    status_code: number;
+    cached: boolean;
+    result_count: number;
+    error_message: string;
+    created_at: number;
+  }>;
 }
 
 export type HomepageSectionKey =

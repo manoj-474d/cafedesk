@@ -39,14 +39,18 @@ export function PublicLayout() {
   const isDetailRoute = /^\/(?:locations|cafe)\/[^/]+/.test(pathname);
   const showBottomNav = !isDetailRoute;
 
-  const isMapView = (pathname === '/locations' || pathname === '/cafes') && search.includes('view=map');
+  const isMapView =
+    (pathname === '/discover' || pathname === '/locations' || pathname === '/cafes') &&
+    search.includes('view=map');
   const isHomeActive = pathname === '/';
-  const isExploreActive =
-    ((pathname === '/locations' || pathname === '/cafes') && !isMapView) || pathname === '/finder';
+  const isDiscoverActive =
+    ((pathname === '/discover' || pathname === '/locations' || pathname === '/cafes') &&
+      !isMapView) ||
+    pathname === '/finder';
   const isMapActive = isMapView;
-  const isSavedActive = pathname === '/account' && hash === '#saved';
+  const isMembershipActive = pathname === '/pricing';
   const isAccountActive =
-    (pathname === '/account' && hash !== '#saved') ||
+    pathname === '/account' ||
     pathname === '/login' ||
     pathname === '/signup' ||
     pathname === '/forgot-password';
@@ -60,7 +64,7 @@ export function PublicLayout() {
     e.preventDefault();
     const clean = quickSearchQuery.trim();
     setQuickSearchOpen(false);
-    navigate(clean ? `/locations?q=${encodeURIComponent(clean)}&live=1` : '/locations');
+    navigate(clean ? `/discover?q=${encodeURIComponent(clean)}&live=1` : '/discover');
   };
 
   const waUrl = buildWhatsAppUrl(
@@ -84,25 +88,25 @@ export function PublicLayout() {
       icon: Home,
     },
     {
-      id: 'explore',
-      label: 'Explore',
-      to: '/locations',
-      active: isExploreActive,
+      id: 'discover',
+      label: 'Discover',
+      to: '/discover',
+      active: isDiscoverActive,
       icon: Compass,
     },
     {
       id: 'map',
       label: 'Map',
-      to: '/locations?view=map',
+      to: '/discover?view=map',
       active: isMapActive,
       icon: MapIcon,
     },
     {
-      id: 'saved',
-      label: 'Saved',
-      to: authenticated ? '/account#saved' : '/login?next=/account%23saved',
-      active: isSavedActive,
-      icon: Bookmark,
+      id: 'membership',
+      label: 'Membership',
+      to: '/pricing',
+      active: isMembershipActive,
+      icon: Crown,
     },
     {
       id: 'account',
@@ -114,7 +118,7 @@ export function PublicLayout() {
   ];
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#faf7f2] text-[#1c1613]">
+    <div className="min-h-screen flex flex-col bg-[#faf7f2] text-[#1c1613] overflow-x-clip">
       <a
         href="#main-content"
         className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:px-4 focus:py-2 focus:rounded-xl focus:bg-[#b45309] focus:text-white focus:text-sm focus:font-semibold"
@@ -384,7 +388,7 @@ export function PublicLayout() {
                 onChange={setQuickSearchQuery}
                 onSubmitQuery={(q) => {
                   setQuickSearchOpen(false);
-                  navigate(`/locations?q=${encodeURIComponent(q)}&live=1`);
+                  navigate(`/discover?q=${encodeURIComponent(q)}&live=1`);
                 }}
               />
               <div className="flex flex-wrap gap-2.5">
@@ -393,10 +397,10 @@ export function PublicLayout() {
                   className="flex-1 min-h-[44px] px-4 rounded-xl bg-[#b45309] hover:bg-[#92400e] text-white text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors"
                 >
                   <Search className="w-4 h-4" />
-                  <span>Search All Bengaluru Cafes</span>
+                  <span>Search Cafes &amp; Local Spots</span>
                 </button>
                 <Link
-                  to="/locations?nearby=1"
+                  to="/discover?nearby=1"
                   onClick={() => setQuickSearchOpen(false)}
                   className="min-h-[44px] px-4 rounded-xl bg-[#faf7f2] hover:bg-[#f3ede3] text-[#1c1613] border border-[#d6cbba] text-sm font-semibold inline-flex items-center justify-center gap-1.5 transition-colors"
                 >

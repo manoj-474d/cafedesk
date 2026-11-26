@@ -22,13 +22,21 @@ import {
 } from 'lucide-react';
 import {
   BENGALURU_AREAS,
+  BENGALURU_CENTER,
   BROWSING_MODES,
+  BUDGET_BRACKETS,
+  DISCOVERY_CATEGORY_TABS,
   HOME_QUICK_FILTERS,
 } from '../config/constants';
 import { useCms } from '../context/CmsContext';
 import { useAuth } from '../context/AuthContext';
-import { useDiscovery } from '../context/DiscoveryContext';
-import { buildWhatsAppUrl, getCafeDetailRoute, useDocumentMeta } from '../utils/cafeHelpers';
+import { googleDiscoveryToLocationItem, useDiscovery } from '../context/DiscoveryContext';
+import {
+  buildWhatsAppUrl,
+  deduplicateCafeItems,
+  getCafeDetailRoute,
+  useDocumentMeta,
+} from '../utils/cafeHelpers';
 import {
   CURATED_COLLECTIONS,
   isGoodForDates,
@@ -51,6 +59,7 @@ export function HomePage() {
     getEffectiveLocation,
     nearbyPlaces,
     nearbyLoading,
+    discoverCafesNear,
     discoverCafesByAreaText,
   } = useDiscovery();
   const navigate = useNavigate();
@@ -69,6 +78,8 @@ export function HomePage() {
   >('trending');
   const [mapFocusCenter, setMapFocusCenter] = useState<{ lat: number; lng: number } | null>(null);
 
+  const [homeDirLimit, setHomeDirLimit] = useState(12);
+
   const [newsletterEmail, setNewsletterEmail] = useState('');
   const [newsletterState, setNewsletterState] = useState<'idle' | 'submitting' | 'sent' | 'error'>(
     'idle'
@@ -80,24 +91,69 @@ export function HomePage() {
     [locations, getEffectiveLocation]
   );
 
-  const filteredHomeLocations = useMemo(() => {
+  const liveConvertedPlaces = useMemo(
+    () => nearbyPlaces.map((gp) => googleDiscoveryToLocationItem(gp)),
+    [nearbyPlaces]
+  );
+
+  const combinedLocalCafes = useMemo(
+    () => deduplicateCafeItems(effectiveLocations, liveConvertedPlaces),
+    [effectiveLocations, liveConvertedPlaces]
+  );
+
+  const localShowcaseCafes = useMemo(() => {
+    const picks: typeof combinedLocalCafes = [];
+    const seenIds = new Set<string>();
+    const addUnique = (items: typeof combinedLocalCafes, max = 9) => {
+      for (const item of items) {
+        if (picks.length >= max) break;
+        if (!seenIds.has(item.id)) {
+          seenIds.add(item.id);
+          picks.push(item);
+        }
+      }
+    };
+
+    // Prioritize variety: live Google Places if loaded + budget chai/snacks + coffee/study + featured locals
+    addUnique(
+      combinedLocalCafes.filter((l) => l.isLiveGooglePlace),
+      3
+    );
+    addUnique(
+      combinedLocalCafes.filter(
+        (l) => l.modes.includes('budget') || (l.avg_cost_per_person !== null && l.avg_cost_per_person <= 200)
+      ),
+      6
+    );
+    addUnique(combinedLocalCafes, 9);
+    return picks;
+  }, [combinedLocalCafes]);
+
+  const areaSortedLocations = useMemo(() => {
     const pool =
       activeAreaTab === 'All'
-        ? effectiveLocations
-        : effectiveLocations.filter((l) =>
+        ? combinedLocalCafes
+        : combinedLocalCafes.filter((l) =>
             `${l.area} ${l.address}`.toLowerCase().includes(activeAreaTab.toLowerCase())
           );
 
-    const sorted = [...pool].sort((a, b) => {
+    return [...pool].sort((a, b) => {
       if (userLocation) {
         const da = a.distanceKm ?? Number.MAX_SAFE_INTEGER;
         const db = b.distanceKm ?? Number.MAX_SAFE_INTEGER;
         if (da !== db) return da - db;
       }
+      if (Number(Boolean(b.verified)) !== Number(Boolean(a.verified))) {
+        return Number(Boolean(b.verified)) - Number(Boolean(a.verified));
+      }
       return Number(b.featured) - Number(a.featured);
     });
-    return sorted.slice(0, 6);
-  }, [effectiveLocations, activeAreaTab, userLocation]);
+  }, [combinedLocalCafes, activeAreaTab, userLocation]);
+
+  const filteredHomeLocations = useMemo(
+    () => areaSortedLocations.slice(0, homeDirLimit),
+    [areaSortedLocations, homeDirLimit]
+  );
 
   const spotlightCafes = useMemo(() => {
     const filtered = effectiveLocations.filter((l) => {
@@ -156,16 +212,17 @@ export function HomePage() {
     if (searchArea) params.set('area', searchArea);
     if (searchMode) params.set('mode', searchMode);
     const qs = params.toString();
-    navigate(qs ? `/locations?${qs}` : '/locations');
+    navigate(qs ? `/discover?${qs}` : '/discover');
   };
 
   const handleFindNearMe = async () => {
     await requestUserLocation();
-    navigate('/locations?nearby=1');
+    navigate('/discover?nearby=1');
   };
 
   const handleAreaSelect = (areaName: string) => {
     setActiveAreaTab(areaName);
+    setHomeDirLimit(12);
     if (areaName === 'All') {
       setMapFocusCenter(null);
       return;
@@ -284,7 +341,7 @@ export function HomePage() {
                   </button>
 
                   <Link
-                    to={settings.hero_cta_primary_link || '/locations'}
+                    to="/discover"
                     className="inline-flex items-center justify-center gap-2 min-h-[44px] px-5 py-2.5 rounded-xl bg-white hover:bg-[#faf7f2] text-[#1c1613] text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap"
                   >
                     <span>{settings.hero_cta_primary_label || 'Explore Cafes'}</span>
@@ -300,7 +357,7 @@ export function HomePage() {
                   </Link>
 
                   <Link
-                    to={settings.hero_cta_tertiary_link || '/locations?view=map'}
+                    to="/discover?view=map"
                     className="inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white border border-white/20 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap"
                   >
                     <MapIcon className="w-4 h-4 text-[#f59e0b] shrink-0" aria-hidden="true" />
@@ -321,16 +378,16 @@ export function HomePage() {
                       htmlFor="home-search-q"
                       className="block text-xs font-medium text-[#5c4e45] mb-1.5"
                     >
-                      Search cafe, area, or coffee spot
+                      Search cafe, tea shop, bakery, snacks, or locality
                     </label>
                     <CafeAutocompleteSearch
                       id="home-search-q"
                       value={searchQuery}
                       onChange={setSearchQuery}
                       onSubmitQuery={(q) =>
-                        navigate(`/locations?q=${encodeURIComponent(q)}&live=1`)
+                        navigate(`/discover?q=${encodeURIComponent(q)}&live=1`)
                       }
-                      placeholder='Try "Third Wave", "Indiranagar", "study"...'
+                      placeholder='Try "Coffee", "Tea in Koramangala", "Study"...'
                     />
                   </div>
 
@@ -391,9 +448,9 @@ export function HomePage() {
                   </div>
                 </form>
 
-                {/* Quick Filter Chips */}
-                <div className="pt-3 border-t border-[#e6ddd0] flex items-center gap-2 overflow-x-auto snap-x snap-mandatory no-scrollbar sm:flex-wrap pb-0.5">
-                  <span className="text-xs font-medium text-[#5c4e45] shrink-0">
+                {/* Quick Filter Chips — Wrapped cleanly (No Horizontal Scroll) */}
+                <div className="pt-3 border-t border-[#e6ddd0] flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-medium text-[#5c4e45] mr-1">
                     Quick filters:
                   </span>
                   {HOME_QUICK_FILTERS.map((qf) => {
@@ -402,25 +459,25 @@ export function HomePage() {
                       'aria-hidden': true as const,
                     };
                     const IconEl =
-                      qf.id === 'coffee' ? (
+                      qf.id === 'coffee' || qf.id === 'tea' ? (
                         <Coffee {...iconProps} />
-                      ) : qf.id === 'wifi' ? (
-                        <Wifi {...iconProps} />
-                      ) : qf.id === 'work' ? (
+                      ) : qf.id === 'workspaces' ? (
                         <Laptop {...iconProps} />
-                      ) : qf.id === 'sockets' ? (
-                        <Plug {...iconProps} />
                       ) : qf.id === 'budget' ? (
                         <IndianRupee {...iconProps} />
+                      ) : qf.id === 'wifi' ? (
+                        <Wifi {...iconProps} />
+                      ) : qf.id === 'sockets' ? (
+                        <Plug {...iconProps} />
                       ) : (
-                        <VolumeX {...iconProps} />
+                        <Sparkles {...iconProps} />
                       );
 
                     return (
                       <Link
                         key={qf.id}
                         to={qf.to}
-                        className="inline-flex items-center gap-1.5 min-h-[38px] px-3 py-1.5 rounded-full bg-[#faf7f2] hover:bg-[#fef3c7] border border-[#e6ddd0] text-xs font-medium text-[#1c1613] transition-colors shrink-0 snap-start"
+                        className="inline-flex items-center gap-1.5 min-h-[38px] px-3 py-1.5 rounded-full bg-[#faf7f2] hover:bg-[#fef3c7] border border-[#e6ddd0] text-xs font-medium text-[#1c1613] transition-colors"
                       >
                         {IconEl}
                         <span>{qf.label}</span>
@@ -470,23 +527,125 @@ export function HomePage() {
       case 'locations':
         return (
           <div key="locations">
-            {/* Instant Mood Discovery & Collections */}
+            {/* Local Discovery Categories + Find My Work Mood + Budget Finder + Collections */}
             <section
               aria-labelledby="home-locations-heading"
               className="max-w-7xl mx-auto px-4 sm:px-6 py-10 sm:py-14 space-y-12"
             >
-              {/* Compact Explore Cafe Option */}
-              <div className="flex items-center justify-start">
-                <Link
-                  to="/locations"
-                  className="inline-flex items-center gap-2 min-h-[44px] px-5 py-2.5 rounded-xl bg-[#b45309] hover:bg-[#92400e] text-white text-sm font-semibold transition-colors"
-                >
-                  <span>Explore Cafe</span>
-                  <ArrowRight className="w-4 h-4" aria-hidden="true" />
-                </Link>
+              {/* Compact Explore Cafe Option + Local Food & Workspace Category Shortcuts */}
+              <div className="space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <Link
+                    to="/discover"
+                    className="inline-flex items-center gap-2 min-h-[44px] px-5 py-2.5 rounded-xl bg-[#b45309] hover:bg-[#92400e] text-white text-sm font-semibold transition-colors"
+                  >
+                    <span>Explore Cafe</span>
+                    <ArrowRight className="w-4 h-4" aria-hidden="true" />
+                  </Link>
+                  <Link
+                    to="/discover?nearby=1"
+                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#1b4d3e] hover:underline"
+                  >
+                    <LocateFixed className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Discover live shops &amp; cafes nearby &rarr;</span>
+                  </Link>
+                </div>
+
+                <div className="bg-white rounded-2xl border border-[#e6ddd0] p-4 sm:p-5 space-y-3">
+                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#b45309]">
+                    Browse Real Local Spots via CafeDesk &amp; Google Maps
+                  </p>
+                  <div className="grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-9 gap-2">
+                    {DISCOVERY_CATEGORY_TABS.map((cat) => (
+                      <Link
+                        key={cat.id}
+                        to={cat.id === 'all' ? '/discover' : `/discover?category=${cat.id}`}
+                        className="min-h-[42px] px-2.5 py-2 rounded-xl bg-[#faf7f2] hover:bg-[#fef3c7] border border-[#e6ddd0] hover:border-[#b45309]/50 text-xs font-semibold text-[#1c1613] flex items-center justify-center text-center transition-colors"
+                      >
+                        {cat.label}
+                      </Link>
+                    ))}
+                  </div>
+                </div>
               </div>
 
-              {/* Smart Discovery Tabs */}
+              {/* Budget Finder Bar + More Local Cafes Showcase (Replaces Find My Work Mood) */}
+              <div className="bg-[#f3ede3] rounded-2xl border border-[#e6ddd0] p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                <div className="space-y-0.5">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#1b4d3e]">
+                    Budget Finder
+                  </p>
+                  <p className="font-serif-display text-lg sm:text-xl font-bold text-[#1c1613]">
+                    Filter by spend per person
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {BUDGET_BRACKETS.map((b) => (
+                    <Link
+                      key={b.id}
+                      to={`/discover?budget=${b.id}`}
+                      className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-white hover:bg-[#1c1613] hover:text-white border border-[#e6ddd0] text-xs font-semibold text-[#1c1613] inline-flex items-center transition-colors"
+                    >
+                      {b.label}
+                    </Link>
+                  ))}
+                </div>
+              </div>
+
+              {/* Popular Local Cafes, Tea Shops & Workspaces Grid */}
+              <div className="space-y-5">
+                <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#b45309] mb-1">
+                      Local Cafes, Chai &amp; Workspaces
+                    </p>
+                    <h2 className="font-serif-display text-2xl sm:text-3xl font-bold text-[#1c1613]">
+                      Popular local cafes across Bengaluru
+                    </h2>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <button
+                      type="button"
+                      disabled={nearbyLoading}
+                      onClick={() =>
+                        void discoverCafesNear(
+                          userLocation ?? BENGALURU_CENTER,
+                          userLocation ? 'Near You' : 'Bengaluru',
+                          5000,
+                          'all'
+                        )
+                      }
+                      className="inline-flex items-center gap-1.5 min-h-[40px] px-3.5 py-2 rounded-xl bg-[#ecfdf5] hover:bg-[#d1fae5] border border-[#a7f3d0] text-[#1b4d3e] text-xs font-semibold transition-colors disabled:opacity-60"
+                    >
+                      <LocateFixed className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>
+                        {nearbyLoading
+                          ? 'Loading Google Places...'
+                          : nearbyPlaces.length > 0
+                          ? `Live Local Spots Loaded (${nearbyPlaces.length})`
+                          : 'Load Live Google Places'}
+                      </span>
+                    </button>
+                    <Link
+                      to="/discover"
+                      className="inline-flex items-center gap-1.5 min-h-[40px] px-3.5 py-2 rounded-xl bg-white border border-[#d6cbba] hover:border-[#b45309] text-xs font-semibold text-[#1c1613] transition-colors"
+                    >
+                      <span>View All ({combinedLocalCafes.length})</span>
+                      <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
+                    </Link>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 sm:gap-6">
+                  {localShowcaseCafes.map((loc) => (
+                    <div key={`local-${loc.id}`} className="flex flex-col">
+                      <LocationCard location={loc} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Smart Discovery Tabs — Vertical Stacked Grid */}
               <div className="space-y-5">
                 <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-2.5">
                   <div>
@@ -506,7 +665,7 @@ export function HomePage() {
                   </Link>
                 </div>
 
-                <div className="flex overflow-x-auto no-scrollbar gap-2 -mx-4 px-4 pb-1 md:mx-0 md:px-0 md:flex-wrap">
+                <div className="flex flex-wrap gap-2">
                   {[
                     { id: 'trending' as const, label: 'Trending' },
                     { id: 'hidden-gems' as const, label: 'Hidden Gems' },
@@ -521,7 +680,7 @@ export function HomePage() {
                       key={tab.id}
                       type="button"
                       onClick={() => setSpotlightTab(tab.id)}
-                      className={`min-h-[40px] px-4 py-2 rounded-full text-xs font-semibold border transition-colors whitespace-nowrap shrink-0 ${
+                      className={`min-h-[40px] px-4 py-2 rounded-full text-xs font-semibold border transition-colors ${
                         spotlightTab === tab.id
                           ? 'bg-[#1c1613] text-white border-[#1c1613]'
                           : 'bg-white text-[#5c4e45] border-[#e6ddd0] hover:border-[#b45309] hover:text-[#1c1613]'
@@ -532,19 +691,16 @@ export function HomePage() {
                   ))}
                 </div>
 
-                <div className="flex overflow-x-auto snap-x snap-mandatory gap-5 -mx-4 px-4 pb-2 no-scrollbar md:mx-0 md:px-0 md:grid md:grid-cols-3 md:gap-6">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-5 sm:gap-6">
                   {spotlightCafes.map((loc) => (
-                    <div
-                      key={`spot-${loc.id}`}
-                      className="min-w-[85vw] sm:min-w-[330px] md:min-w-0 snap-start flex flex-col"
-                    >
+                    <div key={`spot-${loc.id}`} className="flex flex-col">
                       <LocationCard location={loc} />
                     </div>
                   ))}
                 </div>
               </div>
 
-              {/* Curated Bengaluru Collections */}
+              {/* Curated Bengaluru Collections — Vertical Responsive Grid */}
               <div className="space-y-5">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#b45309] mb-1">
@@ -554,41 +710,37 @@ export function HomePage() {
                     Editorial Bengaluru cafe trails
                   </h2>
                 </div>
-                <div className="flex overflow-x-auto snap-x snap-mandatory gap-4 -mx-4 px-4 pb-2 no-scrollbar md:mx-0 md:px-0 md:grid md:grid-cols-2 lg:grid-cols-5 md:gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
                   {CURATED_COLLECTIONS.map((col) => {
                     const count = effectiveLocations.filter(col.match).length;
                     return (
-                      <div
+                      <Link
                         key={col.id}
-                        className="min-w-[74vw] sm:min-w-[240px] md:min-w-0 snap-start flex"
+                        to={col.to}
+                        className="w-full p-5 rounded-2xl bg-white border border-[#e6ddd0] hover:border-[#b45309]/50 shadow-xs flex flex-col justify-between space-y-4 transition-colors"
                       >
-                        <Link
-                          to={col.to}
-                          className="w-full p-5 rounded-2xl bg-white border border-[#e6ddd0] hover:border-[#b45309]/50 shadow-xs flex flex-col justify-between space-y-4 transition-colors"
-                        >
-                          <div className="space-y-1.5">
-                            <span className="text-[11px] font-semibold uppercase tracking-wider text-[#1b4d3e]">
-                              {col.areaLabel}
-                            </span>
-                            <h3 className="font-serif-display text-lg font-bold text-[#1c1613] leading-snug">
-                              {col.title}
-                            </h3>
-                            <p className="text-xs text-[#5c4e45] leading-relaxed">
-                              {col.subtitle}
-                            </p>
-                          </div>
-                          <div className="pt-3 border-t border-[#e6ddd0] flex items-center justify-between text-xs font-semibold text-[#b45309]">
-                            <span className="font-mono-data">{count} cafes</span>
-                            <ArrowRight className="w-4 h-4" aria-hidden="true" />
-                          </div>
-                        </Link>
-                      </div>
+                        <div className="space-y-1.5">
+                          <span className="text-[11px] font-semibold uppercase tracking-wider text-[#1b4d3e]">
+                            {col.areaLabel}
+                          </span>
+                          <h3 className="font-serif-display text-lg font-bold text-[#1c1613] leading-snug">
+                            {col.title}
+                          </h3>
+                          <p className="text-xs text-[#5c4e45] leading-relaxed">
+                            {col.subtitle}
+                          </p>
+                        </div>
+                        <div className="pt-3 border-t border-[#e6ddd0] flex items-center justify-between text-xs font-semibold text-[#b45309]">
+                          <span className="font-mono-data">{count} cafes</span>
+                          <ArrowRight className="w-4 h-4" aria-hidden="true" />
+                        </div>
+                      </Link>
                     );
                   })}
                 </div>
               </div>
 
-              {/* Sponsored Partner Spotlight */}
+              {/* Sponsored Partner Spotlight — Vertical Grid */}
               {sponsoredCafes.length > 0 && (
                 <div className="p-5 sm:p-7 rounded-2xl bg-[#f3ede3] border border-[#e6ddd0] space-y-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
@@ -607,12 +759,12 @@ export function HomePage() {
                       Feature your cafe on Cafe Desk &rarr;
                     </Link>
                   </div>
-                  <div className="flex overflow-x-auto snap-x snap-mandatory gap-4 -mx-2 px-2 pb-1 no-scrollbar md:mx-0 md:px-0 md:grid md:grid-cols-3 md:gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     {sponsoredCafes.map((sp) => (
                       <Link
                         key={`sp-${sp.id}`}
                         to={getCafeDetailRoute(sp.slug, authenticated)}
-                        className="min-w-[78vw] sm:min-w-[280px] md:min-w-0 snap-start p-4 rounded-xl bg-white border border-[#e6ddd0] hover:border-[#b45309]/50 space-y-1.5 transition-colors"
+                        className="p-4 rounded-xl bg-white border border-[#e6ddd0] hover:border-[#b45309]/50 space-y-1.5 transition-colors"
                       >
                         <div className="flex items-center justify-between gap-2 text-[11px]">
                           <span className="font-semibold text-[#b45309]">Sponsored</span>
@@ -629,7 +781,7 @@ export function HomePage() {
               )}
             </section>
 
-            {/* Directory by Locality Section */}
+            {/* Directory by Locality Section — Vertical Scrolling Only */}
             <section className="bg-[#f3ede3]/60 border-y border-[#e6ddd0]">
               <div className="max-w-7xl mx-auto px-4 sm:px-6 py-12 sm:py-16 space-y-8">
                 <div className="flex flex-col md:flex-row md:items-end justify-between gap-6">
@@ -660,23 +812,23 @@ export function HomePage() {
                       </Link>
                     )}
                     <Link
-                      to="/locations"
+                      to="/discover"
                       className="inline-flex items-center gap-1.5 min-h-[42px] px-4 py-2 rounded-xl bg-[#b45309] hover:bg-[#92400e] text-white text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap"
                     >
-                      <span>Browse all {locations.length} cafes</span>
+                      <span>Open Full Discovery ({locations.length}+)</span>
                       <ArrowRight className="w-4 h-4" aria-hidden="true" />
                     </Link>
                   </div>
                 </div>
 
-                {/* Neighbourhood Quick-Jump Bar */}
-                <div className="flex overflow-x-auto no-scrollbar gap-2 -mx-4 px-4 pb-1 md:mx-0 md:px-0 md:flex-wrap">
+                {/* Neighbourhood Quick-Jump Bar — Wrapped Cleanly */}
+                <div className="flex flex-wrap gap-2">
                   {['All', ...BENGALURU_AREAS].map((areaName) => (
                     <button
                       key={areaName}
                       type="button"
                       onClick={() => handleAreaSelect(areaName)}
-                      className={`min-h-[40px] px-4 py-2 rounded-full text-xs font-semibold border transition-colors whitespace-nowrap shrink-0 ${
+                      className={`min-h-[40px] px-4 py-2 rounded-full text-xs font-semibold border transition-colors ${
                         activeAreaTab === areaName
                           ? 'bg-[#1c1613] text-white border-[#1c1613]'
                           : 'bg-white text-[#5c4e45] border-[#e6ddd0] hover:border-[#b45309] hover:text-[#1c1613]'
@@ -720,15 +872,37 @@ export function HomePage() {
                     </div>
                   </div>
                 ) : (
-                  <div className="flex overflow-x-auto snap-x snap-mandatory gap-5 -mx-4 px-4 pb-2 no-scrollbar md:mx-0 md:px-0 md:grid md:grid-cols-2 lg:grid-cols-3 md:gap-6">
-                    {filteredHomeLocations.map((loc) => (
-                      <div
-                        key={loc.id}
-                        className="min-w-[85vw] sm:min-w-[330px] md:min-w-0 snap-start flex flex-col"
+                  <div className="space-y-6">
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 sm:gap-6">
+                      {filteredHomeLocations.map((loc) => (
+                        <div key={loc.id} className="flex flex-col">
+                          <LocationCard location={loc} />
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-center gap-3">
+                      {areaSortedLocations.length > filteredHomeLocations.length && (
+                        <button
+                          type="button"
+                          onClick={() => setHomeDirLimit((n) => n + 12)}
+                          className="inline-flex items-center justify-center min-h-[44px] px-6 py-2.5 rounded-xl bg-white border border-[#d6cbba] hover:border-[#b45309] text-[#1c1613] text-xs sm:text-sm font-semibold transition-colors"
+                        >
+                          Load More Cafes ({areaSortedLocations.length - filteredHomeLocations.length} more)
+                        </button>
+                      )}
+                      <Link
+                        to={
+                          activeAreaTab !== 'All'
+                            ? `/discover?area=${encodeURIComponent(activeAreaTab)}`
+                            : '/discover'
+                        }
+                        className="inline-flex items-center gap-2 min-h-[44px] px-6 py-2.5 rounded-xl bg-[#1c1613] hover:bg-[#312722] text-white text-xs sm:text-sm font-semibold transition-colors"
                       >
-                        <LocationCard location={loc} />
-                      </div>
-                    ))}
+                        <span>Explore All &amp; Live Google Places</span>
+                        <ArrowRight className="w-4 h-4" aria-hidden="true" />
+                      </Link>
+                    </div>
                   </div>
                 )}
 
@@ -739,7 +913,7 @@ export function HomePage() {
                       Interactive Bengaluru Cafe Map
                     </h3>
                     <Link
-                      to="/locations?view=map"
+                      to="/discover?view=map"
                       className="text-xs font-semibold text-[#b45309] hover:underline underline-offset-4"
                     >
                       Open full map explorer &rarr;
@@ -790,12 +964,9 @@ export function HomePage() {
                 </Link>
               </div>
 
-              <div className="flex overflow-x-auto snap-x snap-mandatory gap-5 -mx-4 px-4 pb-2 no-scrollbar md:mx-0 md:px-0 md:grid md:grid-cols-3 md:gap-6">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-5 sm:gap-6">
                 {settings.editorial_gallery.map((item, idx) => (
-                  <div
-                    key={`${item.url}-${idx}`}
-                    className="min-w-[82vw] sm:min-w-[300px] md:min-w-0 snap-start"
-                  >
+                  <div key={`${item.url}-${idx}`}>
                     <figure className="bg-white rounded-2xl border border-[#e6ddd0] overflow-hidden shadow-xs">
                       <ResilientPhoto
                         src={item.url}
@@ -960,12 +1131,9 @@ export function HomePage() {
                 </h2>
               </div>
 
-              <div className="flex overflow-x-auto snap-x snap-mandatory gap-5 -mx-4 px-4 pb-2 no-scrollbar md:mx-0 md:px-0 md:grid md:grid-cols-3 md:gap-6">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-5 sm:gap-6">
                 {testimonials.map((t) => (
-                  <div
-                    key={t.id}
-                    className="min-w-[82vw] sm:min-w-[300px] md:min-w-0 snap-start flex"
-                  >
+                  <div key={t.id} className="flex">
                     <blockquote className="w-full p-5 sm:p-6 rounded-2xl bg-white border border-[#e6ddd0] flex flex-col justify-between space-y-4">
                       <div className="space-y-3">
                         <Quote className="w-5 h-5 text-[#b45309]" aria-hidden="true" />

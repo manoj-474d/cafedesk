@@ -26,23 +26,31 @@ import { BENGALURU_AREAS, BENGALURU_CENTER } from '../config/constants';
 import { useAuth } from '../context/AuthContext';
 import type { LocationItem } from '../types/cms';
 import type { GoogleDiscoveryCafe, LatLngPoint } from '../context/DiscoveryContext';
-import { formatDistanceKm, getCafeDetailRoute } from '../utils/cafeHelpers';
+import {
+  buildGoogleMapsDirectionsUrl,
+  formatDistanceKm,
+  getCafeDetailRoute,
+} from '../utils/cafeHelpers';
 import { GOOGLE_MAPS_API_KEY } from '../App';
 
 export interface MapMarkerItem {
   id: string;
+  placeId?: string;
   title: string;
   area: string;
+  city: string;
   address: string;
   lat: number;
   lng: number;
   slug?: string;
+  category?: string;
   wifiMbps?: number | null;
   avgCost?: number | null;
   rating?: number | null;
   distanceKm?: number | null;
-  mapLink: string;
+  directionsUrl: string | null;
   source: 'curated' | 'google';
+  verified?: boolean;
 }
 
 interface InteractiveCafeMapProps {
@@ -91,6 +99,9 @@ function CafeMarkerPin({
   const isCurated = item.source === 'curated';
   const distText = formatDistanceKm(item.distanceKm);
 
+  const pinBg = isCurated ? (item.verified ? '#1b4d3e' : '#b45309') : '#2563eb';
+  const pinBorder = isCurated ? (item.verified ? '#133a2e' : '#78350f') : '#1e40af';
+
   return (
     <>
       <AdvancedMarker
@@ -100,19 +111,21 @@ function CafeMarkerPin({
         title={item.title}
       >
         <Pin
-          background={isCurated ? '#b45309' : '#1b4d3e'}
-          borderColor={isCurated ? '#78350f' : '#133a2e'}
+          background={pinBg}
+          borderColor={pinBorder}
           glyphColor="#ffffff"
           scale={selected ? 1.25 : 1}
         />
       </AdvancedMarker>
 
       {selected && isDesktop && marker && (
-        <InfoWindow anchor={marker} maxWidth={270} onCloseClick={onClose}>
-          <div className="p-1 space-y-2 text-[#1c1613] max-w-[240px]">
+        <InfoWindow anchor={marker} maxWidth={280} onCloseClick={onClose}>
+          <div className="p-1 space-y-2 text-[#1c1613] max-w-[250px]">
             <div className="space-y-0.5">
               <p className="text-[10px] font-semibold uppercase tracking-wider text-[#b45309]">
-                {isCurated ? `${item.area} · Cafe Desk` : `${item.area} · Google Maps`}
+                {isCurated
+                  ? `${item.area} · ${item.verified ? 'CafeDesk Verified' : 'Community Listed'}`
+                  : `${item.area} · Google Places`}
               </p>
               <h3 className="font-serif-display text-sm font-bold leading-snug text-[#1c1613]">
                 {item.title}
@@ -138,7 +151,7 @@ function CafeMarkerPin({
                   <Wifi className="w-3 h-3" aria-hidden="true" />
                   {item.wifiMbps !== null && item.wifiMbps !== undefined
                     ? `${item.wifiMbps} Mbps`
-                    : 'Speed not verified'}
+                    : 'Not verified'}
                 </span>
               )}
               {item.avgCost !== null && item.avgCost !== undefined && (
@@ -155,11 +168,11 @@ function CafeMarkerPin({
                   Explore Cafe &rarr;
                 </Link>
               ) : (
-                <span className="text-[11px] text-[#5c4e45]">Nearby cafe</span>
+                <span className="text-[11px] text-[#5c4e45]">Local spot</span>
               )}
-              {authenticated && item.mapLink && (
+              {item.directionsUrl ? (
                 <a
-                  href={item.mapLink}
+                  href={item.directionsUrl}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-0.5 font-semibold text-[#1c1613] hover:text-[#b45309]"
@@ -167,6 +180,8 @@ function CafeMarkerPin({
                   <span>Directions</span>
                   <ArrowUpRight className="w-3 h-3" aria-hidden="true" />
                 </a>
+              ) : (
+                <span className="text-[11px] text-[#8c7a6b]">No directions</span>
               )}
             </div>
           </div>
@@ -209,18 +224,22 @@ export function InteractiveCafeMap({
     if (loc.lat !== null && loc.lng !== null) {
       markerItems.push({
         id: `curated-${loc.id}`,
+        placeId: loc.place_id,
         title: loc.name,
         area: loc.area,
+        city: loc.city || 'Bengaluru',
         address: loc.address,
         lat: loc.lat,
         lng: loc.lng,
         slug: loc.slug,
+        category: loc.category,
         wifiMbps: loc.wifi_mbps,
         avgCost: loc.avg_cost_per_person,
         rating: loc.rating,
         distanceKm: loc.distanceKm ?? null,
-        mapLink: loc.map_link,
+        directionsUrl: buildGoogleMapsDirectionsUrl(loc),
         source: 'curated',
+        verified: loc.verified,
       });
     }
   }
@@ -228,21 +247,34 @@ export function InteractiveCafeMap({
   for (const gc of googleCafes) {
     const duplicate = markerItems.some(
       (m) =>
+        (gc.placeId && m.placeId && m.placeId === gc.placeId) ||
         m.title.toLowerCase() === gc.name.toLowerCase() ||
         (Math.abs(m.lat - gc.lat) < 0.0004 && Math.abs(m.lng - gc.lng) < 0.0004)
     );
     if (!duplicate) {
+      const directionsUrl = buildGoogleMapsDirectionsUrl({
+        place_id: gc.placeId,
+        lat: gc.lat,
+        lng: gc.lng,
+        name: gc.name,
+        address: gc.address,
+        area: gc.areaLabel || 'Bengaluru',
+        city: 'Bengaluru',
+      });
       markerItems.push({
         id: `google-${gc.id}`,
+        placeId: gc.placeId,
         title: gc.name,
         area: gc.areaLabel || 'Bengaluru',
+        city: 'Bengaluru',
         address: gc.address,
         lat: gc.lat,
         lng: gc.lng,
         slug: gc.placeId ? `google:${encodeURIComponent(gc.placeId)}` : undefined,
+        category: gc.categoryLabel,
         rating: gc.rating,
         distanceKm: gc.distanceKm,
-        mapLink: gc.mapLink,
+        directionsUrl,
         source: 'google',
       });
     }
@@ -275,11 +307,14 @@ export function InteractiveCafeMap({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="space-y-1">
             <p className="text-xs font-semibold uppercase tracking-wider text-[#b45309]">
-              Bengaluru Map Explorer
+              Local Map Explorer
             </p>
             <h3 className="font-serif-display text-lg sm:text-xl font-bold text-[#1c1613]">
-              Open neighborhood cafes directly in Google Maps
+              Open neighborhood cafes &amp; food spots in Google Maps
             </h3>
+            <p className="text-xs text-[#5c4e45]">
+              Interactive embedded map canvas activates once VITE_GOOGLE_MAPS_API_KEY is configured.
+            </p>
           </div>
           {onRequestNearMe && (
             <button
@@ -292,16 +327,16 @@ export function InteractiveCafeMap({
             </button>
           )}
         </div>
-        <div className="flex overflow-x-auto snap-x snap-mandatory gap-2 pb-1 no-scrollbar sm:flex-wrap">
-          {BENGALURU_AREAS.slice(0, 8).map((areaName) => (
+        <div className="flex flex-wrap gap-2">
+          {BENGALURU_AREAS.slice(0, 10).map((areaName) => (
             <a
               key={areaName}
               href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
-                `cafes in ${areaName} Bengaluru`
+                `cafes and coffee in ${areaName} Bengaluru`
               )}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 min-h-[40px] px-3.5 py-2 rounded-full bg-[#faf7f2] border border-[#e6ddd0] text-xs font-medium text-[#1c1613] hover:border-[#b45309] shrink-0 snap-start transition-colors"
+              className="inline-flex items-center gap-1.5 min-h-[40px] px-3.5 py-2 rounded-full bg-[#faf7f2] border border-[#e6ddd0] text-xs font-medium text-[#1c1613] hover:border-[#b45309] transition-colors"
             >
               <MapPin className="w-3.5 h-3.5 text-[#b45309]" aria-hidden="true" />
               <span>{areaName}</span>
@@ -323,20 +358,24 @@ export function InteractiveCafeMap({
     >
       {/* Map Controls Strip */}
       <div className="px-3.5 sm:px-4 py-2.5 sm:py-3 bg-[#faf7f2] border-b border-[#e6ddd0] flex flex-wrap items-center justify-between gap-2.5">
-        <div className="flex flex-wrap items-center gap-2 text-xs">
+        <div className="flex flex-wrap items-center gap-2.5 text-xs">
           <span className="inline-flex items-center gap-1.5 font-semibold text-[#1c1613]">
             <Coffee className="w-3.5 h-3.5 text-[#b45309]" aria-hidden="true" />
             <span className="font-mono-data">{markerItems.length}</span>
-            <span>pinned cafes</span>
+            <span>places</span>
           </span>
           <span className="text-[#a89a8e] hidden sm:inline">·</span>
+          <span className="inline-flex items-center gap-1 font-medium text-[#5c4e45]">
+            <span className="w-2.5 h-2.5 rounded-full bg-[#1b4d3e] inline-block" />
+            Verified
+          </span>
           <span className="inline-flex items-center gap-1 font-medium text-[#5c4e45]">
             <span className="w-2.5 h-2.5 rounded-full bg-[#b45309] inline-block" />
             Curated
           </span>
           <span className="inline-flex items-center gap-1 font-medium text-[#5c4e45]">
-            <span className="w-2.5 h-2.5 rounded-full bg-[#1b4d3e] inline-block" />
-            Live
+            <span className="w-2.5 h-2.5 rounded-full bg-[#2563eb] inline-block" />
+            Google Places
           </span>
         </div>
 
@@ -349,7 +388,7 @@ export function InteractiveCafeMap({
               className="h-10 px-3 rounded-xl bg-white border border-[#d6cbba] text-xs font-medium text-[#1c1613]"
             >
               <option value="">All Bengaluru</option>
-              {BENGALURU_AREAS.slice(0, 8).map((a) => (
+              {BENGALURU_AREAS.slice(0, 10).map((a) => (
                 <option key={a} value={a}>
                   {a}
                 </option>
@@ -442,8 +481,8 @@ export function InteractiveCafeMap({
               <div className="min-w-0">
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-[#b45309] truncate">
                   {selectedItem.source === 'curated'
-                    ? `${selectedItem.area} · Cafe Desk`
-                    : `${selectedItem.area} · Google Maps`}
+                    ? `${selectedItem.area} · ${selectedItem.verified ? 'CafeDesk Verified' : 'CafeDesk'}`
+                    : `${selectedItem.area} · Google Places Discovery`}
                 </p>
                 <h3 className="font-serif-display text-base font-bold text-[#1c1613] truncate">
                   {selectedItem.title}
@@ -488,9 +527,9 @@ export function InteractiveCafeMap({
                   <ArrowUpRight className="w-3.5 h-3.5" aria-hidden="true" />
                 </Link>
               )}
-              {authenticated && selectedItem.mapLink && (
+              {selectedItem.directionsUrl ? (
                 <a
-                  href={selectedItem.mapLink}
+                  href={selectedItem.directionsUrl}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="min-h-[44px] px-4 rounded-xl border border-[#e6ddd0] bg-[#faf7f2] text-[#1c1613] text-xs font-semibold inline-flex items-center justify-center gap-1"
@@ -498,6 +537,10 @@ export function InteractiveCafeMap({
                   <span>Directions</span>
                   <ArrowUpRight className="w-3.5 h-3.5" aria-hidden="true" />
                 </a>
+              ) : (
+                <span className="min-h-[44px] px-3 rounded-xl border border-[#e6ddd0] bg-[#faf7f2] text-[#8c7a6b] text-xs inline-flex items-center justify-center">
+                  Unavailable
+                </span>
               )}
             </div>
           </div>

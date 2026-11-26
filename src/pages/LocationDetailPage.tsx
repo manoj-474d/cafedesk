@@ -47,8 +47,14 @@ import {
   Wifi,
   X,
 } from 'lucide-react';
-import { getNoiseSummary, NOISE_LABELS } from '../config/constants';
-import { getUserSessionHeaders, locationToLibrarySnapshot, useAuth } from '../context/AuthContext';
+import { CORRECTION_ISSUE_TYPES, getNoiseSummary, NOISE_LABELS } from '../config/constants';
+import {
+  getUserAuthHeaders,
+  getUserSessionHeaders,
+  locationToLibrarySnapshot,
+  resolveApiUrl,
+  useAuth,
+} from '../context/AuthContext';
 import { useCms } from '../context/CmsContext';
 import {
   googleDiscoveryToLocationItem,
@@ -57,9 +63,12 @@ import {
 } from '../context/DiscoveryContext';
 import type { AccessSectionKey, AmenityState, LocationItem } from '../types/cms';
 import {
+  buildGoogleMapsDirectionsUrl,
+  buildGoogleMapsViewUrl,
   buildWhatsAppUrl,
   formatDistanceKm,
   getCafeOpenStatus,
+  getCafeSourceMeta,
   getStartingPriceLabel,
   getWorkspaceTypesForCafe,
   useDocumentMeta,
@@ -136,7 +145,19 @@ export function LocationDetailPage() {
   const [collectionMenuOpen, setCollectionMenuOpen] = useState(false);
   const [collectionAddedNotice, setCollectionAddedNotice] = useState('');
   const [copiedShare, setCopiedShare] = useState(false);
+  const [copiedAddress, setCopiedAddress] = useState(false);
   const [copiedWifiPass, setCopiedWifiPass] = useState(false);
+
+  const [correctionOpen, setCorrectionOpen] = useState(false);
+  const [correctionIssueType, setCorrectionIssueType] = useState<string>('wrong_address');
+  const [correctionProposedValue, setCorrectionProposedValue] = useState('');
+  const [correctionNotes, setCorrectionNotes] = useState('');
+  const [correctionName, setCorrectionName] = useState('');
+  const [correctionEmail, setCorrectionEmail] = useState('');
+  const [correctionBusy, setCorrectionBusy] = useState(false);
+  const [correctionError, setCorrectionError] = useState('');
+  const [correctionSuccess, setCorrectionSuccess] = useState('');
+  const viewedEventKeyRef = useRef<string>('');
 
   const [bookingOpen, setBookingOpen] = useState(false);
   const [bookName, setBookName] = useState('');
@@ -155,6 +176,8 @@ export function LocationDetailPage() {
     if (user) {
       setBookName((prev) => prev || user.name || '');
       setBookEmail((prev) => prev || user.email || '');
+      setCorrectionName((prev) => prev || user.name || '');
+      setCorrectionEmail((prev) => prev || user.email || '');
     }
   }, [user]);
 
@@ -201,7 +224,7 @@ export function LocationDetailPage() {
   }, [baseLocation, authenticated, enrichLocationFromPlaces]);
 
   useEffect(() => {
-    if (!isGoogleRoute || !googlePlaceId || !authenticated) return;
+    if (!isGoogleRoute || !googlePlaceId) return;
     let cancelled = false;
     setLoadingGooglePlace(true);
     void fetchGooglePlaceDetails(googlePlaceId).then((res) => {
@@ -213,7 +236,7 @@ export function LocationDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [isGoogleRoute, googlePlaceId, placesReady, authenticated, fetchGooglePlaceDetails]);
+  }, [isGoogleRoute, googlePlaceId, placesReady, fetchGooglePlaceDetails]);
 
   const activeGooglePlace = isGoogleRoute
     ? fetchedGooglePlace ?? livePlaceCache[googlePlaceId] ?? null
@@ -224,6 +247,25 @@ export function LocationDetailPage() {
     if (activeGooglePlace) return googleDiscoveryToLocationItem(activeGooglePlace);
     return undefined;
   }, [baseLocation, activeGooglePlace, getEffectiveLocation]);
+
+  useEffect(() => {
+    if (!authenticated || !location) return;
+    const key = location.slug || lookupKey;
+    if (!key || viewedEventKeyRef.current === key) return;
+    viewedEventKeyRef.current = key;
+    void (async () => {
+      try {
+        await fetch(resolveApiUrl('/api/explorer/event'), {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json', ...(await getUserAuthHeaders()) },
+          body: JSON.stringify({ eventType: 'view_place', cafeKey: key }),
+        });
+      } catch {
+        // Non-blocking telemetry
+      }
+    })();
+  }, [authenticated, location, lookupKey]);
 
   const [activePhotoIdx, setActivePhotoIdx] = useState(0);
   const [lightboxOpen, setLightboxOpen] = useState(false);
@@ -249,6 +291,9 @@ export function LocationDetailPage() {
     setBookingOpen(false);
     setBookingError('');
     setBookingSuccessRef('');
+    setCorrectionOpen(false);
+    setCorrectionSuccess('');
+    setCorrectionError('');
   }, [lookupKey]);
 
   useEffect(() => {
@@ -309,26 +354,7 @@ export function LocationDetailPage() {
     );
   }
 
-  if (isGoogleRoute && !authenticated && !activeGooglePlace) {
-    return (
-      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-16 space-y-6">
-        <Link
-          to="/locations"
-          className="inline-flex items-center gap-2 min-h-[42px] px-4 py-2 rounded-full bg-white border border-[#e6ddd0] text-sm font-medium text-[#1c1613]"
-        >
-          <ArrowLeft className="w-4 h-4" aria-hidden="true" />
-          <span>Back to Bengaluru cafe explorer</span>
-        </Link>
-        <PremiumLockCard
-          title="Live Google Maps Cafe Details"
-          description="Sign in and activate a Cafe Desk subscription to view live Google Maps cafe details, hours, photos, and directions."
-          lockReason="guest"
-        />
-      </div>
-    );
-  }
-
-  if (!location && isGoogleRoute && (loadingGooglePlace || !placesReady)) {
+  if (!location && isGoogleRoute && loadingGooglePlace) {
     return (
       <div className="max-w-3xl mx-auto px-4 sm:px-6 py-24 text-center space-y-4">
         <Loader2 className="w-8 h-8 animate-spin text-[#b45309] mx-auto" aria-hidden="true" />
@@ -379,9 +405,22 @@ export function LocationDetailPage() {
       location.menu_services.length > 0
   );
   const liveOpeningHours =
-    'openingHours' in location && Array.isArray(location.openingHours)
+    location.opening_hours_list && location.opening_hours_list.length > 0
+      ? location.opening_hours_list
+      : 'openingHours' in location && Array.isArray(location.openingHours)
       ? location.openingHours
       : [];
+
+  const directionsUrl = buildGoogleMapsDirectionsUrl(location);
+  const viewOnMapsUrl = buildGoogleMapsViewUrl(location);
+  const sourceMeta = getCafeSourceMeta(location);
+  const isQuickScanSpot =
+    Boolean(location.category) &&
+    /tea|chai|snack|bakery|juice|ice cream|dessert|burger|sandwich|eatery|fast food/i.test(
+      location.category || ''
+    ) &&
+    !location.laptop_friendly &&
+    location.suitable_for_working !== 'yes';
 
   const defaultUnlocked: Record<AccessSectionKey, boolean> = {
     wifi_details: isSubscribed,
@@ -430,7 +469,7 @@ export function LocationDetailPage() {
 
   const handleShareCafe = async () => {
     const shareUrl = window.location.href;
-    const shareTitle = `${location.name} (${location.area}, Bengaluru) | ${settings.brand_name}`;
+    const shareTitle = `${location.name} (${location.area}, ${location.city}) | ${settings.brand_name}`;
     try {
       if (navigator.share) {
         await navigator.share({ title: shareTitle, url: shareUrl });
@@ -447,6 +486,53 @@ export function LocationDetailPage() {
       } catch {
         // ignore clipboard denial
       }
+    }
+  };
+
+  const handleCopyAddress = async () => {
+    const textToCopy = `${location.name}, ${location.address || `${location.area}, ${location.city}`}`;
+    try {
+      await navigator.clipboard.writeText(textToCopy);
+      setCopiedAddress(true);
+      window.setTimeout(() => setCopiedAddress(false), 2200);
+    } catch {
+      // ignore clipboard errors
+    }
+  };
+
+  const handleSubmitCorrection = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setCorrectionBusy(true);
+    setCorrectionError('');
+    setCorrectionSuccess('');
+    try {
+      const res = await fetch(resolveApiUrl('/api/corrections'), {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', ...(await getUserAuthHeaders()) },
+        body: JSON.stringify({
+          cafe_id: isGoogleRoute ? null : location.id,
+          place_id: location.place_id || (isGoogleRoute ? googlePlaceId : ''),
+          cafe_name: location.name,
+          issue_type: correctionIssueType,
+          proposed_value: correctionProposedValue.trim(),
+          notes: correctionNotes.trim(),
+          reporter_name: correctionName.trim(),
+          reporter_email: correctionEmail.trim(),
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) {
+        setCorrectionError(data.error || 'Could not submit correction.');
+        return;
+      }
+      setCorrectionSuccess('Thank you! Your correction was submitted for admin review.');
+      setCorrectionProposedValue('');
+      setCorrectionNotes('');
+    } catch {
+      setCorrectionError('Network error submitting correction. Please try again.');
+    } finally {
+      setCorrectionBusy(false);
     }
   };
 
@@ -586,15 +672,12 @@ export function LocationDetailPage() {
                 ? 'Closed now'
                 : 'Check hours'}
             </span>
-            {location.verified ? (
-              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white border border-[#e6ddd0] text-[#1b4d3e]">
-                <CheckCircle2 className="w-3 h-3" aria-hidden="true" />
-                Verified Cafe
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white border border-[#e6ddd0] text-[#5c4e45]">
-                <Clock className="w-3 h-3 text-[#b45309]" aria-hidden="true" />
-                Public Listing
+            <span className={`px-2.5 py-1 rounded-full ${sourceMeta.badgeClass}`}>
+              {sourceMeta.label}
+            </span>
+            {location.category && (
+              <span className="px-2.5 py-1 rounded-full bg-white border border-[#e6ddd0] text-[#1c1613]">
+                {location.category}
               </span>
             )}
             {location.featured && (
@@ -628,22 +711,69 @@ export function LocationDetailPage() {
             <span>{location.address}</span>
           </div>
 
+          {sourceMeta.type === 'google_places' && (
+            <div className="p-3 rounded-xl bg-[#eff6ff] border border-[#bfdbfe] text-xs text-[#1e3a8a]">
+              <strong>Google Places Discovery:</strong> Live business info is fetched from Google Maps. Work specs (Wi-Fi speed, power outlets, noise level) are marked <strong>Not verified</strong> until field-reviewed.
+            </div>
+          )}
+
+          {isQuickScanSpot && (
+            <div className="p-3 rounded-xl bg-[#faf7f2] border border-[#e6ddd0] text-xs text-[#5c4e45]">
+              <strong>Quick Local Spot:</strong> Focused on beverages, snacks, or local food. Work desk specifications may not apply.
+            </div>
+          )}
+
           <p className="text-base sm:text-lg text-[#5c4e45] leading-relaxed">
             {location.description || location.verdict || location.claims[0]}
           </p>
 
           {/* Direct Discovery & Cafe Platform Links */}
           <div className="flex flex-wrap gap-2.5 pt-1">
-            <a
-              href={location.map_link}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 min-h-[44px] px-5 py-2.5 rounded-xl bg-[#b45309] hover:bg-[#92400e] text-white text-sm font-semibold transition-colors"
+            {directionsUrl ? (
+              <a
+                href={directionsUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 min-h-[44px] px-5 py-2.5 rounded-xl bg-[#b45309] hover:bg-[#92400e] text-white text-sm font-semibold transition-colors"
+              >
+                <MapPin className="w-4 h-4" aria-hidden="true" />
+                <span>Get Directions</span>
+                <ArrowUpRight className="w-4 h-4" aria-hidden="true" />
+              </a>
+            ) : (
+              <span
+                aria-disabled="true"
+                className="inline-flex items-center gap-2 min-h-[44px] px-5 py-2.5 rounded-xl bg-[#e6ddd0] text-[#5c4e45] text-sm font-semibold cursor-not-allowed"
+              >
+                <MapPin className="w-4 h-4" aria-hidden="true" />
+                <span>Location Unavailable</span>
+              </span>
+            )}
+
+            {viewOnMapsUrl && (
+              <a
+                href={viewOnMapsUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 min-h-[44px] px-4 py-2.5 rounded-xl bg-white border border-[#e6ddd0] hover:border-[#b45309] text-[#1c1613] text-sm font-semibold transition-colors"
+              >
+                <Navigation className="w-4 h-4 text-[#1b4d3e]" aria-hidden="true" />
+                <span>View on Google Maps</span>
+              </a>
+            )}
+
+            <button
+              type="button"
+              onClick={() => void handleCopyAddress()}
+              className="inline-flex items-center gap-2 min-h-[44px] px-4 py-2.5 rounded-xl bg-white border border-[#e6ddd0] hover:border-[#b45309] text-[#1c1613] text-sm font-semibold transition-colors"
             >
-              <MapPin className="w-4 h-4" aria-hidden="true" />
-              <span>Get Directions</span>
-              <ArrowUpRight className="w-4 h-4" aria-hidden="true" />
-            </a>
+              {copiedAddress ? (
+                <Check className="w-4 h-4 text-[#1b4d3e]" aria-hidden="true" />
+              ) : (
+                <Copy className="w-4 h-4 text-[#b45309]" aria-hidden="true" />
+              )}
+              <span>{copiedAddress ? 'Address Copied' : 'Copy Address'}</span>
+            </button>
 
             {unlocked.amenities && location.website_url && (
               <a
@@ -1771,14 +1901,15 @@ export function LocationDetailPage() {
             )
           )}
 
-          <div>
-            <Link
-              to={`/submit?cafe=${encodeURIComponent(location.name)}`}
-              className="inline-flex items-center gap-2 min-h-[40px] text-xs font-medium text-[#5c4e45] hover:text-[#1c1613] underline underline-offset-4"
+          <div className="flex flex-wrap items-center gap-4">
+            <button
+              type="button"
+              onClick={() => setCorrectionOpen(true)}
+              className="inline-flex items-center gap-2 min-h-[42px] px-4 py-2 rounded-xl bg-white border border-[#e6ddd0] hover:border-[#b45309] text-xs font-semibold text-[#1c1613] transition-colors"
             >
               <Flag className="w-3.5 h-3.5 text-[#b45309]" aria-hidden="true" />
-              <span>Report outdated Wi-Fi, price, or opening hours for this cafe</span>
-            </Link>
+              <span>Suggest Correction / Report Wrong Info</span>
+            </button>
           </div>
         </div>
 
@@ -1835,18 +1966,45 @@ export function LocationDetailPage() {
             </div>
 
             <div className="space-y-2.5">
-              <a
-                href={location.map_link}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="w-full min-h-[44px] px-4 py-2 rounded-xl bg-[#b45309] hover:bg-[#92400e] text-white text-sm font-semibold inline-flex items-center justify-between transition-colors"
-              >
-                <span className="inline-flex items-center gap-2">
-                  <MapPin className="w-4 h-4" aria-hidden="true" />
-                  Get Directions
+              {directionsUrl ? (
+                <a
+                  href={directionsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full min-h-[44px] px-4 py-2 rounded-xl bg-[#b45309] hover:bg-[#92400e] text-white text-sm font-semibold inline-flex items-center justify-between transition-colors"
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <MapPin className="w-4 h-4" aria-hidden="true" />
+                    Get Directions
+                  </span>
+                  <ArrowUpRight className="w-4 h-4" aria-hidden="true" />
+                </a>
+              ) : (
+                <span
+                  aria-disabled="true"
+                  className="w-full min-h-[44px] px-4 py-2 rounded-xl bg-[#e6ddd0] text-[#5c4e45] text-sm font-semibold inline-flex items-center justify-between cursor-not-allowed"
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <MapPin className="w-4 h-4" aria-hidden="true" />
+                    Location Unavailable
+                  </span>
                 </span>
-                <ArrowUpRight className="w-4 h-4" aria-hidden="true" />
-              </a>
+              )}
+
+              {viewOnMapsUrl && (
+                <a
+                  href={viewOnMapsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full min-h-[44px] px-4 py-2 rounded-xl bg-[#faf7f2] border border-[#e6ddd0] hover:border-[#b45309] text-[#1c1613] text-sm font-semibold inline-flex items-center justify-between transition-colors"
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <Navigation className="w-4 h-4 text-[#1b4d3e]" aria-hidden="true" />
+                    View on Google Maps
+                  </span>
+                  <ArrowUpRight className="w-4 h-4" aria-hidden="true" />
+                </a>
+              )}
 
               {unlocked.amenities && location.website_url && (
                 <a
@@ -2205,12 +2363,9 @@ export function LocationDetailPage() {
               Browse All &rarr;
             </Link>
           </div>
-          <div className="flex overflow-x-auto snap-x snap-mandatory gap-4 pb-2 -mx-4 px-4 sm:mx-0 sm:px-0 no-scrollbar md:grid md:grid-cols-2 lg:grid-cols-4 md:overflow-visible">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             {similarCafes.map((cafe) => (
-              <div
-                key={cafe.id}
-                className="w-[82vw] max-w-[300px] md:w-auto md:max-w-none shrink-0 snap-start"
-              >
+              <div key={cafe.id} className="flex flex-col">
                 <LocationCard location={cafe} />
               </div>
             ))}
@@ -2220,15 +2375,22 @@ export function LocationDetailPage() {
 
       {/* Sticky Mobile Bottom Action Bar */}
       <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-[#e6ddd0] px-3 pt-2.5 pb-[calc(0.625rem+env(safe-area-inset-bottom))] flex items-center gap-2 shadow-[0_-4px_16px_rgba(28,22,19,0.08)]">
-        <a
-          href={location.map_link}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="min-h-[44px] px-3 rounded-xl border border-[#e6ddd0] bg-[#faf7f2] text-[#1c1613] text-xs font-semibold inline-flex items-center justify-center gap-1.5 shrink-0"
-        >
-          <MapPin className="w-4 h-4 text-[#b45309]" aria-hidden="true" />
-          <span>Directions</span>
-        </a>
+        {directionsUrl ? (
+          <a
+            href={directionsUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="min-h-[44px] px-3 rounded-xl border border-[#e6ddd0] bg-[#faf7f2] text-[#1c1613] text-xs font-semibold inline-flex items-center justify-center gap-1.5 shrink-0"
+          >
+            <MapPin className="w-4 h-4 text-[#b45309]" aria-hidden="true" />
+            <span>Directions</span>
+          </a>
+        ) : (
+          <span className="min-h-[44px] px-3 rounded-xl border border-[#e6ddd0] bg-[#f3ede3] text-[#5c4e45] text-xs font-semibold inline-flex items-center justify-center gap-1.5 shrink-0">
+            <MapPin className="w-4 h-4" aria-hidden="true" />
+            <span>No Map</span>
+          </span>
+        )}
 
         <button
           type="button"
@@ -2406,6 +2568,154 @@ export function LocationDetailPage() {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Suggest Correction Modal */}
+      {correctionOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Suggest correction for ${location.name}`}
+          className="fixed inset-0 z-50 bg-[#1c1613]/65 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4"
+          onClick={() => setCorrectionOpen(false)}
+        >
+          <div
+            className="w-full max-w-lg rounded-t-3xl sm:rounded-2xl bg-white border border-[#e6ddd0] p-5 sm:p-6 pb-[calc(1.25rem+env(safe-area-inset-bottom))] sm:pb-6 space-y-4 shadow-2xl animate-sheet-up"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-[#e6ddd0] pb-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-[#b45309]">
+                  Community Moderation
+                </p>
+                <h2 className="font-serif-display text-xl font-bold text-[#1c1613]">
+                  Report Wrong Info · {location.name}
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCorrectionOpen(false)}
+                aria-label="Close correction form"
+                className="w-10 h-10 rounded-xl border border-[#e6ddd0] bg-[#faf7f2] text-[#1c1613] flex items-center justify-center"
+              >
+                <X className="w-4 h-4" aria-hidden="true" />
+              </button>
+            </div>
+
+            {correctionSuccess ? (
+              <div className="p-4 rounded-xl bg-[#ecfdf5] border border-[#a7f3d0] text-sm text-[#1b4d3e] space-y-2">
+                <p className="font-semibold flex items-center gap-1.5">
+                  <CheckCircle2 className="w-4 h-4" aria-hidden="true" />
+                  <span>{correctionSuccess}</span>
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setCorrectionOpen(false)}
+                  className="text-xs font-semibold underline"
+                >
+                  Close window
+                </button>
+              </div>
+            ) : (
+              <form onSubmit={handleSubmitCorrection} className="space-y-3 text-xs">
+                {correctionError && (
+                  <p role="alert" className="p-2.5 rounded-xl bg-[#fef2f2] border border-[#fecaca] text-[#991b1b] font-medium">
+                    {correctionError}
+                  </p>
+                )}
+                <div>
+                  <label htmlFor="corr-type" className="block font-semibold text-[#5c4e45] mb-1">
+                    What needs updating?
+                  </label>
+                  <select
+                    id="corr-type"
+                    value={correctionIssueType}
+                    onChange={(e) => setCorrectionIssueType(e.target.value)}
+                    className="w-full h-11 px-3 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-sm text-[#1c1613]"
+                  >
+                    {CORRECTION_ISSUE_TYPES.map((it) => (
+                      <option key={it.id} value={it.id}>
+                        {it.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label htmlFor="corr-val" className="block font-semibold text-[#5c4e45] mb-1">
+                    Updated Details / Corrected Value *
+                  </label>
+                  <input
+                    id="corr-val"
+                    type="text"
+                    required
+                    value={correctionProposedValue}
+                    onChange={(e) => setCorrectionProposedValue(e.target.value)}
+                    placeholder="e.g. Correct address, new hours 8 AM – 10 PM, phone..."
+                    className="w-full h-11 px-3 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-sm text-[#1c1613]"
+                  />
+                </div>
+
+                <div>
+                  <label htmlFor="corr-notes" className="block font-semibold text-[#5c4e45] mb-1">
+                    Extra Notes (Optional)
+                  </label>
+                  <textarea
+                    id="corr-notes"
+                    rows={2}
+                    value={correctionNotes}
+                    onChange={(e) => setCorrectionNotes(e.target.value)}
+                    placeholder="Any context that helps our team verify..."
+                    className="w-full p-3 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-sm text-[#1c1613]"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div>
+                    <label htmlFor="corr-name" className="block font-semibold text-[#5c4e45] mb-1">
+                      Your Name (Optional)
+                    </label>
+                    <input
+                      id="corr-name"
+                      type="text"
+                      value={correctionName}
+                      onChange={(e) => setCorrectionName(e.target.value)}
+                      className="w-full h-10 px-3 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-xs text-[#1c1613]"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="corr-email" className="block font-semibold text-[#5c4e45] mb-1">
+                      Email (Optional)
+                    </label>
+                    <input
+                      id="corr-email"
+                      type="email"
+                      value={correctionEmail}
+                      onChange={(e) => setCorrectionEmail(e.target.value)}
+                      className="w-full h-10 px-3 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-xs text-[#1c1613]"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between gap-3 pt-2">
+                  <Link
+                    to={`/submit?cafe=${encodeURIComponent(location.name)}`}
+                    className="text-xs font-semibold text-[#b45309] hover:underline"
+                  >
+                    Suggest a new cafe instead &rarr;
+                  </Link>
+                  <button
+                    type="submit"
+                    disabled={correctionBusy}
+                    className="min-h-[44px] px-5 py-2 rounded-xl bg-[#b45309] hover:bg-[#92400e] disabled:opacity-60 text-white text-xs font-semibold"
+                  >
+                    {correctionBusy ? 'Submitting...' : 'Submit Correction'}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
         </div>
       )}
     </div>

@@ -3,17 +3,21 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { CAFES } from '../src/data/cafes.ts';
-import { SITE_CONFIG } from '../src/config/constants.ts';
+import { EXPLORER_BADGES, SITE_CONFIG } from '../src/config/constants.ts';
 import type {
   AccessControlSettings,
   AccessSectionKey,
   AmenityState,
   CafeAccessRule,
+  CafeSourceType,
+  CommunityCorrectionRecord,
   DietaryType,
+  ExplorerAchievementStatus,
   LocationItem,
   MediaAsset,
   MenuItemRecord,
   NavigationItem,
+  PlacesApiUsageSummary,
   SectionOverrideMode,
   SiteSettings,
   TestimonialItem,
@@ -704,6 +708,51 @@ export function getDb(): DatabaseSync {
       user_agent TEXT NOT NULL DEFAULT '',
       created_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS community_corrections (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cafe_key TEXT NOT NULL,
+      cafe_name TEXT NOT NULL,
+      issue_type TEXT NOT NULL,
+      details TEXT NOT NULL DEFAULT '',
+      suggested_value TEXT NOT NULL DEFAULT '',
+      reporter_name TEXT NOT NULL DEFAULT '',
+      reporter_email TEXT NOT NULL DEFAULT '',
+      user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      admin_note TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS user_achievements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      badge_id TEXT NOT NULL,
+      unlocked_at INTEGER NOT NULL,
+      meta_json TEXT NOT NULL DEFAULT '{}',
+      UNIQUE(user_id, badge_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS explorer_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      event_type TEXT NOT NULL,
+      target_key TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      UNIQUE(user_id, event_type, target_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS places_api_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      endpoint TEXT NOT NULL,
+      query_text TEXT NOT NULL DEFAULT '',
+      status_code INTEGER NOT NULL DEFAULT 200,
+      cached INTEGER NOT NULL DEFAULT 0,
+      result_count INTEGER NOT NULL DEFAULT 0,
+      error_message TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL
+    );
   `);
 
   // Non-destructive column migrations for pre-existing database files
@@ -775,6 +824,8 @@ export function getDb(): DatabaseSync {
   ensureColumn(db, 'cafes', 'access_rule', "TEXT NOT NULL DEFAULT 'inherit'");
   ensureColumn(db, 'cafes', 'allowed_plan_ids_json', "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, 'cafes', 'locked_sections_override_json', "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn(db, 'cafes', 'source_type', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'cafes', 'merged_into_id', "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'cafes', 'created_at', 'INTEGER');
   ensureColumn(db, 'media_assets', 'description', "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'media_assets', 'category', "TEXT NOT NULL DEFAULT 'General'");
@@ -1591,7 +1642,9 @@ export function syncCafeMenuServicesFromItems(db: DatabaseSync, cafeId: string):
 
 export function listLocationsFromDb(includeUnpublished = false): LocationItem[] {
   const db = getDb();
-  const where = includeUnpublished ? '' : 'WHERE published = 1';
+  const where = includeUnpublished
+    ? ''
+    : "WHERE published = 1 AND COALESCE(merged_into_id, '') = ''";
   const rows = db
     .prepare(`SELECT * FROM cafes ${where} ORDER BY display_order ASC, featured DESC, verified DESC, name ASC`)
     .all() as Array<Record<string, unknown>>;
@@ -1733,6 +1786,21 @@ export function listLocationsFromDb(includeUnpublished = false): LocationItem[] 
       claims,
       source_name: String(row.source_name || ''),
       source_url: String(row.source_url || ''),
+      source_type: ((): CafeSourceType => {
+        const rawSourceType = String(row.source_type || '').trim();
+        if (
+          rawSourceType === 'cafedesk_verified' ||
+          rawSourceType === 'google_places' ||
+          rawSourceType === 'community_updated'
+        ) {
+          return rawSourceType;
+        }
+        if (/google/i.test(String(row.source_name || '')) && !row.verified) {
+          return 'google_places';
+        }
+        return 'cafedesk_verified';
+      })(),
+      merged_into_id: String(row.merged_into_id || '').trim() || null,
       sample: Boolean(row.sample),
       access_rule: (['inherit', 'free_public', 'subscription_required', 'specific_plans'].includes(
         String(row.access_rule || '')
@@ -2016,4 +2084,235 @@ export function getUserEffectiveSubscription(userId: number): UserSubscription {
     updated_at: Number(row.updated_at),
   };
 }
+
+export function logPlacesApiCall(entry: {
+  endpoint: string;
+  queryText?: string;
+  statusCode: number;
+  cached?: boolean;
+  resultCount?: number;
+  errorMessage?: string;
+}): void {
+  try {
+    const db = getDb();
+    db.prepare(
+      `INSERT INTO places_api_logs (endpoint, query_text, status_code, cached, result_count, error_message, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      entry.endpoint.slice(0, 80),
+      String(entry.queryText || '').slice(0, 200),
+      entry.statusCode,
+      entry.cached ? 1 : 0,
+      entry.resultCount ?? 0,
+      String(entry.errorMessage || '').slice(0, 300),
+      Date.now()
+    );
+  } catch {
+    // Logging must never crash API requests
+  }
+}
+
+export function getPlacesApiStatsFromDb(hasServerKey: boolean): PlacesApiUsageSummary {
+  const db = getDb();
+  const since24h = Date.now() - 24 * 60 * 60 * 1000;
+  const totals = db
+    .prepare(
+      `SELECT
+        COUNT(*) AS total_calls,
+        SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS calls_24h,
+        SUM(CASE WHEN created_at >= ? AND cached = 1 THEN 1 ELSE 0 END) AS cache_hits_24h,
+        SUM(CASE WHEN created_at >= ? AND status_code >= 400 THEN 1 ELSE 0 END) AS errors_24h
+       FROM places_api_logs`
+    )
+    .get(since24h, since24h, since24h) as Record<string, unknown> | undefined;
+
+  const lastErrRow = db
+    .prepare(
+      `SELECT error_message FROM places_api_logs
+       WHERE status_code >= 400 AND error_message != ''
+       ORDER BY id DESC LIMIT 1`
+    )
+    .get() as { error_message?: string } | undefined;
+
+  const recentRows = db
+    .prepare(
+      `SELECT id, endpoint, query_text, status_code, cached, result_count, error_message, created_at
+       FROM places_api_logs
+       ORDER BY id DESC
+       LIMIT 25`
+    )
+    .all() as Array<Record<string, unknown>>;
+
+  return {
+    has_server_key: hasServerKey,
+    total_calls: Number(totals?.total_calls ?? 0),
+    calls_24h: Number(totals?.calls_24h ?? 0),
+    cache_hits_24h: Number(totals?.cache_hits_24h ?? 0),
+    errors_24h: Number(totals?.errors_24h ?? 0),
+    last_error: String(lastErrRow?.error_message || ''),
+    recent_logs: recentRows.map((r) => ({
+      id: Number(r.id),
+      endpoint: String(r.endpoint),
+      query_text: String(r.query_text || ''),
+      status_code: Number(r.status_code),
+      cached: Boolean(r.cached),
+      result_count: Number(r.result_count ?? 0),
+      error_message: String(r.error_message || ''),
+      created_at: Number(r.created_at),
+    })),
+  };
+}
+
+export function createCommunityCorrectionInDb(input: {
+  cafeKey: string;
+  cafeName: string;
+  issueType: string;
+  details: string;
+  suggestedValue: string;
+  reporterName: string;
+  reporterEmail: string;
+  userId?: number | null;
+}): CommunityCorrectionRecord {
+  const db = getDb();
+  const now = Date.now();
+  const res = db
+    .prepare(
+      `INSERT INTO community_corrections
+        (cafe_key, cafe_name, issue_type, details, suggested_value, reporter_name, reporter_email, user_id, status, admin_note, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', '', ?, ?)`
+    )
+    .run(
+      input.cafeKey,
+      input.cafeName,
+      input.issueType,
+      input.details,
+      input.suggestedValue,
+      input.reporterName,
+      input.reporterEmail,
+      input.userId ?? null,
+      now,
+      now
+    );
+
+  return {
+    id: Number(res.lastInsertRowid),
+    cafe_key: input.cafeKey,
+    cafe_name: input.cafeName,
+    issue_type: input.issueType,
+    details: input.details,
+    suggested_value: input.suggestedValue,
+    reporter_name: input.reporterName,
+    reporter_email: input.reporterEmail,
+    status: 'pending',
+    admin_note: '',
+    created_at: now,
+    updated_at: now,
+  };
+}
+
+export function listCommunityCorrectionsFromDb(): CommunityCorrectionRecord[] {
+  const db = getDb();
+  const rows = db
+    .prepare('SELECT * FROM community_corrections ORDER BY id DESC LIMIT 200')
+    .all() as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    id: Number(r.id),
+    cafe_key: String(r.cafe_key),
+    cafe_name: String(r.cafe_name),
+    issue_type: String(r.issue_type),
+    details: String(r.details || ''),
+    suggested_value: String(r.suggested_value || ''),
+    reporter_name: String(r.reporter_name || ''),
+    reporter_email: String(r.reporter_email || ''),
+    status: (['pending', 'approved', 'rejected', 'resolved'].includes(String(r.status))
+      ? String(r.status)
+      : 'pending') as CommunityCorrectionRecord['status'],
+    admin_note: String(r.admin_note || ''),
+    created_at: Number(r.created_at),
+    updated_at: Number(r.updated_at),
+  }));
+}
+
+export function getUserAchievementsFromDb(userId: number): ExplorerAchievementStatus[] {
+  const db = getDb();
+  const savedCountRow = db
+    .prepare('SELECT COUNT(*) AS cnt FROM saved_cafes WHERE user_id = ?')
+    .get(userId) as { cnt?: number };
+  const collectionItemCountRow = db
+    .prepare(
+      `SELECT COUNT(ci.cafe_key) AS cnt
+       FROM collection_items ci
+       JOIN user_collections uc ON uc.id = ci.collection_id
+       WHERE uc.user_id = ?`
+    )
+    .get(userId) as { cnt?: number };
+  const viewsCountRow = db
+    .prepare("SELECT COUNT(*) AS cnt FROM explorer_events WHERE user_id = ? AND event_type = 'view_place'")
+    .get(userId) as { cnt?: number };
+  const compareCountRow = db
+    .prepare("SELECT COUNT(*) AS cnt FROM explorer_events WHERE user_id = ? AND event_type IN ('compare_places', 'work_mood')")
+    .get(userId) as { cnt?: number };
+  const correctionsCountRow = db
+    .prepare('SELECT COUNT(*) AS cnt FROM community_corrections WHERE user_id = ?')
+    .get(userId) as { cnt?: number };
+
+  const savedCount = Number(savedCountRow?.cnt ?? 0);
+  const collectionCount = Number(collectionItemCountRow?.cnt ?? 0);
+  const viewsCount = Number(viewsCountRow?.cnt ?? 0);
+  const compareCount = Number(compareCountRow?.cnt ?? 0);
+  const correctionsCount = Number(correctionsCountRow?.cnt ?? 0);
+
+  const progressMap: Record<string, number> = {
+    first_save: savedCount,
+    cafe_explorer: viewsCount,
+    helpful_reviewer: correctionsCount,
+    local_guide: collectionCount,
+    workspace_explorer: compareCount,
+  };
+
+  const now = Date.now();
+  for (const badge of EXPLORER_BADGES) {
+    const prog = progressMap[badge.id] ?? 0;
+    if (prog >= badge.target) {
+      db.prepare(
+        `INSERT OR IGNORE INTO user_achievements (user_id, badge_id, unlocked_at, meta_json)
+         VALUES (?, ?, ?, '{}')`
+      ).run(userId, badge.id, now);
+    }
+  }
+
+  const unlockedRows = db
+    .prepare('SELECT badge_id, unlocked_at FROM user_achievements WHERE user_id = ?')
+    .all(userId) as Array<{ badge_id: string; unlocked_at: number }>;
+  const unlockedByBadge = new Map(unlockedRows.map((r) => [r.badge_id, Number(r.unlocked_at)]));
+
+  return EXPLORER_BADGES.map((badge) => {
+    const progress = Math.min(badge.target, progressMap[badge.id] ?? 0);
+    const unlockedAt = unlockedByBadge.get(badge.id) ?? null;
+    return {
+      id: badge.id,
+      title: badge.title,
+      description: badge.description,
+      unlocked: unlockedAt !== null || progress >= badge.target,
+      unlocked_at: unlockedAt,
+      progress,
+      target: badge.target,
+    };
+  });
+}
+
+export function recordExplorerEventInDb(
+  userId: number,
+  eventType: 'view_place' | 'compare_places' | 'work_mood',
+  targetKey: string
+): ExplorerAchievementStatus[] {
+  const db = getDb();
+  const cleanTarget = String(targetKey || '').trim().slice(0, 120) || 'default';
+  db.prepare(
+    `INSERT OR IGNORE INTO explorer_events (user_id, event_type, target_key, created_at)
+     VALUES (?, ?, ?, ?)`
+  ).run(userId, eventType, cleanTarget, Date.now());
+  return getUserAchievementsFromDb(userId);
+}
+
 

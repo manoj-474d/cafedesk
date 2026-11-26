@@ -986,18 +986,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     (cafe: LocationItem) => {
       if (!hasPermission('compare')) {
         openUpgradeModal({
-          featureName: 'Compare Multiple Cafes Side-by-Side',
+          featureName: 'Cafe Battle — Compare Up to 3 Places',
           requiredPlan: 'plus',
           description: isExpired
             ? 'Your subscription has expired. Renew your plan to compare cafe prices, Wi-Fi speeds, and power sockets side-by-side.'
-            : 'Compare menu prices, average budget, Wi-Fi speed, charging sockets, and noise level across up to 4 Bengaluru cafes with Cafe Desk Plus.',
+            : 'Compare up to 3 places side-by-side across rating, distance, price, hours, facilities, and workspace suitability with Cafe Desk Plus.',
         });
         return;
       }
       setCompareList((prev) => {
         const exists = prev.some((c) => c.id === cafe.id);
         if (exists) return prev.filter((c) => c.id !== cafe.id);
-        if (prev.length >= 4) return [...prev.slice(1), cafe];
+        if (prev.length >= 1) {
+          void fetch(resolveApiUrl('/api/explorer/event'), {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...getUserSessionHeaders(),
+            },
+            credentials: 'include',
+            body: JSON.stringify({ eventType: 'compare_places', targetKey: cafe.id }),
+          }).catch(() => {});
+        }
+        if (prev.length >= 3) return [...prev.slice(1), cafe];
         return [...prev, cafe];
       });
     },

@@ -18,6 +18,7 @@ import {
   LayoutTemplate,
   Lightbulb,
   LogOut,
+  MapPin,
   Menu,
   Settings,
   ShieldCheck,
@@ -28,6 +29,7 @@ import {
 import { useCms } from '../context/CmsContext';
 import { useDocumentMeta } from '../utils/cafeHelpers';
 import type {
+  CommunityCorrectionRecord,
   LocationItem,
   MediaAsset,
   NavigationItem,
@@ -37,6 +39,7 @@ import type {
 import { AdminOverviewTab, type OverviewStats } from '../components/admin/AdminOverviewTab';
 import { AdminHomepageTab } from '../components/admin/AdminHomepageTab';
 import { AdminLocationsTab } from '../components/admin/AdminLocationsTab';
+import { AdminDiscoveryTab } from '../components/admin/AdminDiscoveryTab';
 import { AdminMenuTab } from '../components/admin/AdminMenuTab';
 import { AdminContentTab } from '../components/admin/AdminContentTab';
 import { AdminMediaTab } from '../components/admin/AdminMediaTab';
@@ -62,6 +65,7 @@ import type { BookingRecord, FeatureSuggestion } from '../types/subscription';
 type TabKey =
   | 'overview'
   | 'locations'
+  | 'discovery'
   | 'menu'
   | 'media'
   | 'bookings'
@@ -96,6 +100,7 @@ const NAV_GROUPS: NavGroup[] = [
     heading: 'Catalog & Menus',
     items: [
       { key: 'locations', label: 'Cafe Management', icon: Building2 },
+      { key: 'discovery', label: 'Places & Moderation', icon: MapPin },
       { key: 'menu', label: 'Menu & Prices', icon: Coffee },
       { key: 'media', label: 'Photo Library', icon: ImageIcon },
     ],
@@ -157,6 +162,7 @@ export function AdminDashboardPage() {
   const [suggestions, setSuggestions] = useState<FeatureSuggestion[]>([]);
   const [bookings, setBookings] = useState<BookingRecord[]>([]);
   const [teamUsers, setTeamUsers] = useState<AdminUserRecord[]>([]);
+  const [corrections, setCorrections] = useState<CommunityCorrectionRecord[]>([]);
 
   const handleAuthStatusCheck = useCallback(
     (res: Response) => {
@@ -253,6 +259,14 @@ export function AdminDashboardPage() {
     [handleAuthStatusCheck]
   );
 
+  const loadCorrections = useCallback(async () => {
+    const res = await fetch('/api/admin/corrections', { credentials: 'include' });
+    if (handleAuthStatusCheck(res)) {
+      const data = (await res.json()) as { corrections?: CommunityCorrectionRecord[] };
+      if (Array.isArray(data.corrections)) setCorrections(data.corrections);
+    }
+  }, [handleAuthStatusCheck]);
+
   const loadAllAdminData = useCallback(
     async (role: AdminIdentity['role']) => {
       await Promise.all([
@@ -265,6 +279,7 @@ export function AdminDashboardPage() {
         loadSubmissions(),
         loadSuggestions(),
         loadBookings(),
+        loadCorrections(),
         loadUsers(role),
       ]);
     },
@@ -278,6 +293,7 @@ export function AdminDashboardPage() {
       loadSubmissions,
       loadSuggestions,
       loadBookings,
+      loadCorrections,
       loadUsers,
     ]
   );
@@ -355,6 +371,7 @@ export function AdminDashboardPage() {
   const unreadEnquiries = submissions.filter((s) => s.status === 'new').length;
   const newSuggestions = suggestions.filter((s) => s.status === 'new').length;
   const pendingBookings = bookings.filter((b) => b.status === 'pending').length;
+  const pendingCorrections = corrections.filter((c) => c.status === 'pending').length;
 
   const sessionMinsLeft = admin.expiresAt
     ? Math.max(0, Math.round((admin.expiresAt - Date.now()) / 60000))
@@ -398,6 +415,8 @@ export function AdminDashboardPage() {
           const badge =
             key === 'bookings'
               ? pendingBookings
+              : key === 'discovery'
+              ? pendingCorrections
               : key === 'enquiries'
               ? unreadEnquiries
               : key === 'suggestions'
@@ -486,6 +505,11 @@ export function AdminDashboardPage() {
                           {pendingBookings}
                         </span>
                       )}
+                      {key === 'discovery' && pendingCorrections > 0 && (
+                        <span className="px-1.5 py-0.5 rounded bg-white text-[#1c1613] text-[10px] font-bold font-mono-data">
+                          {pendingCorrections}
+                        </span>
+                      )}
                       {key === 'enquiries' && unreadEnquiries > 0 && (
                         <span className="px-1.5 py-0.5 rounded bg-white text-[#1c1613] text-[10px] font-bold font-mono-data">
                           {unreadEnquiries}
@@ -542,6 +566,17 @@ export function AdminDashboardPage() {
             onRefreshLocations={async () => {
               await Promise.all([loadLocations(), loadOverview(), refreshCms()]);
             }}
+          />
+        )}
+
+        {activeTab === 'discovery' && (
+          <AdminDiscoveryTab
+            csrfToken={admin.csrfToken}
+            locations={locations}
+            onRefreshLocations={async () => {
+              await Promise.all([loadLocations(), loadOverview(), refreshCms()]);
+            }}
+            onCorrectionsChanged={loadCorrections}
           />
         )}
 

@@ -15,7 +15,7 @@ import {
   X,
 } from 'lucide-react';
 import { BENGALURU_CENTER } from '../config/constants';
-import { useAuth } from '../context/AuthContext';
+import { resolveApiUrl, useAuth } from '../context/AuthContext';
 import { useCms } from '../context/CmsContext';
 import {
   checkGmpQuotaError,
@@ -27,12 +27,20 @@ import { formatDistanceKm, getCafeDetailRoute } from '../utils/cafeHelpers';
 
 const RECENT_SEARCHES_KEY = 'cafedesk_recent_searches_v1';
 const POPULAR_SEARCHES = [
-  'Indiranagar',
-  'Koramangala',
-  'HSR Layout',
-  'Quiet Study',
-  'Budget Under ₹200',
+  'Coffee in Indiranagar',
+  'Tea shops near me',
+  'Bakeries in Jayanagar',
+  'Snacks in Koramangala',
+  'Study cafes HSR Layout',
 ];
+
+interface UnifiedSuggestion {
+  placeId: string;
+  mainText: string;
+  secondaryText: string;
+  distanceMeters?: number | null;
+  sdkSuggestion?: google.maps.places.AutocompleteSuggestion;
+}
 
 function readRecentSearches(): string[] {
   try {
@@ -74,7 +82,7 @@ export function CafeAutocompleteSearch({
   value,
   onChange,
   onSubmitQuery,
-  placeholder = 'Search any Bengaluru cafe, area, tea, coffee, or "Third Wave Coffee"...',
+  placeholder = 'Search cafes, tea shops, bakeries, snacks, or any locality...',
   inputClassName = 'w-full h-12 pl-10 pr-10 rounded-xl bg-[#faf7f2] border border-[#d6cbba] text-sm text-[#1c1613] placeholder:text-[#8c7a6b] focus:border-[#b45309]',
 }: CafeAutocompleteSearchProps) {
   const navigate = useNavigate();
@@ -85,9 +93,7 @@ export function CafeAutocompleteSearch({
 
   const [open, setOpen] = useState(false);
   const [recentSearches, setRecentSearches] = useState<string[]>(() => readRecentSearches());
-  const [liveSuggestions, setLiveSuggestions] = useState<
-    google.maps.places.AutocompleteSuggestion[]
-  >([]);
+  const [liveSuggestions, setLiveSuggestions] = useState<UnifiedSuggestion[]>([]);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const [resolvingId, setResolvingId] = useState<string | null>(null);
 
@@ -118,6 +124,8 @@ export function CafeAutocompleteSearch({
         const hay = [
           loc.name,
           loc.area,
+          loc.city,
+          loc.category || '',
           loc.address,
           loc.popular_items.join(' '),
           loc.claims.join(' '),
@@ -131,7 +139,7 @@ export function CafeAutocompleteSearch({
 
   useEffect(() => {
     const trimmed = value.trim();
-    if (!placesLib || trimmed.length < 2) {
+    if (trimmed.length < 2) {
       setLiveSuggestions([]);
       setLoadingSuggestions(false);
       return;
@@ -142,22 +150,56 @@ export function CafeAutocompleteSearch({
 
     const timer = window.setTimeout(async () => {
       try {
+        // Primary path: Backend Google Places Autocomplete proxy
+        const res = await fetch(resolveApiUrl('/api/places/autocomplete'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            input: trimmed,
+            lat: userLocation?.lat ?? null,
+            lng: userLocation?.lng ?? null,
+          }),
+        });
+        if (res.ok) {
+          const data = (await res.json()) as {
+            suggestions?: Array<{
+              placeId: string;
+              mainText: string;
+              secondaryText: string;
+              distanceMeters?: number | null;
+            }>;
+          };
+          if (!cancelled && Array.isArray(data.suggestions) && data.suggestions.length > 0) {
+            setLiveSuggestions(data.suggestions.slice(0, 6));
+            setLoadingSuggestions(false);
+            return;
+          }
+        }
+      } catch {
+        // Fallback to JS SDK below
+      }
+
+      if (!placesLib) {
+        if (!cancelled) {
+          setLiveSuggestions([]);
+          setLoadingSuggestions(false);
+        }
+        return;
+      }
+
+      try {
         const { AutocompleteSessionToken, AutocompleteSuggestion } = placesLib;
         if (!sessionTokenRef.current) {
           sessionTokenRef.current = new AutocompleteSessionToken();
         }
 
-        const hasCityWord = /bengaluru|bangalore/i.test(trimmed);
-        const queryForAutocomplete = hasCityWord ? trimmed : `${trimmed} Bengaluru`;
-
         const request: google.maps.places.AutocompleteRequest = {
-          input: queryForAutocomplete,
+          input: trimmed,
           sessionToken: sessionTokenRef.current,
-          includedPrimaryTypes: ['cafe', 'coffee_shop', 'bakery', 'tea_house'],
           includedRegionCodes: ['in'],
           locationBias: {
             center: userLocation ?? BENGALURU_CENTER,
-            radius: 32000,
+            radius: 35000,
           },
           origin: userLocation ?? BENGALURU_CENTER,
           internalUsageAttributionIds: [GMP_ATTRIBUTION_ID],
@@ -165,7 +207,16 @@ export function CafeAutocompleteSearch({
 
         const res = await AutocompleteSuggestion.fetchAutocompleteSuggestions(request);
         if (!cancelled) {
-          setLiveSuggestions((res.suggestions ?? []).slice(0, 6));
+          const mapped: UnifiedSuggestion[] = (res.suggestions ?? [])
+            .map((s) => ({
+              placeId: s.placePrediction?.placeId || '',
+              mainText: s.placePrediction?.mainText?.text || s.placePrediction?.text?.text || '',
+              secondaryText: s.placePrediction?.secondaryText?.text || '',
+              distanceMeters: s.placePrediction?.distanceMeters ?? null,
+              sdkSuggestion: s,
+            }))
+            .filter((s) => Boolean(s.placeId && s.mainText));
+          setLiveSuggestions(mapped.slice(0, 6));
         }
       } catch (err) {
         checkGmpQuotaError(err);
@@ -173,7 +224,7 @@ export function CafeAutocompleteSearch({
       } finally {
         if (!cancelled) setLoadingSuggestions(false);
       }
-    }, 220);
+    }, 240);
 
     return () => {
       cancelled = true;
@@ -188,20 +239,28 @@ export function CafeAutocompleteSearch({
     navigate(getCafeDetailRoute(loc.slug, authenticated));
   };
 
-  const handleSelectPrediction = async (
-    suggestion: google.maps.places.AutocompleteSuggestion
-  ) => {
-    const predId = suggestion.placePrediction?.placeId || 'live';
-    const label = suggestion.placePrediction?.mainText?.text || value;
+  const handleSelectPrediction = async (suggestion: UnifiedSuggestion) => {
+    const predId = suggestion.placeId;
+    const label = suggestion.mainText || value;
     saveTerm(label);
     setResolvingId(predId);
-    const resolved = await resolvePredictionToPlace(suggestion);
+
+    if (suggestion.sdkSuggestion) {
+      const resolved = await resolvePredictionToPlace(suggestion.sdkSuggestion);
+      sessionTokenRef.current = null;
+      setResolvingId(null);
+      setOpen(false);
+      if (resolved) {
+        navigate(getCafeDetailRoute(`google:${encodeURIComponent(resolved.placeId)}`, authenticated));
+        return;
+      }
+    }
+
     sessionTokenRef.current = null;
     setResolvingId(null);
     setOpen(false);
-
-    if (resolved) {
-      navigate(getCafeDetailRoute(`google:${encodeURIComponent(resolved.placeId)}`, authenticated));
+    if (predId) {
+      navigate(getCafeDetailRoute(`google:${encodeURIComponent(predId)}`, authenticated));
     } else if (onSubmitQuery) {
       onSubmitQuery(label);
     }
@@ -214,7 +273,7 @@ export function CafeAutocompleteSearch({
     if (onSubmitQuery) {
       onSubmitQuery(term);
     } else {
-      navigate(`/locations?q=${encodeURIComponent(term)}`);
+      navigate(`/discover?q=${encodeURIComponent(term)}&live=1`);
     }
   };
 
@@ -303,7 +362,7 @@ export function CafeAutocompleteSearch({
 
           <div>
             <p className="px-3.5 py-2 bg-[#faf7f2] text-[10px] font-semibold uppercase tracking-wider text-[#b45309]">
-              Popular Bengaluru Searches
+              Popular Local Searches
             </p>
             <div className="p-2.5 flex flex-wrap gap-1.5">
               {POPULAR_SEARCHES.map((term) => (
@@ -331,7 +390,7 @@ export function CafeAutocompleteSearch({
           {curatedMatches.length > 0 && (
             <div className="border-b border-[#e6ddd0]">
               <p className="px-3.5 py-2 bg-[#faf7f2] text-[10px] font-semibold uppercase tracking-wider text-[#b45309]">
-                Cafe Desk Directory Matches
+                CafeDesk Directory Matches
               </p>
               {curatedMatches.map((loc) => {
                 const thumb = loc.photos_approved && loc.photos.length > 0 ? loc.photos[0] : '';
@@ -393,7 +452,7 @@ export function CafeAutocompleteSearch({
           <div>
             <div className="px-3.5 py-2 bg-[#faf7f2] flex items-center justify-between">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-[#1b4d3e]">
-                Live Across Bengaluru (Google Maps)
+                Live Places (Google Maps)
               </span>
               {loadingSuggestions && (
                 <Loader2 className="w-3.5 h-3.5 animate-spin text-[#1b4d3e]" />
@@ -401,22 +460,18 @@ export function CafeAutocompleteSearch({
             </div>
 
             {liveSuggestions.map((suggestion, idx) => {
-              const pred = suggestion.placePrediction;
-              if (!pred) return null;
-              const mainTitle = pred.mainText?.text || pred.text?.text || 'Bengaluru Cafe';
-              const secondary = pred.secondaryText?.text || 'Bengaluru, Karnataka';
               const distKm =
-                typeof pred.distanceMeters === 'number'
-                  ? formatDistanceKm(pred.distanceMeters / 1000)
+                typeof suggestion.distanceMeters === 'number'
+                  ? formatDistanceKm(suggestion.distanceMeters / 1000)
                   : '';
-              const isResolving = resolvingId === pred.placeId;
+              const isResolving = resolvingId === suggestion.placeId;
 
               return (
                 <button
-                  key={`${pred.placeId || idx}`}
+                  key={`${suggestion.placeId}-${idx}`}
                   type="button"
                   disabled={Boolean(resolvingId)}
-                  onClick={() => handleSelectPrediction(suggestion)}
+                  onClick={() => void handleSelectPrediction(suggestion)}
                   className="w-full text-left px-3.5 py-2.5 min-h-[52px] hover:bg-[#faf7f2] flex items-center gap-3 transition-colors border-t border-[#f3ede3]"
                 >
                   <div className="w-9 h-9 rounded-lg bg-[#ecfdf5] border border-[#a7f3d0] flex items-center justify-center shrink-0">
@@ -427,8 +482,12 @@ export function CafeAutocompleteSearch({
                     )}
                   </div>
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold text-[#1c1613] truncate">{mainTitle}</p>
-                    <p className="text-xs text-[#5c4e45] truncate">{secondary}</p>
+                    <p className="text-sm font-semibold text-[#1c1613] truncate">
+                      {suggestion.mainText}
+                    </p>
+                    <p className="text-xs text-[#5c4e45] truncate">
+                      {suggestion.secondaryText || 'India'}
+                    </p>
                   </div>
                   {distKm && (
                     <span className="inline-flex items-center gap-1 text-[11px] font-mono-data font-semibold text-[#1b4d3e] shrink-0">
@@ -440,9 +499,9 @@ export function CafeAutocompleteSearch({
               );
             })}
 
-            {!loadingSuggestions && liveSuggestions.length === 0 && placesLib && (
+            {!loadingSuggestions && liveSuggestions.length === 0 && (
               <p className="px-3.5 py-2.5 text-xs text-[#5c4e45]">
-                No extra autocomplete matches — press Search to query all Bengaluru cafes.
+                No instant suggestions — press Search to discover local places.
               </p>
             )}
           </div>
@@ -452,13 +511,14 @@ export function CafeAutocompleteSearch({
               type="button"
               onClick={() => {
                 setOpen(false);
+                saveTerm(value.trim());
                 onSubmitQuery(value.trim());
               }}
               className="w-full min-h-[44px] px-3.5 py-2.5 bg-[#faf7f2] hover:bg-[#fef3c7] text-[#b45309] border-t border-[#e6ddd0] text-xs font-semibold flex items-center justify-between transition-colors"
             >
               <span className="inline-flex items-center gap-1.5">
                 <Sparkles className="w-3.5 h-3.5" />
-                <span>Search all Bengaluru cafes for &ldquo;{value.trim()}&rdquo;</span>
+                <span>Search local places for &ldquo;{value.trim()}&rdquo;</span>
               </span>
               <span>&rarr;</span>
             </button>

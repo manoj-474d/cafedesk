@@ -248,7 +248,7 @@ export function CafeFinderPage() {
         <p className="text-xs font-semibold uppercase tracking-wider text-[#57493f]">
           1-Click Quick Scenarios
         </p>
-        <div className="flex overflow-x-auto no-scrollbar snap-x snap-mandatory gap-2.5 -mx-4 px-4 pb-1 sm:mx-0 sm:px-0 sm:flex-wrap sm:overflow-visible">
+        <div className="flex flex-wrap gap-2.5">
           {[
             { id: 'deep-work', label: 'Deep Work & Sockets' },
             { id: 'quiet-study', label: 'Quiet Study' },

@@ -1,7 +1,8 @@
-import React, { Suspense, lazy, useEffect } from 'react';
+import React, { Suspense, lazy, useEffect, useState } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { APIProvider } from '@vis.gl/react-google-maps';
 import { MotionConfig } from 'motion/react';
+import { AlertTriangle, X } from 'lucide-react';
 import { AuthProvider } from './context/AuthContext';
 import { CmsProvider } from './context/CmsContext';
 import { DiscoveryProvider } from './context/DiscoveryContext';
@@ -84,6 +85,7 @@ function AppRoutes() {
         <Routes>
           <Route element={<PublicLayout />}>
             <Route path="/" element={<HomePage />} />
+            <Route path="/discover" element={<LocationsPage />} />
             <Route path="/locations" element={<LocationsPage />} />
             <Route path="/locations/:slug" element={<LocationDetailPage />} />
             <Route path="/cafe/:id" element={<LocationDetailPage />} />
@@ -112,11 +114,50 @@ function AppRoutes() {
 }
 
 export function App() {
+  const [quotaBannerVisible, setQuotaBannerVisible] = useState(false);
+
+  useEffect(() => {
+    const onQuotaExceeded = () => setQuotaBannerVisible(true);
+    window.addEventListener('gmp-quota-exceeded', onQuotaExceeded);
+    return () => window.removeEventListener('gmp-quota-exceeded', onQuotaExceeded);
+  }, []);
+
   const inner = (
     <MotionConfig reducedMotion="user">
       <CmsProvider>
         <AuthProvider>
           <DiscoveryProvider>
+            {quotaBannerVisible && (
+              <div
+                role="alert"
+                className="sticky top-0 z-[60] bg-[#fffbeb] border-b border-[#fde68a] text-[#92400e] px-4 py-2.5 text-xs sm:text-sm"
+              >
+                <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-[#b45309]" aria-hidden="true" />
+                    <p className="truncate sm:whitespace-normal">
+                      Live Google Maps quota limit reached.{' '}
+                      <a
+                        href="https://developers.google.com/maps/ai/ai-studio?utm_campaign=gmp_mcp_codeassist_v1_aistudio#quota_exceeded_errors"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-semibold underline underline-offset-2 text-[#1c1613]"
+                      >
+                        Learn how to upgrade your Maps API key
+                      </a>
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setQuotaBannerVisible(false)}
+                    aria-label="Dismiss Maps quota notice"
+                    className="w-7 h-7 rounded-lg hover:bg-[#fef3c7] flex items-center justify-center shrink-0"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            )}
             <AppRoutes />
           </DiscoveryProvider>
         </AuthProvider>

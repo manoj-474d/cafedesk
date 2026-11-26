@@ -22,6 +22,9 @@ interface WorkerEnv {
   RAZORPAY_KEY_ID?: string;
   VITE_RAZORPAY_KEY_ID?: string;
   RAZORPAY_KEY_SECRET?: string;
+  GOOGLE_PLACES_API_KEY?: string;
+  GOOGLE_MAPS_API_KEY?: string;
+  VITE_GOOGLE_MAPS_API_KEY?: string;
   SESSION_SECRET?: string;
   ALLOWED_ORIGINS?: string;
 }
@@ -1728,6 +1731,241 @@ export default {
         collections: [],
         csrfToken: randomHex(16),
       });
+    }
+
+    // Google Places API (New) Worker Proxy Endpoints
+    if (pathname.startsWith('/api/places/')) {
+      const apiKey = (
+        env.GOOGLE_PLACES_API_KEY ||
+        env.GOOGLE_MAPS_API_KEY ||
+        env.VITE_GOOGLE_MAPS_API_KEY ||
+        ''
+      ).trim();
+
+      if (pathname === '/api/places/photo' && request.method === 'GET') {
+        const photoName = (url.searchParams.get('name') || '').trim();
+        if (!/^places\/[A-Za-z0-9_-]+\/photos\/[A-Za-z0-9_-]+$/.test(photoName)) {
+          return new Response('Invalid photo reference', { status: 400 });
+        }
+        if (!apiKey) return new Response('Maps key not configured', { status: 503 });
+        const width = Math.min(1200, Math.max(200, Number(url.searchParams.get('w')) || 900));
+        const upstream = await fetch(
+          `https://places.googleapis.com/v1/${photoName}/media?maxWidthPx=${width}&key=${encodeURIComponent(apiKey)}`,
+          { redirect: 'follow' }
+        );
+        if (!upstream.ok) return new Response('Photo unavailable', { status: upstream.status });
+        const headers = new Headers();
+        headers.set('Content-Type', upstream.headers.get('content-type') || 'image/jpeg');
+        headers.set('Cache-Control', 'public, max-age=86400');
+        return new Response(upstream.body, { status: 200, headers });
+      }
+
+      if (!apiKey) {
+        return jsonResponse(
+          request,
+          env,
+          { code: 'MISSING_KEY', error: 'Google Places API key is not configured.' },
+          503
+        );
+      }
+
+      const mask = [
+        'places.id',
+        'places.displayName',
+        'places.formattedAddress',
+        'places.location',
+        'places.rating',
+        'places.userRatingCount',
+        'places.websiteUri',
+        'places.googleMapsUri',
+        'places.nationalPhoneNumber',
+        'places.regularOpeningHours.weekdayDescriptions',
+        'places.priceLevel',
+        'places.types',
+        'places.primaryType',
+        'places.photos',
+        'nextPageToken',
+      ].join(',');
+
+      const normalizeWorkerPlace = (raw: Record<string, unknown>, fallbackArea = 'Bengaluru') => {
+        const loc = raw.location as { latitude?: number; longitude?: number } | undefined;
+        if (typeof loc?.latitude !== 'number' || typeof loc?.longitude !== 'number') return null;
+        const pid = String(raw.id || '').trim();
+        if (!pid) return null;
+        const dn = raw.displayName as { text?: string } | string | undefined;
+        const name = typeof dn === 'string' ? dn : String(dn?.text || 'Local Place');
+        const address = String(raw.formattedAddress || `${fallbackArea}, India`);
+        const photosRaw = Array.isArray(raw.photos) ? raw.photos : [];
+        const photos = photosRaw
+          .slice(0, 6)
+          .map((p) => {
+            const n = String((p as { name?: string })?.name || '').trim();
+            return /^places\/[A-Za-z0-9_-]+\/photos\/[A-Za-z0-9_-]+$/.test(n)
+              ? `/api/places/photo?name=${encodeURIComponent(n)}&w=900`
+              : '';
+          })
+          .filter(Boolean);
+        const opening = (raw.regularOpeningHours as { weekdayDescriptions?: string[] } | undefined)?.weekdayDescriptions ?? [];
+        const directionsUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(`${name}, ${address}`)}&destination_place_id=${encodeURIComponent(pid)}`;
+        return {
+          id: `google:${pid}`,
+          placeId: pid,
+          name,
+          areaLabel: fallbackArea,
+          address,
+          lat: loc.latitude,
+          lng: loc.longitude,
+          rating: typeof raw.rating === 'number' ? Math.round(raw.rating * 10) / 10 : null,
+          ratingCount: typeof raw.userRatingCount === 'number' ? raw.userRatingCount : null,
+          websiteUrl: String(raw.websiteUri || ''),
+          mapLink: directionsUrl,
+          viewMapUrl: String(raw.googleMapsUri || ''),
+          phone: String(raw.nationalPhoneNumber || ''),
+          photos,
+          openingHours: Array.isArray(opening) ? opening : [],
+          priceLevelLabel: '',
+          primaryType: String(raw.primaryType || ''),
+          types: Array.isArray(raw.types) ? raw.types : [],
+          categoryLabel: 'Cafe',
+          distanceKm: null,
+          sourceType: 'google_places',
+          cachedAt: Date.now(),
+        };
+      };
+
+      if (pathname === '/api/places/search' && request.method === 'POST') {
+        const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+        const textQuery = String(body.query || body.locality || 'cafes in Bengaluru').trim();
+        const gRes = await fetch('https://places.googleapis.com/v1/places:searchText', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Goog-Api-Key': apiKey,
+            'X-Goog-FieldMask': mask,
+          },
+          body: JSON.stringify({
+            textQuery,
+            pageSize: 15,
+            regionCode: 'IN',
+            languageCode: 'en',
+            ...(body.pageToken ? { pageToken: String(body.pageToken) } : {}),
+          }),
+        });
+        const gJson = (await gRes.json().catch(() => ({}))) as Record<string, unknown>;
+        if (!gRes.ok) {
+          return jsonResponse(request, env, { code: gRes.status === 429 ? 'RESOURCE_EXHAUSTED' : 'PLACES_API_ERROR', error: 'Google Places request failed.' }, gRes.status === 429 ? 429 : 502);
+        }
+        const places = (Array.isArray(gJson.places) ? gJson.places : [])
+          .map((p) => normalizeWorkerPlace(p as Record<string, unknown>, String(body.locality || body.city || 'Bengaluru')))
+          .filter(Boolean);
+        return jsonResponse(request, env, { places, nextPageToken: gJson.nextPageToken || null });
+      }
+
+      if (pathname === '/api/places/nearby' && request.method === 'POST') {
+        const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+        const lat = Number(body.lat);
+        const lng = Number(body.lng);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+          return jsonResponse(request, env, { error: 'Valid lat/lng required.' }, 400);
+        }
+        const radius = Math.min(50000, Math.max(500, Number(body.radiusMeters) || 3500));
+        const gRes = await fetch('https://places.googleapis.com/v1/places:searchNearby', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Goog-Api-Key': apiKey,
+            'X-Goog-FieldMask': mask.replace(',nextPageToken', ''),
+          },
+          body: JSON.stringify({
+            includedPrimaryTypes: ['cafe', 'coffee_shop', 'bakery', 'tea_house'],
+            maxResultCount: 15,
+            rankPreference: 'DISTANCE',
+            languageCode: 'en',
+            regionCode: 'IN',
+            locationRestriction: { circle: { center: { latitude: lat, longitude: lng }, radius } },
+          }),
+        });
+        const gJson = (await gRes.json().catch(() => ({}))) as Record<string, unknown>;
+        if (!gRes.ok) {
+          return jsonResponse(request, env, { code: gRes.status === 429 ? 'RESOURCE_EXHAUSTED' : 'PLACES_API_ERROR', error: 'Nearby Places request failed.' }, gRes.status === 429 ? 429 : 502);
+        }
+        const places = (Array.isArray(gJson.places) ? gJson.places : [])
+          .map((p) => normalizeWorkerPlace(p as Record<string, unknown>, 'Nearby'))
+          .filter(Boolean);
+        return jsonResponse(request, env, { places, nextPageToken: null });
+      }
+
+      if (pathname === '/api/places/details' && request.method === 'GET') {
+        const placeId = (url.searchParams.get('placeId') || '').replace(/^google:/, '').trim();
+        if (!placeId) return jsonResponse(request, env, { error: 'placeId required.' }, 400);
+        const gRes = await fetch(
+          `https://places.googleapis.com/v1/places/${encodeURIComponent(placeId)}?languageCode=en`,
+          {
+            method: 'GET',
+            headers: {
+              'X-Goog-Api-Key': apiKey,
+              'X-Goog-FieldMask': mask.replace(/places\./g, '').replace(',nextPageToken', ''),
+            },
+          }
+        );
+        const gJson = (await gRes.json().catch(() => ({}))) as Record<string, unknown>;
+        if (!gRes.ok) return jsonResponse(request, env, { error: 'Place details failed.' }, 502);
+        const place = normalizeWorkerPlace(gJson, 'Bengaluru');
+        return jsonResponse(request, env, { place });
+      }
+
+      if (pathname === '/api/places/autocomplete' && request.method === 'POST') {
+        const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+        const input = String(body.input || '').trim();
+        if (input.length < 2) return jsonResponse(request, env, { suggestions: [] });
+        const gRes = await fetch('https://places.googleapis.com/v1/places:autocomplete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': apiKey },
+          body: JSON.stringify({
+            input,
+            includedRegionCodes: ['in'],
+            includedPrimaryTypes: ['cafe', 'coffee_shop', 'bakery', 'tea_house', 'restaurant'],
+          }),
+        });
+        const gJson = (await gRes.json().catch(() => ({}))) as Record<string, unknown>;
+        const rawSuggestions = Array.isArray(gJson.suggestions) ? gJson.suggestions : [];
+        const suggestions = rawSuggestions
+          .map((s) => {
+            const pred = (s as { placePrediction?: Record<string, unknown> }).placePrediction;
+            if (!pred) return null;
+            const sf = pred.structuredFormat as { mainText?: { text?: string }; secondaryText?: { text?: string } } | undefined;
+            return {
+              placeId: String(pred.placeId || ''),
+              mainText: String(sf?.mainText?.text || ''),
+              secondaryText: String(sf?.secondaryText?.text || ''),
+              fullText: `${sf?.mainText?.text || ''} ${sf?.secondaryText?.text || ''}`.trim(),
+            };
+          })
+          .filter(Boolean);
+        return jsonResponse(request, env, { suggestions });
+      }
+    }
+
+    if (pathname === '/api/corrections' && request.method === 'POST') {
+      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+      const resolved = await resolveWorkerUser(request, env);
+      const res = await supabaseServiceRest(env, 'community_corrections', {
+        method: 'POST',
+        body: JSON.stringify({
+          cafe_key: String(body.cafeKey || ''),
+          cafe_name: String(body.cafeName || ''),
+          issue_type: String(body.issueType || 'wrong_address'),
+          details: String(body.details || ''),
+          suggested_value: String(body.suggestedValue || ''),
+          reporter_name: String(body.reporterName || resolved?.session.name || 'Community Member'),
+          reporter_email: String(body.reporterEmail || resolved?.session.email || ''),
+          user_id: resolved?.session.sub || null,
+        }),
+      });
+      if (!res || !res.ok) {
+        return jsonResponse(request, env, { error: 'Could not store correction report.' }, 500);
+      }
+      return jsonResponse(request, env, { ok: true, message: 'Correction report submitted.' }, 201);
     }
 
     return jsonResponse(request, env, { error: `API route not found: ${pathname}` }, 404);

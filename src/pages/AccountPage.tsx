@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
   ArrowUpRight,
+  Award,
   Bookmark,
   CheckCircle2,
   Crown,
@@ -18,6 +19,7 @@ import {
   UserCheck,
   X,
 } from 'lucide-react';
+import { COLLECTION_PRESETS, EXPLORER_BADGES } from '../config/constants';
 import {
   getUserAuthHeaders,
   getUserSessionHeaders,
@@ -28,6 +30,7 @@ import {
 import { useCms } from '../context/CmsContext';
 import { useDiscovery } from '../context/DiscoveryContext';
 import { isSupabaseConfigured, supabase, syncOwnSupabaseProfile } from '../lib/supabase';
+import type { ExplorerAchievementStatus } from '../types/cms';
 import type { PaymentRecord, SubscriptionHistoryItem } from '../types/subscription';
 import { useDocumentMeta } from '../utils/cafeHelpers';
 
@@ -90,6 +93,8 @@ export function AccountPage() {
   const [devVerifyCode, setDevVerifyCode] = useState('');
   const [verifyError, setVerifyError] = useState('');
   const [billingBusy, setBillingBusy] = useState(false);
+  const [achievements, setAchievements] = useState<ExplorerAchievementStatus[]>([]);
+  const [creatingPresetName, setCreatingPresetName] = useState<string | null>(null);
 
   useEffect(() => {
     if (!loading && !authenticated) {
@@ -134,11 +139,30 @@ export function AccountPage() {
     }
   };
 
+  const loadAchievements = async () => {
+    try {
+      const res = await fetch(resolveApiUrl('/api/explorer/achievements'), {
+        credentials: 'include',
+        headers: await getUserAuthHeaders(),
+      });
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        const data = (await res.json()) as { achievements?: ExplorerAchievementStatus[] };
+        if (Array.isArray(data.achievements)) {
+          setAchievements(data.achievements);
+        }
+      }
+    } catch {
+      // Fall back gracefully to local milestone summary below
+    }
+  };
+
   useEffect(() => {
     if (authenticated) {
       void loadBillingHistory();
+      void loadAchievements();
     }
-  }, [authenticated, tier]);
+  }, [authenticated, tier, savedCafes.length, collections.length]);
 
   // Personalized recommendations based on user's saved cafe localities or top verified picks
   const recommendedCafes = useMemo(() => {
@@ -335,6 +359,48 @@ export function AccountPage() {
     setNewColName('');
     setNewColDesc('');
   };
+
+  const handleAddPresetCollection = async (preset: { name: string; description: string }) => {
+    if (!canUseCollections) {
+      openUpgradeModal({
+        featureName: 'Preset & Personal Cafe Collections',
+        requiredPlan: 'plus',
+      });
+      return;
+    }
+    const alreadyExists = collections.some(
+      (c) => c.name.trim().toLowerCase() === preset.name.trim().toLowerCase()
+    );
+    if (alreadyExists) return;
+    setCreatingPresetName(preset.name);
+    try {
+      await createCollection(preset.name, preset.description);
+    } finally {
+      setCreatingPresetName(null);
+    }
+  };
+
+  const displayedAchievements: ExplorerAchievementStatus[] = useMemo(() => {
+    if (achievements.length > 0) return achievements;
+    const totalColItems = collections.reduce((sum, c) => sum + c.items.length, 0);
+    return EXPLORER_BADGES.map((b) => {
+      const prog =
+        b.id === 'first_save'
+          ? Math.min(b.target, savedCafes.length)
+          : b.id === 'local_guide'
+          ? Math.min(b.target, totalColItems)
+          : 0;
+      return {
+        id: b.id,
+        title: b.title,
+        description: b.description,
+        unlocked: prog >= b.target,
+        unlocked_at: null,
+        progress: prog,
+        target: b.target,
+      };
+    });
+  }, [achievements, collections, savedCafes.length]);
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 sm:py-12 space-y-8 sm:space-y-10">
@@ -851,6 +917,37 @@ export function AccountPage() {
                   </button>
                 </form>
 
+                {/* 1-Click Preset Collection Templates */}
+                <div className="space-y-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-[#57493f]">
+                    Quick Preset Lists
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {COLLECTION_PRESETS.map((preset) => {
+                      const exists = collections.some(
+                        (c) => c.name.trim().toLowerCase() === preset.name.trim().toLowerCase()
+                      );
+                      const busy = creatingPresetName === preset.name;
+                      return (
+                        <button
+                          key={preset.name}
+                          type="button"
+                          disabled={exists || busy}
+                          onClick={() => void handleAddPresetCollection(preset)}
+                          title={preset.description}
+                          className={`min-h-[36px] px-3 py-1 rounded-full text-xs font-semibold border transition-colors ${
+                            exists
+                              ? 'bg-[#ecfdf5] border-[#bbf7d0] text-[#1b4d3e] cursor-default'
+                              : 'bg-[#faf7f2] border-[#d6cbba] hover:border-[#b45309] text-[#1c1613]'
+                          }`}
+                        >
+                          {exists ? `✓ ${preset.name}` : busy ? 'Adding...' : `+ ${preset.name}`}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 <div className="space-y-3">
                   {collections.map((col) => (
                     <div
@@ -899,6 +996,76 @@ export function AccountPage() {
               </>
             )}
           </div>
+        </div>
+      </section>
+
+      {/* CafeDesk Explorer Badges & Milestones */}
+      <section className="rounded-2xl bg-white border border-[#e6ddd0] p-5 sm:p-6 space-y-5 shadow-xs">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-[#fef3c7] border border-[#fde68a] flex items-center justify-center text-[#b45309] shrink-0">
+              <Award className="w-5 h-5" aria-hidden="true" />
+            </div>
+            <div>
+              <span className="inline-block text-[11px] uppercase tracking-[0.14em] font-semibold text-[#b45309]">
+                CafeDesk Explorer
+              </span>
+              <h2 className="font-serif-display text-2xl font-semibold text-[#1c1613]">
+                Explorer Badges &amp; Milestones
+              </h2>
+            </div>
+          </div>
+          <span className="inline-flex items-center px-3 py-1 rounded-full bg-[#ecfdf5] border border-[#bbf7d0] text-[#1b4d3e] text-xs font-semibold font-mono-data">
+            {displayedAchievements.filter((a) => a.unlocked).length} / {displayedAchievements.length} Unlocked
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {displayedAchievements.map((badge) => {
+            const pct = badge.target > 0 ? Math.min(100, Math.round((badge.progress / badge.target) * 100)) : 0;
+            return (
+              <div
+                key={badge.id}
+                className={`rounded-xl border p-4 space-y-2.5 transition-colors ${
+                  badge.unlocked
+                    ? 'bg-[#ecfdf5]/60 border-[#a7f3d0]'
+                    : 'bg-[#faf7f2] border-[#e6ddd0]'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-[#1c1613]">{badge.title}</p>
+                    <p className="text-xs text-[#57493f] mt-0.5 leading-relaxed">
+                      {badge.description}
+                    </p>
+                  </div>
+                  {badge.unlocked ? (
+                    <span className="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#1b4d3e] text-white text-[10px] font-semibold">
+                      <CheckCircle2 className="w-3 h-3" aria-hidden="true" />
+                      <span>Earned</span>
+                    </span>
+                  ) : (
+                    <span className="shrink-0 font-mono-data text-[11px] font-semibold text-[#57493f]">
+                      {badge.progress}/{badge.target}
+                    </span>
+                  )}
+                </div>
+                <div className="w-full h-1.5 rounded-full bg-[#e6ddd0] overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all ${
+                      badge.unlocked ? 'bg-[#1b4d3e]' : 'bg-[#b45309]'
+                    }`}
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+                {badge.unlocked_at && (
+                  <p className="text-[11px] font-mono-data text-[#1b4d3e]">
+                    Unlocked {new Date(badge.unlocked_at).toLocaleDateString('en-IN')}
+                  </p>
+                )}
+              </div>
+            );
+          })}
         </div>
       </section>
 

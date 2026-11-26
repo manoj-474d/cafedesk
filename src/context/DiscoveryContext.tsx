@@ -1,9 +1,10 @@
 /// <reference types="google.maps" />
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useMapsLibrary } from '@vis.gl/react-google-maps';
-import { BENGALURU_CENTER } from '../config/constants';
+import { BENGALURU_CENTER, DISCOVERY_CATEGORY_TABS } from '../config/constants';
 import type { LocationItem } from '../types/cms';
-import { computeDistanceKm } from '../utils/cafeHelpers';
+import { buildGoogleMapsDirectionsUrl, buildGoogleMapsViewUrl, computeDistanceKm } from '../utils/cafeHelpers';
+import { resolveApiUrl } from './AuthContext';
 
 export interface LatLngPoint {
   lat: number;
@@ -36,12 +37,28 @@ export interface GoogleDiscoveryCafe {
   ratingCount: number | null;
   websiteUrl: string;
   mapLink: string;
+  viewMapUrl?: string;
   phone: string;
   photos: string[];
   openingHours: string[];
   priceLevelLabel: string;
+  categoryLabel?: string;
+  primaryType?: string;
+  types?: string[];
   distanceKm: number | null;
+  sourceType?: 'google_places';
   cachedAt?: number;
+}
+
+export interface DiscoverSearchParams {
+  query?: string;
+  category?: string;
+  locality?: string;
+  city?: string;
+  radiusMeters?: number;
+  lat?: number | null;
+  lng?: number | null;
+  append?: boolean;
 }
 
 type GeoStatus = 'idle' | 'requesting' | 'granted' | 'denied' | 'unavailable';
@@ -57,10 +74,27 @@ interface DiscoveryContextValue {
   getEffectiveLocation: (loc: LocationItem) => LocationItem & { distanceKm: number | null };
   nearbyPlaces: GoogleDiscoveryCafe[];
   nearbyLoading: boolean;
+  loadingMoreNearby: boolean;
+  nearbyHasMore: boolean;
   nearbyLabel: string;
-  discoverCafesNear: (center: LatLngPoint, label: string, radiusMeters?: number) => Promise<void>;
-  discoverCafesByAreaText: (areaQuery: string) => Promise<LatLngPoint | null>;
-  searchLiveCafesInBengaluru: (queryText: string) => Promise<GoogleDiscoveryCafe[]>;
+  placesNotice: string;
+  clearPlacesNotice: () => void;
+  discoverCafesNear: (
+    center: LatLngPoint,
+    label: string,
+    radiusMeters?: number,
+    category?: string
+  ) => Promise<void>;
+  discoverCafesByAreaText: (
+    areaQuery: string,
+    category?: string,
+    city?: string
+  ) => Promise<LatLngPoint | null>;
+  searchLiveCafesInBengaluru: (
+    queryText: string,
+    options?: Omit<DiscoverSearchParams, 'query'>
+  ) => Promise<GoogleDiscoveryCafe[]>;
+  loadMoreLiveCafes: () => Promise<void>;
   livePlaceCache: Record<string, GoogleDiscoveryCafe>;
   fetchGooglePlaceDetails: (placeId: string) => Promise<GoogleDiscoveryCafe | null>;
   resolvePredictionToPlace: (
@@ -70,8 +104,8 @@ interface DiscoveryContextValue {
 }
 
 const CACHE_STORAGE_KEY = 'cafedesk_places_meta_v2';
-const LIVE_PLACES_STORAGE_KEY = 'cafedesk_live_places_v1';
-const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours (< 30 day ToS cap)
+const LIVE_PLACES_STORAGE_KEY = 'cafedesk_live_places_v2';
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // < 30 days ToS ceiling
 export const GMP_ATTRIBUTION_ID = 'gmp_mcp_codeassist_v1_aistudio';
 
 function loadCachedMeta(): Record<string, CachedPlaceMeta> {
@@ -120,8 +154,7 @@ function persistCachedMeta(next: Record<string, CachedPlaceMeta>) {
 
 function persistLivePlaceCache(next: Record<string, GoogleDiscoveryCafe>) {
   try {
-    // Cap stored entries to keep localStorage fast and compact
-    const entries = Object.entries(next).slice(-40);
+    const entries = Object.entries(next).slice(-45);
     localStorage.setItem(LIVE_PLACES_STORAGE_KEY, JSON.stringify(Object.fromEntries(entries)));
   } catch {
     // Ignore storage quota errors
@@ -165,6 +198,19 @@ function extractAreaLabel(formattedAddress: string, fallback = 'Bengaluru'): str
   return fallback;
 }
 
+function deriveCategoryLabel(types: string[] = []): string {
+  const joined = types.join(' ').toLowerCase();
+  if (joined.includes('tea')) return 'Tea Shop';
+  if (joined.includes('bakery')) return 'Bakery';
+  if (joined.includes('juice')) return 'Juice & Beverage';
+  if (joined.includes('ice_cream') || joined.includes('dessert')) return 'Dessert & Ice Cream';
+  if (joined.includes('sandwich') || joined.includes('hamburger')) return 'Sandwich & Burger';
+  if (joined.includes('fast_food')) return 'Snacks & Fast Food';
+  if (joined.includes('coffee_shop')) return 'Coffee Shop';
+  if (joined.includes('restaurant')) return 'Eatery / Cafe';
+  return 'Cafe';
+}
+
 function toDiscoveryCafe(
   place: google.maps.places.Place,
   areaFallback: string,
@@ -175,8 +221,8 @@ function toDiscoveryCafe(
   const lat = loc.lat();
   const lng = loc.lng();
   const id = place.id || `place-${lat.toFixed(4)}-${lng.toFixed(4)}`;
-  const name = place.displayName || 'Bengaluru Cafe';
-  const address = place.formattedAddress || `${areaFallback}, Bengaluru`;
+  const name = place.displayName || 'Local Place';
+  const address = place.formattedAddress || `${areaFallback}, India`;
   const areaLabel = extractAreaLabel(address, areaFallback);
   const photos = (place.photos ?? [])
     .slice(0, 6)
@@ -190,6 +236,33 @@ function toDiscoveryCafe(
     .filter((uri: string): uri is string => Boolean(uri));
   const openingHours = place.regularOpeningHours?.weekdayDescriptions ?? [];
 
+  const directionsUrl =
+    buildGoogleMapsDirectionsUrl({
+      place_id: place.id || '',
+      lat,
+      lng,
+      name,
+      address,
+      area: areaLabel,
+      city: 'Bengaluru',
+    }) || '';
+
+  const viewMapUrl =
+    place.googleMapsURI ||
+    buildGoogleMapsViewUrl({
+      place_id: place.id || '',
+      lat,
+      lng,
+      name,
+      address,
+      area: areaLabel,
+      city: 'Bengaluru',
+      map_link: '',
+    }) ||
+    directionsUrl;
+
+  const types = Array.isArray(place.types) ? place.types : [];
+
   return {
     id,
     placeId: place.id,
@@ -201,14 +274,16 @@ function toDiscoveryCafe(
     rating: typeof place.rating === 'number' ? Math.round(place.rating * 10) / 10 : null,
     ratingCount: typeof place.userRatingCount === 'number' ? place.userRatingCount : null,
     websiteUrl: place.websiteURI || '',
-    mapLink:
-      place.googleMapsURI ||
-      `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${name} ${areaLabel} Bengaluru`)}`,
+    mapLink: directionsUrl,
+    viewMapUrl,
     phone: place.nationalPhoneNumber || '',
     photos,
     openingHours,
     priceLevelLabel: formatPriceLevel(place.priceLevel),
+    categoryLabel: deriveCategoryLabel(types),
+    types,
     distanceKm: userLoc ? computeDistanceKm(userLoc.lat, userLoc.lng, lat, lng) : null,
+    sourceType: 'google_places',
     cachedAt: Date.now(),
   };
 }
@@ -221,23 +296,35 @@ export function googleDiscoveryToLocationItem(
   openingHours: string[];
   priceLevelLabel: string;
 } {
+  const directionsUrl =
+    buildGoogleMapsDirectionsUrl({
+      place_id: gc.placeId,
+      lat: gc.lat,
+      lng: gc.lng,
+      name: gc.name,
+      address: gc.address,
+      area: gc.areaLabel || 'Bengaluru',
+      city: 'Bengaluru',
+    }) || gc.mapLink;
+
   return {
     id: `google:${gc.placeId}`,
     slug: `google:${gc.placeId}`,
     name: gc.name,
+    category: gc.categoryLabel || 'Cafe',
     city: 'Bengaluru',
     area: gc.areaLabel || 'Bengaluru',
     address: gc.address,
     phone: gc.phone,
-    map_link: gc.mapLink,
+    map_link: directionsUrl,
     website_url: gc.websiteUrl,
     menu_url: '',
     instagram_url: '',
     place_id: gc.placeId,
     lat: gc.lat,
     lng: gc.lng,
-    timings: gc.openingHours[0] ? 'See weekly hours below' : 'Check hours on Google Maps',
-    description: `${gc.name} in ${gc.areaLabel || 'Bengaluru'} discovered live via Google Maps.`,
+    timings: gc.openingHours[0] ? 'See weekly hours below' : 'Hours not available',
+    description: `${gc.name} in ${gc.areaLabel || 'Bengaluru'} discovered live via Google Places.`,
     photos: gc.photos,
     photos_approved: gc.photos.length > 0,
     wifi_available: 'unknown',
@@ -265,8 +352,9 @@ export function googleDiscoveryToLocationItem(
     facilities: [],
     offers: [],
     menu_services: [],
-    best_for: ['Coffee & meetups', 'Live Bengaluru discovery'],
-    verdict: 'Live Google Maps cafe listing. Wi-Fi speed and socket count have not been verified in person yet.',
+    best_for: [gc.categoryLabel || 'Coffee & snacks', 'Google Places Discovery'],
+    verdict:
+      'Google Places Discovery listing. Wi-Fi speed, plug points, and workspace details are not independently verified by CafeDesk yet.',
     avoid_if: null,
     student_discount: null,
     verified: false,
@@ -274,14 +362,17 @@ export function googleDiscoveryToLocationItem(
     published: true,
     display_order: 999,
     last_verified_date: null,
-    claims: ['Live place information fetched directly from Google Maps Platform.'],
-    source_name: 'Google Maps Places',
-    source_url: gc.mapLink,
-    sample: false,
+    claims: ['Live place details sourced from Google Places API (New).'],
+    source_name: 'Google Places Discovery',
+    source_url: gc.viewMapUrl || directionsUrl,
+    source_type: 'google_places',
+    opening_hours_list: gc.openingHours,
+    price_level_label: gc.priceLevelLabel,
     distanceKm: gc.distanceKm,
     isLiveGooglePlace: true,
     openingHours: gc.openingHours,
     priceLevelLabel: gc.priceLevelLabel,
+    sample: false,
   };
 }
 
@@ -296,10 +387,15 @@ const DiscoveryContext = createContext<DiscoveryContextValue>({
   getEffectiveLocation: (loc) => ({ ...loc, distanceKm: null }),
   nearbyPlaces: [],
   nearbyLoading: false,
+  loadingMoreNearby: false,
+  nearbyHasMore: false,
   nearbyLabel: '',
+  placesNotice: '',
+  clearPlacesNotice: () => {},
   discoverCafesNear: async () => {},
   discoverCafesByAreaText: async () => null,
   searchLiveCafesInBengaluru: async () => [],
+  loadMoreLiveCafes: async () => {},
   livePlaceCache: {},
   fetchGooglePlaceDetails: async () => null,
   resolvePredictionToPlace: async () => null,
@@ -318,6 +414,7 @@ const LIVE_PLACE_FIELDS = [
   'nationalPhoneNumber',
   'regularOpeningHours',
   'priceLevel',
+  'types',
   'photos',
 ];
 
@@ -335,10 +432,18 @@ export function DiscoveryProvider({ children }: { children: React.ReactNode }) {
   );
   const [nearbyPlaces, setNearbyPlaces] = useState<GoogleDiscoveryCafe[]>([]);
   const [nearbyLoading, setNearbyLoading] = useState(false);
+  const [loadingMoreNearby, setLoadingMoreNearby] = useState(false);
+  const [nextPageToken, setNextPageToken] = useState<string | null>(null);
   const [nearbyLabel, setNearbyLabel] = useState('');
+  const [placesNotice, setPlacesNotice] = useState('');
 
   const inFlightIdsRef = useRef<Record<string, boolean>>({});
-  const nearbyCacheRef = useRef<Record<string, GoogleDiscoveryCafe[]>>({});
+  const nearbyCacheRef = useRef<
+    Record<string, { places: GoogleDiscoveryCafe[]; nextPageToken: string | null }>
+  >({});
+  const lastSearchPayloadRef = useRef<Record<string, unknown> | null>(null);
+
+  const clearPlacesNotice = useCallback(() => setPlacesNotice(''), []);
 
   const cacheLiveCafes = useCallback((items: GoogleDiscoveryCafe[]) => {
     if (items.length === 0) return;
@@ -377,7 +482,7 @@ export function DiscoveryProvider({ children }: { children: React.ReactNode }) {
           setGeoStatus('denied');
           setGeoError(
             err.code === 1
-              ? 'Location permission was declined. You can still browse cafes by Bengaluru area.'
+              ? 'Location permission was declined. Search any Bengaluru locality or Indian city manually.'
               : 'Could not detect your current GPS position.'
           );
           resolve(null);
@@ -416,7 +521,7 @@ export function DiscoveryProvider({ children }: { children: React.ReactNode }) {
       inFlightIdsRef.current[loc.id] = true;
       try {
         const response = await placesLib.Place.searchByText({
-          textQuery: `${loc.name} ${loc.area} Bengaluru`,
+          textQuery: `${loc.name} ${loc.area} ${loc.city || 'Bengaluru'}`,
           includedType: 'cafe',
           locationBias: {
             center: BENGALURU_CENTER,
@@ -480,136 +585,295 @@ export function DiscoveryProvider({ children }: { children: React.ReactNode }) {
     [placesLib, placeMetaByCafeId]
   );
 
+  const normalizeServerPlaces = useCallback(
+    (rawList: GoogleDiscoveryCafe[], originPoint?: LatLngPoint | null): GoogleDiscoveryCafe[] => {
+      const refPoint = originPoint || userLocation;
+      return rawList.map((item) => ({
+        ...item,
+        distanceKm:
+          refPoint && typeof item.lat === 'number' && typeof item.lng === 'number'
+            ? computeDistanceKm(refPoint.lat, refPoint.lng, item.lat, item.lng)
+            : item.distanceKm ?? null,
+        mapLink:
+          buildGoogleMapsDirectionsUrl({
+            place_id: item.placeId,
+            lat: item.lat,
+            lng: item.lng,
+            name: item.name,
+            address: item.address,
+            area: item.areaLabel,
+            city: 'Bengaluru',
+          }) || item.mapLink,
+      }));
+    },
+    [userLocation]
+  );
+
   const discoverCafesNear = useCallback(
-    async (center: LatLngPoint, label: string, radiusMeters = 3500) => {
-      if (!placesLib) return;
-      const cacheKey = `${center.lat.toFixed(2)},${center.lng.toFixed(2)},${radiusMeters}`;
+    async (
+      center: LatLngPoint,
+      label: string,
+      radiusMeters = 3500,
+      category = 'all'
+    ) => {
+      const cacheKey = `nearby:${center.lat.toFixed(2)},${center.lng.toFixed(2)},${radiusMeters},${category}`;
       const cached = nearbyCacheRef.current[cacheKey];
       if (cached) {
-        setNearbyPlaces(cached);
+        setNearbyPlaces(cached.places);
+        setNextPageToken(cached.nextPageToken);
         setNearbyLabel(label);
         return;
       }
 
       setNearbyLoading(true);
       setNearbyLabel(label);
+      setPlacesNotice('');
       try {
-        const res = await placesLib.Place.searchNearby({
-          locationRestriction: {
-            center,
-            radius: Math.min(50000, Math.max(500, radiusMeters)),
-          },
-          includedPrimaryTypes: ['cafe', 'coffee_shop'],
-          maxResultCount: 12,
-          rankPreference: 'DISTANCE',
-          fields: LIVE_PLACE_FIELDS,
-          internalUsageAttributionIds: [GMP_ATTRIBUTION_ID],
+        const res = await fetch(resolveApiUrl('/api/places/nearby'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            lat: center.lat,
+            lng: center.lng,
+            radiusMeters,
+            category,
+          }),
         });
 
-        const parsed = (res.places ?? [])
-          .map((p: google.maps.places.Place) => toDiscoveryCafe(p, label, userLocation))
-          .filter((x: GoogleDiscoveryCafe | null): x is GoogleDiscoveryCafe => x !== null);
+        const data = (await res.json().catch(() => ({}))) as {
+          places?: GoogleDiscoveryCafe[];
+          code?: string;
+          error?: string;
+        };
 
-        nearbyCacheRef.current[cacheKey] = parsed;
-        cacheLiveCafes(parsed);
-        setNearbyPlaces(parsed);
+        if (res.ok && Array.isArray(data.places)) {
+          const normalized = normalizeServerPlaces(data.places, center);
+          nearbyCacheRef.current[cacheKey] = { places: normalized, nextPageToken: null };
+          cacheLiveCafes(normalized);
+          setNearbyPlaces(normalized);
+          setNextPageToken(null);
+          return;
+        }
+
+        if (res.status === 429 || data.code === 'RESOURCE_EXHAUSTED') {
+          checkGmpQuotaError('RESOURCE_EXHAUSTED');
+        }
+
+        // Fallback to Places JS library when server key is not injected into Node env
+        if (placesLib) {
+          const catTab = DISCOVERY_CATEGORY_TABS.find((c) => c.id === category);
+          const sdkRes = await placesLib.Place.searchNearby({
+            locationRestriction: {
+              center,
+              radius: Math.min(50000, Math.max(500, radiusMeters)),
+            },
+            includedPrimaryTypes:
+              catTab && catTab.includedTypes.length > 0
+                ? catTab.includedTypes
+                : ['cafe', 'coffee_shop', 'bakery'],
+            maxResultCount: 14,
+            rankPreference: 'DISTANCE',
+            fields: LIVE_PLACE_FIELDS,
+            internalUsageAttributionIds: [GMP_ATTRIBUTION_ID],
+          });
+
+          const parsed = (sdkRes.places ?? [])
+            .map((p: google.maps.places.Place) => toDiscoveryCafe(p, label, center))
+            .filter((x: GoogleDiscoveryCafe | null): x is GoogleDiscoveryCafe => x !== null);
+
+          nearbyCacheRef.current[cacheKey] = { places: parsed, nextPageToken: null };
+          cacheLiveCafes(parsed);
+          setNearbyPlaces(parsed);
+          setNextPageToken(null);
+          return;
+        }
+
+        setPlacesNotice(
+          data.error || 'Live Google Places nearby search requires an active Places API key.'
+        );
       } catch (err) {
         checkGmpQuotaError(err);
+        setPlacesNotice('Unable to reach live Google Places nearby search right now.');
       } finally {
         setNearbyLoading(false);
       }
     },
-    [placesLib, userLocation, cacheLiveCafes]
-  );
-
-  const discoverCafesByAreaText = useCallback(
-    async (areaQuery: string): Promise<LatLngPoint | null> => {
-      if (!placesLib || !areaQuery.trim()) return null;
-      const cacheKey = `area:${areaQuery.trim().toLowerCase()}`;
-      const cached = nearbyCacheRef.current[cacheKey];
-      if (cached) {
-        setNearbyPlaces(cached);
-        setNearbyLabel(areaQuery);
-        return cached[0] ? { lat: cached[0].lat, lng: cached[0].lng } : null;
-      }
-
-      setNearbyLoading(true);
-      setNearbyLabel(areaQuery);
-      try {
-        const res = await placesLib.Place.searchByText({
-          textQuery: `cafes in ${areaQuery} Bengaluru`,
-          includedType: 'cafe',
-          locationBias: { center: BENGALURU_CENTER, radius: 30000 },
-          maxResultCount: 12,
-          fields: LIVE_PLACE_FIELDS,
-          internalUsageAttributionIds: [GMP_ATTRIBUTION_ID],
-        });
-
-        const parsed = (res.places ?? [])
-          .map((p: google.maps.places.Place) => toDiscoveryCafe(p, areaQuery, userLocation))
-          .filter((x: GoogleDiscoveryCafe | null): x is GoogleDiscoveryCafe => x !== null);
-
-        nearbyCacheRef.current[cacheKey] = parsed;
-        cacheLiveCafes(parsed);
-        setNearbyPlaces(parsed);
-        return parsed[0] ? { lat: parsed[0].lat, lng: parsed[0].lng } : null;
-      } catch (err) {
-        checkGmpQuotaError(err);
-        return null;
-      } finally {
-        setNearbyLoading(false);
-      }
-    },
-    [placesLib, userLocation, cacheLiveCafes]
+    [placesLib, normalizeServerPlaces, cacheLiveCafes]
   );
 
   const searchLiveCafesInBengaluru = useCallback(
-    async (queryText: string): Promise<GoogleDiscoveryCafe[]> => {
+    async (
+      queryText: string,
+      options?: Omit<DiscoverSearchParams, 'query'>
+    ): Promise<GoogleDiscoveryCafe[]> => {
       const cleaned = queryText.trim();
-      if (!placesLib || cleaned.length < 2) return [];
+      const category = options?.category || 'all';
+      const locality = (options?.locality || '').trim();
+      const city = (options?.city || 'Bengaluru').trim();
+      const radiusMeters = options?.radiusMeters || 12000;
+      const lat = options?.lat ?? userLocation?.lat ?? null;
+      const lng = options?.lng ?? userLocation?.lng ?? null;
 
-      const wantsNearby = /near me|nearby/i.test(cleaned);
-      const hasCity = /bengaluru|bangalore/i.test(cleaned);
-      const formattedQuery =
-        wantsNearby || hasCity ? cleaned : `${cleaned} cafe Bengaluru`;
-      const cacheKey = `search:${formattedQuery.toLowerCase()}`;
+      if (!cleaned && !locality && category === 'all') return [];
+
+      const cacheKey = `search:${cleaned.toLowerCase()}|${category}|${locality.toLowerCase()}|${city.toLowerCase()}|${radiusMeters}`;
       const cached = nearbyCacheRef.current[cacheKey];
-      if (cached) {
-        setNearbyPlaces(cached);
-        setNearbyLabel(cleaned);
-        return cached;
+      if (cached && !options?.append) {
+        setNearbyPlaces(cached.places);
+        setNextPageToken(cached.nextPageToken);
+        setNearbyLabel(cleaned || locality || city);
+        lastSearchPayloadRef.current = {
+          query: cleaned,
+          category,
+          locality,
+          city,
+          radiusMeters,
+          lat,
+          lng,
+        };
+        return cached.places;
       }
 
       setNearbyLoading(true);
-      setNearbyLabel(cleaned);
+      setNearbyLabel(cleaned || locality || city);
+      setPlacesNotice('');
       try {
-        const center = wantsNearby && userLocation ? userLocation : BENGALURU_CENTER;
-        const radius = wantsNearby && userLocation ? 6000 : 32000;
-        const res = await placesLib.Place.searchByText({
-          textQuery: formattedQuery,
-          includedType: 'cafe',
-          locationBias: { center, radius },
-          maxResultCount: 12,
-          fields: LIVE_PLACE_FIELDS,
-          internalUsageAttributionIds: [GMP_ATTRIBUTION_ID],
+        const requestBody = {
+          query: cleaned,
+          category,
+          locality,
+          city,
+          radiusMeters,
+          lat,
+          lng,
+        };
+        lastSearchPayloadRef.current = requestBody;
+
+        const res = await fetch(resolveApiUrl('/api/places/search'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody),
         });
 
-        const parsed = (res.places ?? [])
-          .map((p: google.maps.places.Place) => toDiscoveryCafe(p, 'Bengaluru', userLocation))
-          .filter((x: GoogleDiscoveryCafe | null): x is GoogleDiscoveryCafe => x !== null);
+        const data = (await res.json().catch(() => ({}))) as {
+          places?: GoogleDiscoveryCafe[];
+          nextPageToken?: string | null;
+          code?: string;
+          error?: string;
+        };
 
-        nearbyCacheRef.current[cacheKey] = parsed;
-        cacheLiveCafes(parsed);
-        setNearbyPlaces(parsed);
-        return parsed;
+        if (res.ok && Array.isArray(data.places)) {
+          const originPt = lat !== null && lng !== null ? { lat, lng } : userLocation;
+          const normalized = normalizeServerPlaces(data.places, originPt);
+          const nextTok = data.nextPageToken || null;
+          nearbyCacheRef.current[cacheKey] = { places: normalized, nextPageToken: nextTok };
+          cacheLiveCafes(normalized);
+          setNearbyPlaces(normalized);
+          setNextPageToken(nextTok);
+          return normalized;
+        }
+
+        if (res.status === 429 || data.code === 'RESOURCE_EXHAUSTED') {
+          checkGmpQuotaError('RESOURCE_EXHAUSTED');
+        }
+
+        if (placesLib) {
+          const catTab = DISCOVERY_CATEGORY_TABS.find((c) => c.id === category);
+          const textQ = [
+            cleaned || (catTab && catTab.id !== 'all' ? catTab.placesQuery : 'cafes coffee tea bakery'),
+            locality,
+            city,
+          ]
+            .filter(Boolean)
+            .join(' ');
+          const sdkRes = await placesLib.Place.searchByText({
+            textQuery: textQ,
+            locationBias: {
+              center: lat !== null && lng !== null ? { lat, lng } : BENGALURU_CENTER,
+              radius: Math.min(50000, radiusMeters),
+            },
+            maxResultCount: 14,
+            fields: LIVE_PLACE_FIELDS,
+            internalUsageAttributionIds: [GMP_ATTRIBUTION_ID],
+          });
+
+          const parsed = (sdkRes.places ?? [])
+            .map((p: google.maps.places.Place) =>
+              toDiscoveryCafe(p, locality || city, userLocation)
+            )
+            .filter((x: GoogleDiscoveryCafe | null): x is GoogleDiscoveryCafe => x !== null);
+
+          nearbyCacheRef.current[cacheKey] = { places: parsed, nextPageToken: null };
+          cacheLiveCafes(parsed);
+          setNearbyPlaces(parsed);
+          setNextPageToken(null);
+          return parsed;
+        }
+
+        setPlacesNotice(
+          data.error || 'Live Google Places discovery is waiting for a valid Places API key.'
+        );
+        return [];
       } catch (err) {
         checkGmpQuotaError(err);
+        setPlacesNotice('Unable to query live local businesses right now.');
         return [];
       } finally {
         setNearbyLoading(false);
       }
     },
-    [placesLib, userLocation, cacheLiveCafes]
+    [placesLib, userLocation, normalizeServerPlaces, cacheLiveCafes]
+  );
+
+  const loadMoreLiveCafes = useCallback(async () => {
+    if (!nextPageToken || !lastSearchPayloadRef.current || loadingMoreNearby) return;
+    setLoadingMoreNearby(true);
+    try {
+      const res = await fetch(resolveApiUrl('/api/places/search'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...lastSearchPayloadRef.current,
+          pageToken: nextPageToken,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        places?: GoogleDiscoveryCafe[];
+        nextPageToken?: string | null;
+      };
+      if (res.ok && Array.isArray(data.places)) {
+        const more = normalizeServerPlaces(data.places, userLocation);
+        cacheLiveCafes(more);
+        setNearbyPlaces((prev) => {
+          const seen = new Set(prev.map((p) => p.placeId));
+          return [...prev, ...more.filter((m) => !seen.has(m.placeId))];
+        });
+        setNextPageToken(data.nextPageToken || null);
+      } else {
+        setNextPageToken(null);
+      }
+    } catch {
+      setNextPageToken(null);
+    } finally {
+      setLoadingMoreNearby(false);
+    }
+  }, [nextPageToken, loadingMoreNearby, normalizeServerPlaces, userLocation, cacheLiveCafes]);
+
+  const discoverCafesByAreaText = useCallback(
+    async (
+      areaQuery: string,
+      category = 'all',
+      city = 'Bengaluru'
+    ): Promise<LatLngPoint | null> => {
+      if (!areaQuery.trim()) return null;
+      const results = await searchLiveCafesInBengaluru('', {
+        locality: areaQuery.trim(),
+        city,
+        category,
+      });
+      return results[0] ? { lat: results[0].lat, lng: results[0].lng } : null;
+    },
+    [searchLiveCafesInBengaluru]
   );
 
   const fetchGooglePlaceDetails = useCallback(
@@ -630,6 +894,25 @@ export function DiscoveryProvider({ children }: { children: React.ReactNode }) {
             }
           : cached;
       }
+
+      try {
+        const res = await fetch(
+          resolveApiUrl(`/api/places/details?placeId=${encodeURIComponent(cleanId)}`)
+        );
+        if (res.ok) {
+          const data = (await res.json()) as { place?: GoogleDiscoveryCafe };
+          if (data.place) {
+            const [normalized] = normalizeServerPlaces([data.place], userLocation);
+            if (normalized) {
+              cacheLiveCafes([normalized]);
+              return normalized;
+            }
+          }
+        }
+      } catch {
+        // Fallback to JS SDK below
+      }
+
       if (!placesLib) return cached ?? null;
 
       try {
@@ -643,7 +926,7 @@ export function DiscoveryProvider({ children }: { children: React.ReactNode }) {
         return cached ?? null;
       }
     },
-    [placesLib, livePlaceCache, userLocation, cacheLiveCafes]
+    [placesLib, livePlaceCache, userLocation, normalizeServerPlaces, cacheLiveCafes]
   );
 
   const resolvePredictionToPlace = useCallback(
@@ -675,7 +958,18 @@ export function DiscoveryProvider({ children }: { children: React.ReactNode }) {
       const website_url = loc.website_url || cached?.websiteUrl || '';
       const place_id = loc.place_id || cached?.placeId || '';
       const phone = loc.phone || cached?.phone || '';
-      const map_link = loc.map_link || cached?.googleMapsUri || '';
+      const rawMapLink = loc.map_link || cached?.googleMapsUri || '';
+      const address = loc.address || cached?.formattedAddress || '';
+      const map_link =
+        buildGoogleMapsDirectionsUrl({
+          place_id,
+          lat,
+          lng,
+          name: loc.name,
+          address,
+          area: loc.area,
+          city: loc.city,
+        }) || rawMapLink;
       const mergedPhotos = Array.from(
         new Set([...(loc.photos || []), ...(cached?.photos || [])])
       ).filter(Boolean);
@@ -687,6 +981,7 @@ export function DiscoveryProvider({ children }: { children: React.ReactNode }) {
 
       return {
         ...loc,
+        address,
         lat,
         lng,
         rating,
@@ -716,10 +1011,15 @@ export function DiscoveryProvider({ children }: { children: React.ReactNode }) {
         getEffectiveLocation,
         nearbyPlaces,
         nearbyLoading,
+        loadingMoreNearby,
+        nearbyHasMore: Boolean(nextPageToken),
         nearbyLabel,
+        placesNotice,
+        clearPlacesNotice,
         discoverCafesNear,
         discoverCafesByAreaText,
         searchLiveCafesInBengaluru,
+        loadMoreLiveCafes,
         livePlaceCache,
         fetchGooglePlaceDetails,
         resolvePredictionToPlace,

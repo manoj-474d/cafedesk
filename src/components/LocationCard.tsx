@@ -27,9 +27,11 @@ import { locationToLibrarySnapshot, useAuth } from '../context/AuthContext';
 import { useDiscovery } from '../context/DiscoveryContext';
 import type { LocationItem } from '../types/cms';
 import {
+  buildGoogleMapsDirectionsUrl,
   formatDistanceKm,
   getCafeDetailRoute,
   getCafeOpenStatus,
+  getCafeSourceMeta,
   getStartingPriceLabel,
   getWorkspaceTypesForCafe,
 } from '../utils/cafeHelpers';
@@ -73,6 +75,8 @@ export function LocationCard({
   const compareAllowed = hasPermission('compare');
 
   const detailRoute = getCafeDetailRoute(loc.slug, authenticated);
+  const directionsUrl = buildGoogleMapsDirectionsUrl(loc);
+  const sourceMeta = getCafeSourceMeta(loc);
   const startingPrice = menuPricingUnlocked ? getStartingPriceLabel(loc) : 'Plus';
   const workspaceTypes = getWorkspaceTypesForCafe(loc);
   const openStatus = getCafeOpenStatus(loc.timings);
@@ -94,7 +98,7 @@ export function LocationCard({
       ? 'Wi-Fi Ready'
       : loc.wifi_available === 'no'
       ? 'No Wi-Fi'
-      : 'Unverified';
+      : 'Not verified';
 
   const socketsDisplay =
     loc.sockets_count !== null
@@ -103,9 +107,9 @@ export function LocationCard({
       ? 'Plugs available'
       : loc.charging_sockets === 'no'
       ? 'No plugs'
-      : 'Plugs unverified';
+      : 'Not verified';
 
-  const noiseDisplay = noiseSummary ?? 'Ambient';
+  const noiseDisplay = noiseSummary ?? 'Not verified';
 
   const costDisplay = loc.price_range
     ? loc.avg_cost_per_person !== null
@@ -113,7 +117,7 @@ export function LocationCard({
       : loc.price_range
     : loc.avg_cost_per_person !== null
     ? `₹${loc.avg_cost_per_person} avg`
-    : 'Budget unverified';
+    : 'Price not available';
 
   const promptSubscription = (featureName: string, description: string) => {
     openUpgradeModal({
@@ -257,8 +261,8 @@ export function LocationCard({
           {loc.address || `${loc.area}, ${loc.city}`}
         </p>
 
-        {/* Rating, Verification & Featured */}
-        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-[#5c4e45] mb-3">
+        {/* Source, Category, Rating & Featured */}
+        <div className="flex flex-wrap items-center gap-1.5 text-xs text-[#5c4e45] mb-3">
           {loc.rating !== null ? (
             <span className="inline-flex items-center gap-1 font-semibold text-[#1c1613]">
               <Star className="w-3.5 h-3.5 text-[#d97706] fill-[#d97706]" aria-hidden="true" />
@@ -276,27 +280,28 @@ export function LocationCard({
             </span>
           )}
 
-          <span aria-hidden="true">·</span>
+          <span
+            title={sourceMeta.description}
+            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${sourceMeta.badgeClass}`}
+          >
+            {sourceMeta.type === 'cafedesk_verified' ? (
+              <CheckCircle2 className="w-3 h-3" aria-hidden="true" />
+            ) : (
+              <Clock className="w-3 h-3" aria-hidden="true" />
+            )}
+            <span>{sourceMeta.label}</span>
+          </span>
 
-          {loc.verified ? (
-            <span className="inline-flex items-center gap-1 text-[#1b4d3e] font-medium">
-              <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
-              Verified
-            </span>
-          ) : (
-            <span className="inline-flex items-center gap-1">
-              <Clock className="w-3.5 h-3.5 text-[#b45309]" aria-hidden="true" />
-              Public
+          {loc.category && (
+            <span className="px-2 py-0.5 rounded-full bg-[#faf7f2] border border-[#e6ddd0] text-[10px] font-medium text-[#5c4e45]">
+              {loc.category}
             </span>
           )}
 
           {loc.featured && (
-            <>
-              <span aria-hidden="true">·</span>
-              <span className="px-2 py-0.5 rounded-full bg-[#fef3c7] text-[#92400e] text-[10px] font-semibold">
-                Featured
-              </span>
-            </>
+            <span className="px-2 py-0.5 rounded-full bg-[#fef3c7] text-[#92400e] text-[10px] font-semibold">
+              Featured
+            </span>
           )}
         </div>
 
@@ -465,78 +470,87 @@ export function LocationCard({
           </button>
         </div>
 
-        {/* Footer CTA & Quick Links */}
+        {/* Footer CTA & Exact Directions */}
         <div className="mt-3 pt-3 border-t border-[#e6ddd0] flex flex-wrap items-center justify-between gap-2 text-xs">
-          {amenitiesUnlocked ? (
-            <div className="flex flex-wrap items-center gap-2.5 text-[#5c4e45]">
-              {openStatus !== 'unknown' && (
-                <span
-                  className={`font-semibold ${
-                    openStatus === 'open' ? 'text-[#1b4d3e]' : 'text-[#b91c1c]'
-                  }`}
-                >
-                  {openStatus === 'open' ? 'Open now' : 'Closed'}
-                </span>
-              )}
-              {loc.website_url && (
-                <a
-                  href={loc.website_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 hover:text-[#1c1613]"
-                >
-                  <Globe className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>Web</span>
-                </a>
-              )}
-              {loc.menu_url && loc.menu_url !== loc.website_url && (
-                <a
-                  href={loc.menu_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 hover:text-[#1c1613]"
-                >
-                  <Utensils className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>Menu</span>
-                </a>
-              )}
-              {loc.instagram_url && (
-                <a
-                  href={loc.instagram_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 hover:text-[#1c1613]"
-                  aria-label={`${loc.name} Instagram`}
-                >
-                  <Instagram className="w-3.5 h-3.5" aria-hidden="true" />
-                </a>
-              )}
-              {loc.map_link && (
-                <a
-                  href={loc.map_link}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-0.5 hover:text-[#1c1613]"
-                >
-                  <span>Maps</span>
-                  <ArrowUpRight className="w-3.5 h-3.5" aria-hidden="true" />
-                </a>
-              )}
-            </div>
-          ) : (
-            <span className="text-[#5c4e45] inline-flex items-center gap-1">
-              <Lock className="w-3 h-3 text-[#b45309]" aria-hidden="true" />
-              <span>Wi-Fi &amp; menus locked</span>
-            </span>
-          )}
+          <div className="flex flex-wrap items-center gap-2 text-[#5c4e45]">
+            {openStatus !== 'unknown' && (
+              <span
+                className={`font-semibold ${
+                  openStatus === 'open' ? 'text-[#1b4d3e]' : 'text-[#b91c1c]'
+                }`}
+              >
+                {openStatus === 'open' ? 'Open now' : 'Closed'}
+              </span>
+            )}
+            {amenitiesUnlocked && loc.website_url && (
+              <a
+                href={loc.website_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 hover:text-[#1c1613]"
+              >
+                <Globe className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Web</span>
+              </a>
+            )}
+            {amenitiesUnlocked && loc.menu_url && loc.menu_url !== loc.website_url && (
+              <a
+                href={loc.menu_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 hover:text-[#1c1613]"
+              >
+                <Utensils className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Menu</span>
+              </a>
+            )}
+            {amenitiesUnlocked && loc.instagram_url && (
+              <a
+                href={loc.instagram_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 hover:text-[#1c1613]"
+                aria-label={`${loc.name} Instagram`}
+              >
+                <Instagram className="w-3.5 h-3.5" aria-hidden="true" />
+              </a>
+            )}
+            {!amenitiesUnlocked && (
+              <span className="text-[#5c4e45] inline-flex items-center gap-1">
+                <Lock className="w-3 h-3 text-[#b45309]" aria-hidden="true" />
+                <span>Specs locked</span>
+              </span>
+            )}
+          </div>
 
-          <Link
-            to={detailRoute}
-            className="inline-flex items-center justify-center gap-1.5 min-h-[42px] px-4 rounded-xl bg-[#1c1613] hover:bg-[#b45309] text-white text-xs font-semibold transition-colors ml-auto"
-          >
-            <span>Explore</span>
-            <ArrowUpRight className="w-3.5 h-3.5" aria-hidden="true" />
-          </Link>
+          <div className="flex items-center gap-2 ml-auto">
+            {directionsUrl ? (
+              <a
+                href={directionsUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center justify-center gap-1 min-h-[42px] px-3 rounded-xl border border-[#e6ddd0] bg-[#faf7f2] hover:border-[#b45309] text-[#1c1613] text-xs font-semibold transition-colors"
+              >
+                <MapPin className="w-3.5 h-3.5 text-[#b45309]" aria-hidden="true" />
+                <span>Directions</span>
+              </a>
+            ) : (
+              <span
+                title="Directions unavailable for this listing"
+                className="inline-flex items-center justify-center min-h-[42px] px-3 rounded-xl border border-[#e6ddd0] bg-[#faf7f2] text-[#8c7a6b] text-xs font-medium cursor-not-allowed"
+              >
+                No Directions
+              </span>
+            )}
+
+            <Link
+              to={detailRoute}
+              className="inline-flex items-center justify-center gap-1.5 min-h-[42px] px-4 rounded-xl bg-[#1c1613] hover:bg-[#b45309] text-white text-xs font-semibold transition-colors"
+            >
+              <span>Explore</span>
+              <ArrowUpRight className="w-3.5 h-3.5" aria-hidden="true" />
+            </Link>
+          </div>
         </div>
       </div>
     </article>

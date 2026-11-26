@@ -27,8 +27,15 @@ import {
   BENGALURU_AREAS,
   BROWSING_MODES,
   BUDGET_BRACKETS,
+  DISCOVERY_BUSINESS_CATEGORIES,
+  DISCOVERY_CATEGORY_TABS,
+  SUPPORTED_CITIES,
+  WORK_MOODS,
   type BudgetBracketId,
   type CafeMode,
+  type DiscoveryBusinessCategoryId,
+  type DiscoveryCategoryTabId,
+  type WorkMoodId,
 } from '../config/constants';
 import { locationToLibrarySnapshot, useAuth } from '../context/AuthContext';
 import { useCms } from '../context/CmsContext';
@@ -37,10 +44,15 @@ import {
   useDiscovery,
 } from '../context/DiscoveryContext';
 import {
+  buildGoogleMapsDirectionsUrl,
+  deduplicateCafeItems,
   formatDistanceKm,
   getCafeDetailRoute,
+  getCafeSourceMeta,
   isCafeOpenNow,
   matchesBudgetBracket,
+  matchesDiscoveryCategoryTab,
+  matchesWorkMood,
   useDocumentMeta,
 } from '../utils/cafeHelpers';
 import {
@@ -58,6 +70,7 @@ type SortOption =
   | 'distance'
   | 'featured'
   | 'rating'
+  | 'reviews'
   | 'wifi'
   | 'cheapest'
   | 'quietest'
@@ -125,10 +138,15 @@ export function LocationsPage() {
     getEffectiveLocation,
     nearbyPlaces,
     nearbyLoading,
+    loadingMoreNearby,
+    nearbyHasMore,
     nearbyLabel,
+    placesNotice,
+    clearPlacesNotice,
     discoverCafesNear,
     discoverCafesByAreaText,
     searchLiveCafesInBengaluru,
+    loadMoreLiveCafes,
     placesReady,
   } = useDiscovery();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -159,8 +177,28 @@ export function LocationsPage() {
   const [query, setQuery] = useState(
     () => searchParams.get('q') ?? (typeof stored.q === 'string' ? stored.q : '')
   );
+  const [selectedCity, setSelectedCity] = useState<string>(
+    () => searchParams.get('city') ?? (typeof stored.city === 'string' ? stored.city : 'Bengaluru')
+  );
   const [area, setArea] = useState(
     () => searchParams.get('area') ?? (typeof stored.area === 'string' ? stored.area : '')
+  );
+  const [categoryTab, setCategoryTab] = useState<DiscoveryCategoryTabId | ''>(
+    () =>
+      (searchParams.get('category') as DiscoveryCategoryTabId) ||
+      (typeof stored.categoryTab === 'string' ? (stored.categoryTab as DiscoveryCategoryTabId) : 'all')
+  );
+  const [businessCategory, setBusinessCategory] = useState<DiscoveryBusinessCategoryId | ''>(
+    () =>
+      (searchParams.get('bizCategory') as DiscoveryBusinessCategoryId) ||
+      (typeof stored.businessCategory === 'string'
+        ? (stored.businessCategory as DiscoveryBusinessCategoryId)
+        : '')
+  );
+  const [workMood, setWorkMood] = useState<WorkMoodId | ''>(
+    () =>
+      (searchParams.get('mood') as WorkMoodId) ||
+      (typeof stored.workMood === 'string' ? (stored.workMood as WorkMoodId) : '')
   );
   const [mode, setMode] = useState<string>(
     () => searchParams.get('mode') ?? (typeof stored.mode === 'string' ? stored.mode : '')
@@ -230,6 +268,7 @@ export function LocationsPage() {
   );
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const [focusCenter, setFocusCenter] = useState<{ lat: number; lng: number } | null>(null);
+  const [visibleCuratedCount, setVisibleCuratedCount] = useState(9);
 
   const autoNearbyTriggeredRef = useRef(false);
   const autoLiveQueryTriggeredRef = useRef(false);
@@ -248,7 +287,11 @@ export function LocationsPage() {
         FILTERS_STORAGE_KEY,
         JSON.stringify({
           q: query,
+          city: selectedCity,
           area,
+          categoryTab,
+          businessCategory,
+          workMood,
           mode,
           budget,
           maxDistanceKm,
@@ -278,7 +321,11 @@ export function LocationsPage() {
     }
   }, [
     query,
+    selectedCity,
     area,
+    categoryTab,
+    businessCategory,
+    workMood,
     mode,
     budget,
     maxDistanceKm,
@@ -318,14 +365,40 @@ export function LocationsPage() {
   }, [searchParams, userLocation, requestUserLocation, discoverCafesNear]);
 
   useEffect(() => {
-    if (!placesReady || autoLiveQueryTriggeredRef.current) return;
     const liveParam = searchParams.get('live');
     const qParam = (searchParams.get('q') ?? '').trim();
+    const catParam = (searchParams.get('category') ?? '').trim();
+    const moodParam = (searchParams.get('mood') ?? '').trim();
+
+    if (autoLiveQueryTriggeredRef.current) return;
     if (liveParam === '1' && qParam.length >= 2) {
       autoLiveQueryTriggeredRef.current = true;
-      void searchLiveCafesInBengaluru(qParam);
+      void searchLiveCafesInBengaluru(qParam, {
+        category: catParam || undefined,
+        locality: area || undefined,
+        city: selectedCity,
+      });
+    } else if (catParam && catParam !== 'all' && nearbyPlaces.length === 0) {
+      const catMeta = DISCOVERY_CATEGORY_TABS.find((t) => t.id === catParam);
+      if (catMeta) {
+        autoLiveQueryTriggeredRef.current = true;
+        void searchLiveCafesInBengaluru(catMeta.placesQuery, {
+          category: catMeta.id,
+          locality: area || undefined,
+          city: selectedCity,
+        });
+      }
+    } else if (moodParam && nearbyPlaces.length === 0) {
+      const moodMeta = WORK_MOODS.find((m) => m.id === moodParam);
+      if (moodMeta) {
+        autoLiveQueryTriggeredRef.current = true;
+        void searchLiveCafesInBengaluru(moodMeta.searchHint, {
+          locality: area || undefined,
+          city: selectedCity,
+        });
+      }
     }
-  }, [placesReady, searchParams, searchLiveCafesInBengaluru]);
+  }, [placesReady, searchParams, area, selectedCity, nearbyPlaces.length, searchLiveCafesInBengaluru]);
 
   const effectiveLocations = useMemo(
     () => locations.map((loc) => getEffectiveLocation(loc)),
@@ -342,20 +415,36 @@ export function LocationsPage() {
 
   const syncQueryParams = (updates: {
     q?: string;
+    city?: string;
     area?: string;
+    category?: string;
+    bizCategory?: string;
+    mood?: string;
     mode?: string;
     budget?: string;
   }) => {
     const next = new URLSearchParams(searchParams);
     const nextQ = updates.q !== undefined ? updates.q : query;
+    const nextCity = updates.city !== undefined ? updates.city : selectedCity;
     const nextArea = updates.area !== undefined ? updates.area : area;
+    const nextCat = updates.category !== undefined ? updates.category : categoryTab;
+    const nextBiz = updates.bizCategory !== undefined ? updates.bizCategory : businessCategory;
+    const nextMood = updates.mood !== undefined ? updates.mood : workMood;
     const nextMode = updates.mode !== undefined ? updates.mode : mode;
     const nextBudget = updates.budget !== undefined ? updates.budget : budget;
 
     if (nextQ.trim()) next.set('q', nextQ.trim());
     else next.delete('q');
+    if (nextCity && nextCity !== 'Bengaluru') next.set('city', nextCity);
+    else next.delete('city');
     if (nextArea) next.set('area', nextArea);
     else next.delete('area');
+    if (nextCat && nextCat !== 'all') next.set('category', nextCat);
+    else next.delete('category');
+    if (nextBiz) next.set('bizCategory', nextBiz);
+    else next.delete('bizCategory');
+    if (nextMood) next.set('mood', nextMood);
+    else next.delete('mood');
     if (nextMode) next.set('mode', nextMode);
     else next.delete('mode');
     if (nextBudget) next.set('budget', nextBudget);
@@ -369,7 +458,7 @@ export function LocationsPage() {
       setSortBy('distance');
       setFocusCenter(point);
       const radiusMeters = maxDistanceKm > 0 ? maxDistanceKm * 1000 : 5000;
-      void discoverCafesNear(point, 'Near You', radiusMeters);
+      void discoverCafesNear(point, 'Near You', radiusMeters, categoryTab || 'all');
     }
   };
 
@@ -380,25 +469,66 @@ export function LocationsPage() {
       if (point) {
         setSortBy('distance');
         setFocusCenter(point);
-        void discoverCafesNear(point, 'Near You', km * 1000);
+        void discoverCafesNear(point, 'Near You', km * 1000, categoryTab || 'all');
       }
     } else if (km > 0 && userLocation) {
       setSortBy('distance');
-      void discoverCafesNear(userLocation, 'Near You', km * 1000);
+      void discoverCafesNear(userLocation, 'Near You', km * 1000, categoryTab || 'all');
     }
   };
 
-  const handleDiscoverAreaLive = async (targetArea?: string) => {
-    const label = targetArea || area || 'Bengaluru';
-    const center = await discoverCafesByAreaText(label);
+  const handleDiscoverAreaLive = async (targetArea?: string, targetCategory?: string) => {
+    const label = (targetArea !== undefined ? targetArea : area) || selectedCity || 'Bengaluru';
+    const center = await discoverCafesByAreaText(
+      label,
+      targetCategory !== undefined ? targetCategory : categoryTab || 'all',
+      selectedCity
+    );
     if (center) {
       setFocusCenter(center);
     }
   };
 
+  const handleSelectCategoryTab = (nextCat: DiscoveryCategoryTabId) => {
+    setCategoryTab(nextCat);
+    setBusinessCategory('');
+    setVisibleCuratedCount(9);
+    syncQueryParams({ category: nextCat, bizCategory: '' });
+    const tabMeta = DISCOVERY_CATEGORY_TABS.find((t) => t.id === nextCat);
+    if (tabMeta) {
+      void searchLiveCafesInBengaluru(tabMeta.placesQuery, {
+        category: nextCat,
+        locality: area || undefined,
+        city: selectedCity,
+        radiusMeters: maxDistanceKm > 0 ? maxDistanceKm * 1000 : 5000,
+      });
+    }
+  };
+
+  const handleSelectWorkMood = (nextMood: WorkMoodId | '') => {
+    const updated = workMood === nextMood ? '' : nextMood;
+    setWorkMood(updated);
+    setVisibleCuratedCount(9);
+    syncQueryParams({ mood: updated });
+    if (updated) {
+      const meta = WORK_MOODS.find((m) => m.id === updated);
+      if (meta) {
+        void searchLiveCafesInBengaluru(meta.searchHint, {
+          locality: area || undefined,
+          city: selectedCity,
+          radiusMeters: maxDistanceKm > 0 ? maxDistanceKm * 1000 : 5000,
+        });
+      }
+    }
+  };
+
   const resetAll = () => {
     setQuery('');
+    setSelectedCity('Bengaluru');
     setArea('');
+    setCategoryTab('all');
+    setBusinessCategory('');
+    setWorkMood('');
     setMode('');
     setBudget('');
     setMaxDistanceKm(0);
@@ -422,6 +552,7 @@ export function LocationsPage() {
     setAtmosphere('any');
     setSortBy('featured');
     setFocusCenter(null);
+    setVisibleCuratedCount(9);
     try {
       sessionStorage.removeItem(FILTERS_STORAGE_KEY);
     } catch {
@@ -433,9 +564,25 @@ export function LocationsPage() {
   const filteredLocations = useMemo(() => {
     const q = query.trim().toLowerCase();
     const list = effectiveLocations.filter((loc) => {
+      if (selectedCity && selectedCity !== 'All India') {
+        const cityHay = `${loc.city} ${loc.address}`.toLowerCase();
+        if (!cityHay.includes(selectedCity.toLowerCase())) return false;
+      }
       if (area) {
         const hayArea = `${loc.area} ${loc.address}`.toLowerCase();
         if (!hayArea.includes(area.toLowerCase())) return false;
+      }
+      if (categoryTab && categoryTab !== 'all' && !matchesDiscoveryCategoryTab(loc, categoryTab)) {
+        return false;
+      }
+      if (businessCategory) {
+        const bizMeta = DISCOVERY_BUSINESS_CATEGORIES.find((b) => b.id === businessCategory);
+        if (bizMeta && !matchesDiscoveryCategoryTab(loc, bizMeta.tabId)) {
+          return false;
+        }
+      }
+      if (workMood && !matchesWorkMood(loc, workMood)) {
+        return false;
       }
       if (mode && !loc.modes.includes(mode as CafeMode)) return false;
       if (canViewPricing && budget && !matchesBudgetBracket(loc.avg_cost_per_person, loc.price_range, budget)) {
@@ -484,6 +631,7 @@ export function LocationsPage() {
       }
 
       const itemText = [
+        loc.category || '',
         loc.popular_items.join(' '),
         loc.best_for.join(' '),
         loc.claims.join(' '),
@@ -532,7 +680,9 @@ export function LocationsPage() {
       if (q) {
         const hay = [
           loc.name,
+          loc.category || '',
           loc.area,
+          loc.city,
           loc.address,
           loc.verdict,
           loc.description,
@@ -553,6 +703,7 @@ export function LocationsPage() {
         return (a.distanceKm ?? Number.MAX_SAFE_INTEGER) - (b.distanceKm ?? Number.MAX_SAFE_INTEGER);
       }
       if (sortBy === 'rating') return (b.rating ?? -1) - (a.rating ?? -1);
+      if (sortBy === 'reviews') return (b.rating_count ?? -1) - (a.rating_count ?? -1);
       if (sortBy === 'wifi' && canViewWifi) return (b.wifi_mbps ?? -1) - (a.wifi_mbps ?? -1);
       if (sortBy === 'cheapest' && canViewPricing) {
         return (
@@ -577,7 +728,11 @@ export function LocationsPage() {
     canViewWifi,
     canViewSockets,
     canViewWorkspace,
+    selectedCity,
     area,
+    categoryTab,
+    businessCategory,
+    workMood,
     mode,
     budget,
     maxDistanceKm,
@@ -604,31 +759,83 @@ export function LocationsPage() {
     sortBy,
   ]);
 
+  const paginatedCuratedLocations = useMemo(
+    () => filteredLocations.slice(0, visibleCuratedCount),
+    [filteredLocations, visibleCuratedCount]
+  );
+
   useEffect(() => {
     const trimmed = query.trim();
     if (!placesReady || trimmed.length < 3 || filteredLocations.length > 0) return;
     if (nearbyLabel.trim().toLowerCase() === trimmed.toLowerCase()) return;
 
     const timer = window.setTimeout(() => {
-      void searchLiveCafesInBengaluru(trimmed);
+      void searchLiveCafesInBengaluru(trimmed, {
+        category: categoryTab || undefined,
+        locality: area || undefined,
+        city: selectedCity,
+      });
     }, 550);
     return () => window.clearTimeout(timer);
-  }, [placesReady, query, filteredLocations.length, nearbyLabel, searchLiveCafesInBengaluru]);
+  }, [
+    placesReady,
+    query,
+    filteredLocations.length,
+    nearbyLabel,
+    categoryTab,
+    area,
+    selectedCity,
+    searchLiveCafesInBengaluru,
+  ]);
 
   const filteredGooglePlaces = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const fetchedForCurrentQuery = Boolean(q && nearbyLabel.trim().toLowerCase() === q);
-    return nearbyPlaces.filter((gc) => {
-      if (maxDistanceKm > 0 && gc.distanceKm !== null && gc.distanceKm > maxDistanceKm) {
-        return false;
-      }
-      if (minRating > 0 && (gc.rating === null || gc.rating < minRating)) return false;
-      if (!fetchedForCurrentQuery && q && !`${gc.name} ${gc.address} ${gc.areaLabel}`.toLowerCase().includes(q)) {
-        return false;
-      }
-      return true;
-    });
-  }, [nearbyPlaces, nearbyLabel, maxDistanceKm, minRating, query]);
+    const curatedAsKeys = filteredLocations.map((l) => ({
+      id: l.id,
+      place_id: l.place_id,
+      name: l.name,
+      area: l.area,
+      lat: l.lat,
+      lng: l.lng,
+    }));
+    const liveAsLocations = nearbyPlaces
+      .filter((gc) => {
+        if (maxDistanceKm > 0 && gc.distanceKm !== null && gc.distanceKm > maxDistanceKm) {
+          return false;
+        }
+        if (minRating > 0 && (gc.rating === null || gc.rating < minRating)) return false;
+        return true;
+      })
+      .map((gc) => ({
+        gc,
+        item: googleDiscoveryToLocationItem(gc),
+      }));
+
+    // Deduplicate live Google results against curated locations
+    const merged = deduplicateCafeItems(
+      curatedAsKeys,
+      liveAsLocations.map((x) => ({
+        id: x.item.id,
+        place_id: x.item.place_id,
+        name: x.item.name,
+        area: x.item.area,
+        lat: x.item.lat,
+        lng: x.item.lng,
+      }))
+    );
+    const allowedLiveIds = new Set(merged.slice(curatedAsKeys.length).map((m) => m.id));
+
+    return liveAsLocations
+      .filter((x) => allowedLiveIds.has(x.item.id))
+      .map((x) => x.gc)
+      .sort((a, b) => {
+        if (sortBy === 'distance' && userLocation) {
+          return (a.distanceKm ?? Number.MAX_SAFE_INTEGER) - (b.distanceKm ?? Number.MAX_SAFE_INTEGER);
+        }
+        if (sortBy === 'rating') return (b.rating ?? -1) - (a.rating ?? -1);
+        if (sortBy === 'reviews') return (b.ratingCount ?? -1) - (a.ratingCount ?? -1);
+        return 0;
+      });
+  }, [nearbyPlaces, filteredLocations, maxDistanceKm, minRating, sortBy, userLocation]);
 
   const filterControlsBody = (
     <div className="space-y-4">
@@ -666,7 +873,7 @@ export function LocationsPage() {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
         <div className="sm:col-span-2">
           <label htmlFor="loc-q" className="block text-xs font-medium text-[#5c4e45] mb-1.5">
-            Search any Bengaluru cafe, street, item, or locality
+            Search cafe, tea stall, bakery, snacks, street, or locality
           </label>
           <div className="flex gap-2 items-center">
             <div className="flex-1 min-w-0">
@@ -677,41 +884,112 @@ export function LocationsPage() {
                   setQuery(val);
                   syncQueryParams({ q: val });
                 }}
-                onSubmitQuery={(q) => void searchLiveCafesInBengaluru(q)}
-                placeholder="Search Third Wave, Indiranagar, tea, coffee, burgers..."
+                onSubmitQuery={(q) =>
+                  void searchLiveCafesInBengaluru(q, {
+                    category: categoryTab || undefined,
+                    locality: area || undefined,
+                    city: selectedCity,
+                  })
+                }
+                placeholder="Search Coffee, Tea, Indiranagar, Koramangala, Bakery..."
               />
             </div>
-            {query.trim().length >= 2 && (
-              <button
-                type="button"
-                disabled={nearbyLoading}
-                onClick={() => void searchLiveCafesInBengaluru(query)}
-                className="h-12 px-4 rounded-xl bg-[#1b4d3e] hover:bg-[#133a2e] disabled:opacity-60 text-white text-xs font-semibold inline-flex items-center gap-1.5 shrink-0 transition-colors"
-              >
-                <Search className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>{nearbyLoading ? 'Searching...' : 'Search Live'}</span>
-              </button>
-            )}
+            <button
+              type="button"
+              disabled={nearbyLoading}
+              onClick={() =>
+                void searchLiveCafesInBengaluru(
+                  query.trim() ||
+                    DISCOVERY_CATEGORY_TABS.find((t) => t.id === categoryTab)?.placesQuery ||
+                    'cafes coffee tea',
+                  {
+                    category: categoryTab || undefined,
+                    locality: area || undefined,
+                    city: selectedCity,
+                  }
+                )
+              }
+              className="h-12 px-4 rounded-xl bg-[#1b4d3e] hover:bg-[#133a2e] disabled:opacity-60 text-white text-xs font-semibold inline-flex items-center gap-1.5 shrink-0 transition-colors"
+            >
+              <Search className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>{nearbyLoading ? 'Searching...' : 'Search Live'}</span>
+            </button>
           </div>
         </div>
 
         <div>
-          <label htmlFor="loc-area" className="block text-xs font-medium text-[#5c4e45] mb-1.5">
-            Bengaluru Locality
+          <label htmlFor="loc-city" className="block text-xs font-medium text-[#5c4e45] mb-1.5">
+            City / Region
           </label>
           <select
+            id="loc-city"
+            value={selectedCity}
+            onChange={(e) => {
+              setSelectedCity(e.target.value);
+              syncQueryParams({ city: e.target.value });
+            }}
+            className="w-full h-12 px-3 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-sm font-medium text-[#1c1613]"
+          >
+            {SUPPORTED_CITIES.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+            <option value="All India">Any Indian City</option>
+          </select>
+        </div>
+
+        <div>
+          <label htmlFor="loc-area" className="block text-xs font-medium text-[#5c4e45] mb-1.5">
+            Locality / Area (or type any location)
+          </label>
+          <input
             id="loc-area"
+            list="cafedesk-area-options"
             value={area}
             onChange={(e) => {
               setArea(e.target.value);
               syncQueryParams({ area: e.target.value });
             }}
+            placeholder="e.g. Indiranagar, Whitefield..."
+            className="w-full h-12 px-3 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-sm font-medium text-[#1c1613]"
+          />
+          <datalist id="cafedesk-area-options">
+            {areaOptions.map((a) => (
+              <option key={a} value={a} />
+            ))}
+          </datalist>
+        </div>
+
+        <div>
+          <label htmlFor="loc-biz-cat" className="block text-xs font-medium text-[#5c4e45] mb-1.5">
+            Place Category (13 Local Types)
+          </label>
+          <select
+            id="loc-biz-cat"
+            value={businessCategory}
+            onChange={(e) => {
+              const nextBiz = e.target.value as DiscoveryBusinessCategoryId | '';
+              setBusinessCategory(nextBiz);
+              const meta = DISCOVERY_BUSINESS_CATEGORIES.find((b) => b.id === nextBiz);
+              if (meta) {
+                setCategoryTab(meta.tabId);
+                syncQueryParams({ bizCategory: nextBiz, category: meta.tabId });
+                void searchLiveCafesInBengaluru(meta.placesQuery, {
+                  category: meta.tabId,
+                  locality: area || undefined,
+                  city: selectedCity,
+                });
+              } else {
+                syncQueryParams({ bizCategory: '' });
+              }
+            }}
             className="w-full h-12 px-3 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-sm font-medium text-[#1c1613]"
           >
-            <option value="">All Bengaluru Areas</option>
-            {areaOptions.map((a) => (
-              <option key={a} value={a}>
-                {a}
+            <option value="">All 13 Place Categories</option>
+            {DISCOVERY_BUSINESS_CATEGORIES.map((cat) => (
+              <option key={cat.id} value={cat.id}>
+                {cat.label}
               </option>
             ))}
           </select>
@@ -719,7 +997,7 @@ export function LocationsPage() {
 
         <div>
           <label htmlFor="loc-dist" className="block text-xs font-medium text-[#5c4e45] mb-1.5">
-            Distance From Me
+            Smart Nearby Radius
           </label>
           <select
             id="loc-dist"
@@ -728,7 +1006,8 @@ export function LocationsPage() {
             className="w-full h-12 px-3 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-sm font-medium text-[#1c1613]"
           >
             <option value={0}>Any distance</option>
-            <option value={2}>Within 2 km</option>
+            <option value={1}>Within 1 km</option>
+            <option value={3}>Within 3 km</option>
             <option value={5}>Within 5 km</option>
             <option value={10}>Within 10 km</option>
           </select>
@@ -946,12 +1225,13 @@ export function LocationsPage() {
             className="h-10 px-3.5 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-xs sm:text-sm font-semibold text-[#1c1613]"
           >
             <option value="distance" disabled={!userLocation}>
-              Closest First {!userLocation ? '(Requires GPS)' : ''}
+              Nearest First {!userLocation ? '(Requires GPS)' : ''}
             </option>
             <option value="featured">Recommended</option>
             <option value="rating">Highest Rated</option>
+            <option value="reviews">Most Reviewed</option>
             <option value="wifi">{canViewWifi ? 'Fastest Wi-Fi' : '🔒 Fastest Wi-Fi (Plus)'}</option>
-            <option value="cheapest">{canViewPricing ? 'Lowest Budget' : '🔒 Lowest Budget (Plus)'}</option>
+            <option value="cheapest">{canViewPricing ? 'Budget Friendly' : '🔒 Budget Friendly (Plus)'}</option>
             <option value="quietest">{canViewWorkspace ? 'Quietest First' : '🔒 Quietest First (Plus)'}</option>
             <option value="recent">Recently Verified</option>
           </select>
@@ -1058,7 +1338,7 @@ export function LocationsPage() {
         </div>
       </div>
 
-      {/* Mobile Always-Accessible Search Bar + Swipeable Quick Preset Filter Chips */}
+      {/* Mobile Always-Accessible Search Bar */}
       <div className="md:hidden space-y-2.5">
         <CafeAutocompleteSearch
           id="loc-q-mobile"
@@ -1067,123 +1347,117 @@ export function LocationsPage() {
             setQuery(val);
             syncQueryParams({ q: val });
           }}
-          onSubmitQuery={(q) => void searchLiveCafesInBengaluru(q)}
-          placeholder="Search cafe, Indiranagar, study, coffee..."
+          onSubmitQuery={(q) =>
+            void searchLiveCafesInBengaluru(q, {
+              category: categoryTab || undefined,
+              locality: area || undefined,
+              city: selectedCity,
+            })
+          }
+          placeholder="Search coffee, tea stall, bakery, Indiranagar..."
           inputClassName="w-full h-12 pl-10 pr-10 rounded-xl border border-[#d6cbba] bg-white text-sm text-[#1c1613] shadow-xs"
         />
       </div>
 
-      <div className="flex overflow-x-auto no-scrollbar gap-2 -mx-4 px-4 pb-1 md:mx-0 md:px-0 md:flex-wrap">
-        {[
-          {
-            id: 'nearby',
-            label: 'Nearby',
-            active: Boolean(userLocation && sortBy === 'distance'),
-            onTap: () => void handleFindNearMe(),
-          },
-          {
-            id: 'budget',
-            label: canViewPricing ? 'Budget' : '🔒 Budget',
-            active: canViewPricing && budget === 'under-200',
-            onTap: () => {
-              if (!canViewPricing) {
-                openUpgradeModal({ featureName: 'Budget Per Person Filter', requiredPlan: 'plus' });
-                return;
-              }
-              const next = budget === 'under-200' ? '' : 'under-200';
-              setBudget(next);
-              syncQueryParams({ budget: next });
-            },
-          },
-          {
-            id: 'quiet',
-            label: canViewWorkspace ? 'Quiet' : '🔒 Quiet',
-            active: canViewWorkspace && quietOnly,
-            onTap: () => {
-              if (!canViewWorkspace) {
-                openUpgradeModal({ featureName: 'Quiet Acoustics Filter', requiredPlan: 'plus' });
-                return;
-              }
-              setQuietOnly((v) => !v);
-            },
-          },
-          {
-            id: 'study',
-            label: canViewWorkspace ? 'Study-friendly' : '🔒 Study-friendly',
-            active: canViewWorkspace && studyOnly,
-            onTap: () => {
-              if (!canViewWorkspace) {
-                openUpgradeModal({ featureName: 'Study Suitability Filter', requiredPlan: 'plus' });
-                return;
-              }
-              setStudyOnly((v) => !v);
-            },
-          },
-          {
-            id: 'work',
-            label: canViewWorkspace ? 'Work-friendly' : '🔒 Work-friendly',
-            active: canViewWorkspace && workOnly,
-            onTap: () => {
-              if (!canViewWorkspace) {
-                openUpgradeModal({ featureName: 'Work Suitability Filter', requiredPlan: 'plus' });
-                return;
-              }
-              setWorkOnly((v) => !v);
-            },
-          },
-          {
-            id: 'wifi',
-            label: canViewWifi ? 'Wi-Fi' : '🔒 Wi-Fi',
-            active: canViewWifi && wifiOnly,
-            onTap: () => {
-              if (!canViewWifi) {
-                openUpgradeModal({ featureName: 'Wi-Fi Filter', requiredPlan: 'plus' });
-                return;
-              }
-              setWifiOnly((v) => !v);
-            },
-          },
-          {
-            id: 'sockets',
-            label: canViewSockets ? 'Power sockets' : '🔒 Power sockets',
-            active: canViewSockets && socketsOnly,
-            onTap: () => {
-              if (!canViewSockets) {
-                openUpgradeModal({ featureName: 'Power Socket Filter', requiredPlan: 'plus' });
-                return;
-              }
-              setSocketsOnly((v) => !v);
-            },
-          },
-          {
-            id: 'food',
-            label: canViewPricing ? 'Food & Drinks' : '🔒 Food & Drinks',
-            active: canViewPricing && (teaCoffeeOnly || bakerySnacksOnly),
-            onTap: () => {
-              if (!canViewPricing) {
-                openUpgradeModal({ featureName: 'Menu & Beverage Filters', requiredPlan: 'plus' });
-                return;
-              }
-              const next = !(teaCoffeeOnly || bakerySnacksOnly);
-              setTeaCoffeeOnly(next);
-              setBakerySnacksOnly(next);
-            },
-          },
-        ].map((chip) => (
-          <button
-            key={chip.id}
-            type="button"
-            onClick={chip.onTap}
-            className={`min-h-[38px] px-3.5 py-1.5 rounded-full text-xs font-semibold border transition-colors whitespace-nowrap shrink-0 ${
-              chip.active
-                ? 'bg-[#1c1613] text-white border-[#1c1613]'
-                : 'bg-white text-[#5c4e45] border-[#e6ddd0] hover:border-[#b45309] hover:text-[#1c1613]'
-            }`}
-          >
-            {chip.label}
-          </button>
-        ))}
+      {/* Top Category Bar (Vertical Wrapping Grid — Zero Horizontal Carousel) */}
+      <div className="space-y-3 bg-white rounded-2xl border border-[#e6ddd0] p-3.5 sm:p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-[#b45309]">
+            Local Discovery Categories
+          </span>
+          <span className="text-[11px] text-[#5c4e45]">
+            {selectedCity} {area ? `· ${area}` : ''}
+          </span>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {DISCOVERY_CATEGORY_TABS.map((tab) => {
+            const active = (categoryTab || 'all') === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => handleSelectCategoryTab(tab.id)}
+                className={`min-h-[38px] px-3.5 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
+                  active
+                    ? 'bg-[#1c1613] text-white border-[#1c1613]'
+                    : 'bg-[#faf7f2] text-[#5c4e45] border-[#e6ddd0] hover:border-[#b45309] hover:text-[#1c1613]'
+                }`}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Find My Work Mood + Budget Finder Row */}
+        <div className="pt-2.5 border-t border-[#e6ddd0] flex flex-wrap items-center gap-2">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-[#1b4d3e] mr-1">
+            Work Mood:
+          </span>
+          {WORK_MOODS.map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              onClick={() => handleSelectWorkMood(m.id)}
+              className={`min-h-[34px] px-3 py-1 rounded-full text-xs font-semibold border transition-colors ${
+                workMood === m.id
+                  ? 'bg-[#1b4d3e] text-white border-[#1b4d3e]'
+                  : 'bg-white text-[#5c4e45] border-[#e6ddd0] hover:border-[#1b4d3e] hover:text-[#1c1613]'
+              }`}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="pt-2.5 border-t border-[#e6ddd0] flex flex-wrap items-center gap-2">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-[#5c4e45] mr-1">
+            Budget:
+          </span>
+          {BUDGET_BRACKETS.map((b) => {
+            const active = canViewPricing && budget === b.id;
+            return (
+              <button
+                key={b.id}
+                type="button"
+                onClick={() => {
+                  if (!canViewPricing) {
+                    openUpgradeModal({ featureName: 'Budget Per Person Filter', requiredPlan: 'plus' });
+                    return;
+                  }
+                  const next = budget === b.id ? '' : b.id;
+                  setBudget(next);
+                  syncQueryParams({ budget: next });
+                }}
+                className={`min-h-[34px] px-3 py-1 rounded-full text-xs font-semibold border transition-colors ${
+                  active
+                    ? 'bg-[#b45309] text-white border-[#b45309]'
+                    : 'bg-white text-[#5c4e45] border-[#e6ddd0] hover:border-[#b45309] hover:text-[#1c1613]'
+                }`}
+              >
+                {canViewPricing ? b.label : `🔒 ${b.label}`}
+              </button>
+            );
+          })}
+        </div>
       </div>
+
+      {/* Places Notice / Key Status Alert */}
+      {placesNotice && (
+        <div
+          role="status"
+          className="px-4 py-3 rounded-2xl border border-[#fde68a] bg-[#fffbeb] text-[#92400e] text-xs flex flex-wrap items-center justify-between gap-2"
+        >
+          <span className="font-medium">{placesNotice}</span>
+          <button
+            type="button"
+            onClick={clearPlacesNotice}
+            className="font-semibold underline underline-offset-4"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Expired / Suspended Subscription Banner */}
       {(isExpired || isSuspended) && (
@@ -1369,7 +1643,7 @@ export function LocationsPage() {
           onRequestNearMe={handleFindNearMe}
           onSearchThisArea={(center) => {
             setFocusCenter(center);
-            void discoverCafesNear(center, 'Map Area', 4000);
+            void discoverCafesNear(center, 'Map Area', 4000, categoryTab || 'all');
           }}
           heightClassName="h-[62vh] min-h-[420px] sm:h-[560px]"
         />
@@ -1412,10 +1686,23 @@ export function LocationsPage() {
                 </div>
               )
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {filteredLocations.map((loc) => (
-                  <LocationCard key={loc.id} location={loc} />
-                ))}
+              <div className="space-y-5">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {paginatedCuratedLocations.map((loc) => (
+                    <LocationCard key={loc.id} location={loc} />
+                  ))}
+                </div>
+                {filteredLocations.length > paginatedCuratedLocations.length && (
+                  <div className="flex justify-center">
+                    <button
+                      type="button"
+                      onClick={() => setVisibleCuratedCount((c) => c + 9)}
+                      className="min-h-[44px] px-6 py-2.5 rounded-xl bg-white border border-[#d6cbba] hover:border-[#b45309] text-xs sm:text-sm font-semibold text-[#1c1613]"
+                    >
+                      Show More Curated Cafes ({filteredLocations.length - paginatedCuratedLocations.length} more)
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -1434,7 +1721,7 @@ export function LocationsPage() {
               onRequestNearMe={handleFindNearMe}
               onSearchThisArea={(center) => {
                 setFocusCenter(center);
-                void discoverCafesNear(center, 'Map Area', 4000);
+                void discoverCafesNear(center, 'Map Area', 4000, categoryTab || 'all');
               }}
               heightClassName="h-[540px]"
             />
@@ -1456,7 +1743,7 @@ export function LocationsPage() {
                 No curated cafes match these filters
               </h2>
               <p className="text-sm text-[#5c4e45]">
-                Try relaxing your minimum Wi-Fi or budget filters.
+                Try relaxing your minimum Wi-Fi or budget filters, or inspect live Google Places results below.
               </p>
               <button
                 type="button"
@@ -1468,10 +1755,23 @@ export function LocationsPage() {
             </div>
           )
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {filteredLocations.map((loc) => (
-              <LocationCard key={loc.id} location={loc} />
-            ))}
+          <div className="space-y-5">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {paginatedCuratedLocations.map((loc) => (
+                <LocationCard key={loc.id} location={loc} />
+              ))}
+            </div>
+            {filteredLocations.length > paginatedCuratedLocations.length && (
+              <div className="flex justify-center">
+                <button
+                  type="button"
+                  onClick={() => setVisibleCuratedCount((c) => c + 9)}
+                  className="min-h-[44px] px-6 py-2.5 rounded-xl bg-white border border-[#d6cbba] hover:border-[#b45309] text-xs sm:text-sm font-semibold text-[#1c1613]"
+                >
+                  Show More Curated Cafes ({filteredLocations.length - paginatedCuratedLocations.length} more)
+                </button>
+              </div>
+            )}
           </div>
         ))}
 
@@ -1515,6 +1815,8 @@ export function LocationsPage() {
                 authenticated
               );
               const locItem = googleDiscoveryToLocationItem(gc);
+              const sourceMeta = getCafeSourceMeta(locItem);
+              const directionsUrl = buildGoogleMapsDirectionsUrl(locItem);
               const snapshot = locationToLibrarySnapshot(locItem);
               const saved = isCafeSaved(snapshot.key);
               const favourited = isCafeFavourite(snapshot.key);
@@ -1548,19 +1850,25 @@ export function LocationsPage() {
                       ) : (
                         <div className="w-full h-full p-4 flex flex-col justify-between">
                           <span className="text-[11px] font-mono-data uppercase font-medium text-[#5c4e45]">
-                            {gc.areaLabel} · Google Maps
+                            {gc.areaLabel} · Google Places
                           </span>
                           <p className="font-serif-display text-lg font-bold text-[#1c1613] line-clamp-1">
                             {gc.name}
                           </p>
                         </div>
                       )}
+                      <span
+                        className={`absolute top-2.5 left-2.5 px-2.5 py-0.5 rounded-full text-[10px] font-semibold ${sourceMeta.badgeClass}`}
+                      >
+                        {sourceMeta.shortLabel}
+                      </span>
                     </Link>
 
                     <div className="p-4 space-y-2">
                       <div className="flex items-center justify-between gap-2 text-xs">
                         <span className="font-semibold text-[#1b4d3e] truncate">
                           {gc.areaLabel}
+                          {gc.categoryLabel ? ` · ${gc.categoryLabel}` : ''}
                         </span>
                         {distText && (
                           <span className="inline-flex items-center gap-1 font-mono-data font-semibold text-[#1b4d3e] shrink-0">
@@ -1620,9 +1928,9 @@ export function LocationsPage() {
                       </div>
 
                       <div className="pt-2 border-t border-[#e6ddd0] flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[#5c4e45]">
-                        <span>Wi-Fi: {canViewWifi ? 'Not verified' : 'Subscribers only'}</span>
+                        <span>Wi-Fi: Not verified</span>
                         <span>·</span>
-                        <span>Sockets: {canViewSockets ? 'Not verified' : 'Subscribers only'}</span>
+                        <span>Sockets: Not verified</span>
                       </div>
                     </div>
                   </div>
@@ -1688,19 +1996,23 @@ export function LocationsPage() {
                           <span>Website</span>
                         </a>
                       ) : (
-                        <span className="text-[#5c4e45]">Google Places</span>
+                        <span className="text-[#5c4e45]">Google Places Discovery</span>
                       )}
 
                       <div className="flex items-center gap-3">
-                        <a
-                          href={gc.mapLink}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 font-medium text-[#5c4e45] hover:text-[#1c1613]"
-                        >
-                          <span>Directions</span>
-                          <ArrowUpRight className="w-3.5 h-3.5" aria-hidden="true" />
-                        </a>
+                        {directionsUrl ? (
+                          <a
+                            href={directionsUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 font-semibold text-[#1b4d3e] hover:text-[#143a2e]"
+                          >
+                            <span>Directions</span>
+                            <ArrowUpRight className="w-3.5 h-3.5" aria-hidden="true" />
+                          </a>
+                        ) : (
+                          <span className="text-[#5c4e45]/60 font-medium">No Directions</span>
+                        )}
                         <Link
                           to={detailPath}
                           className="font-semibold text-[#b45309] hover:underline underline-offset-4"
@@ -1714,6 +2026,19 @@ export function LocationsPage() {
               );
             })}
           </div>
+
+          {nearbyHasMore && (
+            <div className="flex justify-center pt-2">
+              <button
+                type="button"
+                disabled={loadingMoreNearby}
+                onClick={() => void loadMoreLiveCafes()}
+                className="min-h-[44px] px-6 py-2.5 rounded-xl bg-[#1b4d3e] hover:bg-[#133a2e] disabled:opacity-60 text-white text-xs sm:text-sm font-semibold transition-colors"
+              >
+                {loadingMoreNearby ? 'Loading More Places...' : 'Load More Local Places'}
+              </button>
+            </div>
+          )}
         </section>
       )}
     </div>
