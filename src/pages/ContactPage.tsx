@@ -17,8 +17,10 @@ export function ContactPage() {
   const { settings } = useCms();
 
   useDocumentMeta(settings.seo_contact_title, settings.seo_contact_description, {
+    canonicalPath: '/contact',
     ogImage: settings.seo_og_image,
     allowIndexing: settings.seo_allow_indexing,
+    googleSiteVerification: settings.google_site_verification,
   });
 
   const [name, setName] = useState('');

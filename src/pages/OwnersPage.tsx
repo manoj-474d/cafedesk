@@ -62,7 +62,12 @@ export function OwnersPage() {
   useDocumentMeta(
     `Partner With Us – Cafe Owner Plans | ${settings.brand_name}`,
     'List and verify your coffee house or workspace on CafeDesk to welcome steady weekday remote workers and students.',
-    { allowIndexing: settings.seo_allow_indexing }
+    {
+      canonicalPath: '/owners',
+      ogImage: settings.seo_og_image,
+      allowIndexing: settings.seo_allow_indexing,
+      googleSiteVerification: settings.google_site_verification,
+    }
   );
 
   const [selectedPlan, setSelectedPlan] = useState<PlanOption['id']>('Verified (₹999/month)');

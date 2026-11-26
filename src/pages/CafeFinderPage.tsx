@@ -85,8 +85,10 @@ export function CafeFinderPage() {
     `Interactive Cafe Finder – ${settings.brand_name}`,
     'Answer a few quick preferences to discover your best-matched Bengaluru cafe for work, study, dates, or affordable coffee.',
     {
+      canonicalPath: '/finder',
       ogImage: settings.seo_og_image,
       allowIndexing: settings.seo_allow_indexing,
+      googleSiteVerification: settings.google_site_verification,
     }
   );
 

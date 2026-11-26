@@ -302,6 +302,13 @@ export function PublicLayout() {
               Smart Cafe Finder
             </Link>
             <Link
+              to="/guides"
+              onClick={() => setMobileMenuOpen(false)}
+              className="flex items-center min-h-[44px] px-3 rounded-xl text-sm font-medium text-[#1c1613] hover:bg-white"
+            >
+              Bengaluru Local Guides
+            </Link>
+            <Link
               to="/pricing"
               onClick={() => setMobileMenuOpen(false)}
               className="flex items-center min-h-[44px] px-3 rounded-xl text-sm font-medium text-[#1c1613] hover:bg-white"
@@ -514,7 +521,34 @@ export function PublicLayout() {
             </div>
           </div>
 
-          <div className="mt-10 pt-6 border-t border-white/10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-[#a89a8e]">
+          <div className="mt-8 pt-6 border-t border-white/10 space-y-2.5">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-[#f59e0b]">
+              Bengaluru Neighbourhoods &amp; Local Guides
+            </p>
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-[#d6cbba]">
+              {[
+                { label: 'Local Guides', to: '/guides' },
+                { label: 'Best Cafes in Bengaluru', to: '/best-cafes-in-bengaluru' },
+                { label: 'Affordable Cafes', to: '/affordable-cafes-in-bengaluru' },
+                { label: 'Tea Shops', to: '/tea-shops-in-bengaluru' },
+                { label: 'Coffee Shops', to: '/coffee-shops-in-bengaluru' },
+                { label: 'Study Cafes', to: '/study-cafes-in-bengaluru' },
+                { label: 'Work-Friendly Cafes', to: '/work-friendly-cafes-in-bengaluru' },
+                { label: 'Koramangala', to: '/cafes-in-koramangala' },
+                { label: 'Indiranagar', to: '/cafes-in-indiranagar' },
+                { label: 'HSR Layout', to: '/cafes-in-hsr-layout' },
+                { label: 'Jayanagar', to: '/cafes-in-jayanagar' },
+                { label: 'Whitefield', to: '/cafes-in-whitefield' },
+                { label: 'MG Road', to: '/cafes-in-mg-road' },
+              ].map((seoLink) => (
+                <Link key={seoLink.to} to={seoLink.to} className="hover:text-white transition-colors">
+                  {seoLink.label}
+                </Link>
+              ))}
+            </div>
+          </div>
+
+          <div className="mt-6 pt-6 border-t border-white/10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-[#a89a8e]">
             <p>{settings.footer_copyright}</p>
             <p>{settings.business_legal_name}</p>
           </div>

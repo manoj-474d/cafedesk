@@ -65,6 +65,9 @@ import { CafeAutocompleteSearch } from '../components/CafeAutocompleteSearch';
 import { InteractiveCafeMap } from '../components/InteractiveCafeMap';
 import { LocationCard } from '../components/LocationCard';
 import { ResilientPhoto } from '../components/ResilientPhoto';
+import { LOCAL_SEO_PAGES } from '../config/seoPages';
+import { trackAnalyticsEvent } from '../utils/analytics';
+import { buildBreadcrumbSchema, buildItemListSchema } from '../utils/seoSchemas';
 
 type SortOption =
   | 'distance'
@@ -150,11 +153,6 @@ export function LocationsPage() {
     placesReady,
   } = useDiscovery();
   const [searchParams, setSearchParams] = useSearchParams();
-
-  useDocumentMeta(settings.seo_locations_title, settings.seo_locations_description, {
-    ogImage: settings.seo_og_image,
-    allowIndexing: settings.seo_allow_indexing,
-  });
 
   const FILTERS_STORAGE_KEY = 'cafedesk_locations_filters_v1';
   const readStoredFilters = (): Record<string, unknown> => {
@@ -759,6 +757,26 @@ export function LocationsPage() {
     sortBy,
   ]);
 
+  const origin = typeof window !== 'undefined' ? window.location.origin : 'https://cafedesk.space';
+  useDocumentMeta(settings.seo_locations_title, settings.seo_locations_description, {
+    canonicalPath: '/discover',
+    ogImage: settings.seo_og_image,
+    allowIndexing: settings.seo_allow_indexing,
+    googleSiteVerification: settings.google_site_verification,
+    schemas: [
+      buildBreadcrumbSchema(origin, [
+        { name: 'Home', path: '/' },
+        { name: 'Discover Cafes', path: '/discover' },
+      ]),
+      buildItemListSchema(
+        origin,
+        'Bengaluru Cafes & Workspaces',
+        settings.seo_locations_description,
+        filteredLocations
+      ),
+    ],
+  });
+
   const paginatedCuratedLocations = useMemo(
     () => filteredLocations.slice(0, visibleCuratedCount),
     [filteredLocations, visibleCuratedCount]
@@ -884,31 +902,40 @@ export function LocationsPage() {
                   setQuery(val);
                   syncQueryParams({ q: val });
                 }}
-                onSubmitQuery={(q) =>
+                onSubmitQuery={(q) => {
+                  trackAnalyticsEvent('search_query', {
+                    query: q,
+                    city: selectedCity,
+                    area: area || 'all',
+                  });
                   void searchLiveCafesInBengaluru(q, {
                     category: categoryTab || undefined,
                     locality: area || undefined,
                     city: selectedCity,
-                  })
-                }
+                  });
+                }}
                 placeholder="Search Coffee, Tea, Indiranagar, Koramangala, Bakery..."
               />
             </div>
             <button
               type="button"
               disabled={nearbyLoading}
-              onClick={() =>
-                void searchLiveCafesInBengaluru(
+              onClick={() => {
+                const liveQ =
                   query.trim() ||
-                    DISCOVERY_CATEGORY_TABS.find((t) => t.id === categoryTab)?.placesQuery ||
-                    'cafes coffee tea',
-                  {
-                    category: categoryTab || undefined,
-                    locality: area || undefined,
-                    city: selectedCity,
-                  }
-                )
-              }
+                  DISCOVERY_CATEGORY_TABS.find((t) => t.id === categoryTab)?.placesQuery ||
+                  'cafes coffee tea';
+                trackAnalyticsEvent('search_query', {
+                  query: liveQ,
+                  city: selectedCity,
+                  area: area || 'all',
+                });
+                void searchLiveCafesInBengaluru(liveQ, {
+                  category: categoryTab || undefined,
+                  locality: area || undefined,
+                  city: selectedCity,
+                });
+              }}
               className="h-12 px-4 rounded-xl bg-[#1b4d3e] hover:bg-[#133a2e] disabled:opacity-60 text-white text-xs font-semibold inline-flex items-center gap-1.5 shrink-0 transition-colors"
             >
               <Search className="w-3.5 h-3.5" aria-hidden="true" />
@@ -1595,6 +1622,7 @@ export function LocationsPage() {
       )}
 
       {/* Results Summary + Live Area Discovery Trigger */}
+      <h2 className="sr-only">Curated Bengaluru Cafes and Workspaces</h2>
       <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-[#5c4e45]">
         <p>
           Showing{' '}
@@ -2041,6 +2069,32 @@ export function LocationsPage() {
           )}
         </section>
       )}
+
+      {/* Bengaluru Local Guides & Neighbourhood Landing Links */}
+      <section
+        aria-label="Explore Bengaluru cafe guides by area and category"
+        className="pt-6 border-t border-[#e6ddd0] space-y-3"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="font-serif-display text-lg font-bold text-[#1c1613]">
+            Explore by Bengaluru Area &amp; Budget Guide
+          </h2>
+          <Link to="/guides" className="text-xs font-semibold text-[#b45309] hover:underline">
+            View editorial guides &rarr;
+          </Link>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {LOCAL_SEO_PAGES.slice(0, 14).map((p) => (
+            <Link
+              key={p.slug}
+              to={p.path}
+              className="px-3 py-1.5 rounded-full bg-white hover:bg-[#fef3c7] border border-[#e6ddd0] text-xs font-medium text-[#1c1613] transition-colors"
+            >
+              {p.kicker}
+            </Link>
+          ))}
+        </div>
+      </section>
     </div>
   );
 }

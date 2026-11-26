@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useCms } from '../context/CmsContext';
+import { trackAnalyticsEvent } from '../utils/analytics';
 import { useDocumentMeta } from '../utils/cafeHelpers';
 
 const COMPARISON_ROWS: Array<{
@@ -117,10 +118,16 @@ export function PricingPage() {
   useDocumentMeta(
     `Plans & Pricing – ${settings.brand_name}`,
     `Explore Bengaluru cafes free forever, or upgrade to Cafe Desk memberships (${currencySymbol}${monthlyPrice}/mo or ${currencySymbol}${annualPrice}/year) for full menus, prices, budget filters, comparisons, and exclusive deals.`,
-    { allowIndexing: true }
+    {
+      canonicalPath: '/pricing',
+      ogImage: settings.seo_og_image,
+      allowIndexing: settings.seo_allow_indexing,
+      googleSiteVerification: settings.google_site_verification,
+    }
   );
 
   const handlePlanAction = (planId: string, priceInr: number) => {
+    trackAnalyticsEvent('membership_cta', { plan_id: planId, price_inr: priceInr });
     if (planId === 'free' || priceInr <= 0) {
       if (authenticated) navigate('/locations');
       else navigate('/login?mode=signup');

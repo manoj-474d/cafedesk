@@ -13,7 +13,12 @@ export function SubmitCafePage() {
   useDocumentMeta(
     `Submit a Cafe or Report an Update – ${settings.brand_name}`,
     'Suggest a work or study-friendly cafe or report outdated WiFi speeds, timings, or socket counts.',
-    { allowIndexing: settings.seo_allow_indexing }
+    {
+      canonicalPath: '/submit',
+      ogImage: settings.seo_og_image,
+      allowIndexing: settings.seo_allow_indexing,
+      googleSiteVerification: settings.google_site_verification,
+    }
   );
 
   const [submissionType, setSubmissionType] = useState<'new' | 'update'>(

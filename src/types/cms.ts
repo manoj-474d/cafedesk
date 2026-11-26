@@ -306,6 +306,7 @@ export interface SiteSettings {
   seo_contact_description: string;
   seo_og_image: string;
   seo_allow_indexing: boolean;
+  google_site_verification?: string;
 
   currency_code: string;
   currency_symbol: string;

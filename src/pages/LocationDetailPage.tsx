@@ -77,6 +77,9 @@ import {
   isOutdoorFriendly,
   recordRecentlyViewedSlug,
 } from '../utils/cafeRecommendations';
+import { getAreaSeoRoute } from '../config/seoPages';
+import { trackAnalyticsEvent } from '../utils/analytics';
+import { buildBreadcrumbSchema, buildCafeSchema } from '../utils/seoSchemas';
 import { InteractiveCafeMap } from '../components/InteractiveCafeMap';
 import { LocationCard } from '../components/LocationCard';
 import { PremiumLockCard } from '../components/PremiumLockCard';
@@ -327,6 +330,13 @@ export function LocationDetailPage() {
         .join(' · ')
     : 'Explore work and study cafes in Bengaluru.';
 
+  const origin = typeof window !== 'undefined' ? window.location.origin : 'https://cafedesk.space';
+  const isCuratedCanonical = Boolean(location && !location.isLiveGooglePlace);
+  const canonicalCafePath = isCuratedCanonical && location
+    ? `/cafe/${encodeURIComponent(location.slug || location.id)}`
+    : undefined;
+  const areaSeoPath = location ? getAreaSeoRoute(location.area) : null;
+
   useDocumentMeta(
     location
       ? `${location.name} – ${location.area}, Bengaluru | ${settings.brand_name}`
@@ -335,13 +345,39 @@ export function LocationDetailPage() {
       : `Location Not Found – ${settings.brand_name}`,
     metaDescription,
     {
+      canonicalPath: canonicalCafePath,
+      ogType: location ? 'place' : 'website',
       ogImage:
         location && location.photos_approved && location.photos.length > 0
           ? location.photos[0]
           : settings.seo_og_image,
-      allowIndexing: settings.seo_allow_indexing,
+      allowIndexing: Boolean(isCuratedCanonical && settings.seo_allow_indexing),
+      googleSiteVerification: settings.google_site_verification,
+      schemas:
+        isCuratedCanonical && location && canonicalCafePath
+          ? [
+              buildBreadcrumbSchema(origin, [
+                { name: 'Home', path: '/' },
+                { name: 'Discover Cafes', path: '/discover' },
+                ...(areaSeoPath
+                  ? [{ name: `${location.area} Cafes`, path: areaSeoPath }]
+                  : []),
+                { name: location.name, path: canonicalCafePath },
+              ]),
+              buildCafeSchema(origin, location),
+            ]
+          : [],
     }
   );
+
+  useEffect(() => {
+    if (!location) return;
+    trackAnalyticsEvent('cafe_view', {
+      cafe_slug: location.slug || location.id,
+      cafe_name: location.name,
+      area: location.area,
+    });
+  }, [location?.id]);
 
   if (authLoading || (!isGoogleRoute && serverLoading && !location)) {
     return (
@@ -589,13 +625,41 @@ export function LocationDetailPage() {
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 pt-5 sm:pt-10 pb-28 md:pb-14 space-y-8 sm:space-y-10">
-      <nav aria-label="Breadcrumb">
+      <nav aria-label="Breadcrumb" className="flex flex-wrap items-center justify-between gap-2">
+        <ol className="flex flex-wrap items-center gap-1.5 text-xs sm:text-sm text-[#5c4e45]">
+          <li>
+            <Link to="/" className="hover:text-[#1c1613] hover:underline">
+              Home
+            </Link>
+          </li>
+          <li aria-hidden="true">/</li>
+          <li>
+            <Link to="/discover" className="hover:text-[#1c1613] hover:underline">
+              Discover
+            </Link>
+          </li>
+          {areaSeoPath && (
+            <>
+              <li aria-hidden="true">/</li>
+              <li>
+                <Link to={areaSeoPath} className="hover:text-[#1c1613] hover:underline">
+                  {location.area}
+                </Link>
+              </li>
+            </>
+          )}
+          <li aria-hidden="true">/</li>
+          <li className="font-semibold text-[#1c1613] truncate max-w-[220px] sm:max-w-none" aria-current="page">
+            {location.name}
+          </li>
+        </ol>
+
         <Link
-          to="/locations"
-          className="inline-flex items-center gap-2 min-h-[40px] px-4 py-1.5 rounded-full bg-white border border-[#e6ddd0] text-xs sm:text-sm font-medium text-[#5c4e45] hover:text-[#1c1613] hover:border-[#b45309] transition-colors"
+          to="/discover"
+          className="inline-flex items-center gap-1.5 min-h-[36px] px-3.5 py-1 rounded-full bg-white border border-[#e6ddd0] text-xs font-medium text-[#5c4e45] hover:text-[#1c1613] hover:border-[#b45309] transition-colors"
         >
-          <ArrowLeft className="w-4 h-4" aria-hidden="true" />
-          <span>Back to Bengaluru explorer</span>
+          <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
+          <span>Back to explorer</span>
         </Link>
       </nav>
 
@@ -734,6 +798,12 @@ export function LocationDetailPage() {
                 href={directionsUrl}
                 target="_blank"
                 rel="noopener noreferrer"
+                onClick={() =>
+                  trackAnalyticsEvent('directions_click', {
+                    cafe_name: location.name,
+                    area: location.area,
+                  })
+                }
                 className="inline-flex items-center gap-2 min-h-[44px] px-5 py-2.5 rounded-xl bg-[#b45309] hover:bg-[#92400e] text-white text-sm font-semibold transition-colors"
               >
                 <MapPin className="w-4 h-4" aria-hidden="true" />
@@ -1971,6 +2041,12 @@ export function LocationDetailPage() {
                   href={directionsUrl}
                   target="_blank"
                   rel="noopener noreferrer"
+                  onClick={() =>
+                    trackAnalyticsEvent('directions_click', {
+                      cafe_name: location.name,
+                      area: location.area,
+                    })
+                  }
                   className="w-full min-h-[44px] px-4 py-2 rounded-xl bg-[#b45309] hover:bg-[#92400e] text-white text-sm font-semibold inline-flex items-center justify-between transition-colors"
                 >
                   <span className="inline-flex items-center gap-2">
@@ -2369,6 +2445,36 @@ export function LocationDetailPage() {
                 <LocationCard location={cafe} />
               </div>
             ))}
+          </div>
+
+          <div className="pt-2 flex flex-wrap items-center gap-2 text-xs">
+            <span className="font-semibold text-[#5c4e45]">Related guides:</span>
+            {areaSeoPath && (
+              <Link
+                to={areaSeoPath}
+                className="px-3 py-1 rounded-full bg-white border border-[#e6ddd0] hover:border-[#b45309] font-medium text-[#1c1613]"
+              >
+                More cafes in {location.area}
+              </Link>
+            )}
+            <Link
+              to="/affordable-cafes-in-bengaluru"
+              className="px-3 py-1 rounded-full bg-white border border-[#e6ddd0] hover:border-[#b45309] font-medium text-[#1c1613]"
+            >
+              Affordable Cafes in Bengaluru
+            </Link>
+            <Link
+              to="/work-friendly-cafes-in-bengaluru"
+              className="px-3 py-1 rounded-full bg-white border border-[#e6ddd0] hover:border-[#b45309] font-medium text-[#1c1613]"
+            >
+              Work-Friendly Cafes
+            </Link>
+            <Link
+              to="/guides"
+              className="px-3 py-1 rounded-full bg-white border border-[#e6ddd0] hover:border-[#b45309] font-medium text-[#1c1613]"
+            >
+              Bengaluru Editorial Guides
+            </Link>
           </div>
         </section>
       )}

@@ -346,6 +346,24 @@ export function AdminNavSeoTab({
             </div>
           </div>
 
+          <div>
+            <label className="block font-semibold text-[#475569] mb-1">
+              Google Search Console Verification Code
+            </label>
+            <input
+              type="text"
+              value={seoForm.google_site_verification || ''}
+              onChange={(e) =>
+                setSeoForm({ ...seoForm, google_site_verification: e.target.value })
+              }
+              placeholder="Paste content token from Google Search Console HTML tag"
+              className="w-full h-10 px-3 rounded-lg border border-[#cbd5e1] bg-[#f8fafc] font-mono-data"
+            />
+            <p className="text-[11px] text-[#64748b] mt-1">
+              Emits &lt;meta name=&quot;google-site-verification&quot;&gt; in HTML &amp; SPA head.
+            </p>
+          </div>
+
           <div className="pt-2 space-y-3 border-t border-[#f1f5f9]">
             <label className="inline-flex items-center gap-2 font-semibold text-[#0f172a] cursor-pointer">
               <input

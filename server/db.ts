@@ -341,6 +341,7 @@ export const DEFAULT_SITE_SETTINGS: SiteSettings = {
     'Suggest a Bengaluru cafe, report outdated menu prices or hours, or contact the Cafe Desk team.',
   seo_og_image: '/src/assets/images/hero_cafedesk_interior_1794976059561.jpg',
   seo_allow_indexing: true,
+  google_site_verification: '',
   access_control: DEFAULT_ACCESS_CONTROL,
 };
 

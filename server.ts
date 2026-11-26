@@ -47,6 +47,23 @@ import {
   resolveViewerAccessContext,
   sanitizeCafeForAccess,
 } from './server/accessControl.ts';
+import {
+  filterCafesForSeoPage,
+  LOCAL_SEO_PAGES,
+  resolveSeoPageByPath,
+  getAreaSeoRoute,
+} from './src/config/seoPages.ts';
+import { LOCAL_GUIDES, resolveGuideBySlug } from './src/config/guides.ts';
+import {
+  buildArticleSchema,
+  buildBreadcrumbSchema,
+  buildCafeSchema,
+  buildFaqSchema,
+  buildItemListSchema,
+  buildOrganizationSchema,
+  buildWebSiteSchema,
+  toAbsoluteSeoUrl,
+} from './src/utils/seoSchemas.ts';
 import type { CafeMode } from './src/config/constants.ts';
 import type {
   AccessSectionKey,
@@ -203,35 +220,119 @@ async function startServer() {
   // DYNAMIC SEO ENDPOINTS (sitemap.xml & robots.txt)
   // ============================================================================
 
+  function getBaseUrl(req: Request): string {
+    const raw = process.env.APP_URL || `${req.protocol}://${req.get('host') || 'cafedesk.space'}`;
+    return raw.replace(/\/+$/, '');
+  }
+
+  function escapeXml(str: string): string {
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+  }
+
   app.get('/robots.txt', (req, res) => {
     const settings = getSiteSettingsFromDb();
-    const host = process.env.APP_URL || `${req.protocol}://${req.get('host') || 'cafedesk.space'}`;
-    const baseUrl = host.replace(/\/$/, '');
+    const baseUrl = getBaseUrl(req);
     res.type('text/plain');
     if (!settings.seo_allow_indexing) {
       res.send(`User-agent: *\nDisallow: /\n`);
       return;
     }
-    res.send(`User-agent: *\nAllow: /\nDisallow: /admin/\nSitemap: ${baseUrl}/sitemap.xml\n`);
+    res.send(
+      [
+        'User-agent: *',
+        'Allow: /',
+        'Disallow: /admin',
+        'Disallow: /admin/',
+        'Disallow: /owner/',
+        'Disallow: /account',
+        'Disallow: /login',
+        'Disallow: /signup',
+        'Disallow: /forgot-password',
+        'Disallow: /api/',
+        `Sitemap: ${baseUrl}/sitemap.xml`,
+        '',
+      ].join('\n')
+    );
   });
 
   app.get('/sitemap.xml', (req, res) => {
-    const locations = listLocationsFromDb(false);
-    const host = process.env.APP_URL || `${req.protocol}://${req.get('host') || 'cafedesk.space'}`;
-    const baseUrl = host.replace(/\/$/, '');
-    const staticRoutes = ['/', '/discover', '/locations', '/pricing', '/about', '/contact', '/submit', '/owners'];
+    const settings = getSiteSettingsFromDb();
+    const baseUrl = getBaseUrl(req);
+    const todayIso = getTodayIsoIst();
 
-    const urls = [
-      ...staticRoutes.map((r) => `  <url><loc>${baseUrl}${r}</loc><changefreq>weekly</changefreq></url>`),
-      ...locations.map(
-        (loc) =>
-          `  <url><loc>${baseUrl}/locations/${encodeURIComponent(loc.slug)}</loc><changefreq>weekly</changefreq></url>`
-      ),
+    if (!settings.seo_allow_indexing) {
+      res.type('application/xml');
+      res.send(
+        `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>`
+      );
+      return;
+    }
+
+    const locations = listLocationsFromDb(false);
+    const coreRoutes: Array<{ path: string; changefreq: string; priority: string }> = [
+      { path: '/', changefreq: 'daily', priority: '1.0' },
+      { path: '/discover', changefreq: 'daily', priority: '0.9' },
+      { path: '/finder', changefreq: 'weekly', priority: '0.8' },
+      { path: '/guides', changefreq: 'weekly', priority: '0.8' },
+      { path: '/pricing', changefreq: 'weekly', priority: '0.7' },
+      { path: '/about', changefreq: 'monthly', priority: '0.6' },
+      { path: '/contact', changefreq: 'monthly', priority: '0.5' },
+      { path: '/submit', changefreq: 'monthly', priority: '0.5' },
+      { path: '/owners', changefreq: 'monthly', priority: '0.6' },
     ];
+
+    const seoLandingUrls = LOCAL_SEO_PAGES.filter(
+      (page) => filterCafesForSeoPage(locations, page).length > 0
+    ).map((page) => ({
+      loc: `${baseUrl}${page.path}`,
+      lastmod: todayIso,
+      changefreq: 'weekly',
+      priority: '0.8',
+    }));
+
+    const guideUrls = LOCAL_GUIDES.map((guide) => ({
+      loc: `${baseUrl}/guides/${encodeURIComponent(guide.slug)}`,
+      lastmod: /^\d{4}-\d{2}-\d{2}$/.test(guide.updatedDate) ? guide.updatedDate : todayIso,
+      changefreq: 'monthly',
+      priority: '0.75',
+    }));
+
+    const cafeUrls = locations
+      .filter((loc) => loc.slug && !loc.slug.startsWith('google:'))
+      .map((loc) => ({
+        loc: `${baseUrl}/cafe/${encodeURIComponent(loc.slug)}`,
+        lastmod: /^\d{4}-\d{2}-\d{2}$/.test(loc.last_verified_date || '')
+          ? loc.last_verified_date!
+          : todayIso,
+        changefreq: 'weekly',
+        priority: '0.7',
+      }));
+
+    const allEntries = [
+      ...coreRoutes.map((r) => ({
+        loc: `${baseUrl}${r.path}`,
+        lastmod: todayIso,
+        changefreq: r.changefreq,
+        priority: r.priority,
+      })),
+      ...seoLandingUrls,
+      ...guideUrls,
+      ...cafeUrls,
+    ];
+
+    const urlNodes = allEntries.map(
+      (entry) =>
+        `  <url><loc>${escapeXml(entry.loc)}</loc><lastmod>${entry.lastmod}</lastmod><changefreq>${entry.changefreq}</changefreq><priority>${entry.priority}</priority></url>`
+    );
 
     res.type('application/xml');
     res.send(
-      `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join('\n')}\n</urlset>`
+      `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urlNodes.join('\n')}\n</urlset>`
     );
   });
 
@@ -2672,6 +2773,10 @@ async function startServer() {
         : current.seo_og_image,
       seo_allow_indexing:
         b.seo_allow_indexing === undefined ? current.seo_allow_indexing : Boolean(b.seo_allow_indexing),
+      google_site_verification:
+        b.google_site_verification === undefined
+          ? current.google_site_verification
+          : cleanStr(b.google_site_verification, 120),
 
       currency_code: cleanStr(b.currency_code, 10).toUpperCase() || current.currency_code,
       currency_symbol: cleanStr(b.currency_symbol, 8) || current.currency_symbol,
@@ -3394,6 +3499,501 @@ async function startServer() {
   });
 
   // ============================================================================
+  // SERVER-SIDE SEO METADATA INJECTION & HTTP STATUS RESOLUTION
+  // ============================================================================
+
+  interface ResolvedSeoHead {
+    status: number;
+    title: string;
+    description: string;
+    canonicalUrl: string;
+    ogType: 'website' | 'article' | 'place';
+    ogImage: string;
+    robots: 'index,follow' | 'noindex,follow' | 'noindex,nofollow';
+    googleSiteVerification: string;
+    schemas: Array<Record<string, unknown>>;
+  }
+
+  function escapeHtmlAttr(val: string): string {
+    return val
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function escapeHtmlText(val: string): string {
+    return val.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function resolveRouteSeoMeta(pathname: string, baseUrl: string): ResolvedSeoHead {
+    const settings = getSiteSettingsFromDb();
+    const publishedLocations = listLocationsFromDb(false);
+    const cleanPath = pathname === '/' ? '/' : pathname.replace(/\/+$/, '') || '/';
+    const siteIndexing: 'index,follow' | 'noindex,nofollow' = settings.seo_allow_indexing
+      ? 'index,follow'
+      : 'noindex,nofollow';
+    const googleVerify = cleanStr(
+      settings.google_site_verification || process.env.GOOGLE_SITE_VERIFICATION || '',
+      120
+    );
+    const defaultOgImage = toAbsoluteSeoUrl(
+      baseUrl,
+      settings.seo_og_image || '/src/assets/images/hero_cafedesk_interior_1794976059561.jpg'
+    );
+
+    if (
+      cleanPath === '/login' ||
+      cleanPath === '/signup' ||
+      cleanPath === '/forgot-password' ||
+      cleanPath === '/account' ||
+      cleanPath === '/admin' ||
+      cleanPath === '/admin/login'
+    ) {
+      return {
+        status: 200,
+        title: `${cleanPath.startsWith('/admin') ? 'Owner Panel' : 'Member Account'} – ${settings.brand_name}`,
+        description: `Manage your ${settings.brand_name} Bengaluru cafe workspace account.`,
+        canonicalUrl: `${baseUrl}${cleanPath}`,
+        ogType: 'website',
+        ogImage: defaultOgImage,
+        robots: 'noindex,nofollow',
+        googleSiteVerification: googleVerify,
+        schemas: [],
+      };
+    }
+
+    if (cleanPath === '/') {
+      return {
+        status: 200,
+        title: settings.seo_home_title,
+        description: settings.seo_home_description,
+        canonicalUrl: `${baseUrl}/`,
+        ogType: 'website',
+        ogImage: defaultOgImage,
+        robots: siteIndexing,
+        googleSiteVerification: googleVerify,
+        schemas: [
+          buildOrganizationSchema(baseUrl, settings),
+          buildWebSiteSchema(baseUrl, settings.brand_name),
+        ],
+      };
+    }
+
+    if (cleanPath === '/discover' || cleanPath === '/locations') {
+      const itemList = buildItemListSchema(
+        baseUrl,
+        'Bengaluru Cafes & Workspaces',
+        settings.seo_locations_description,
+        publishedLocations
+      );
+      return {
+        status: 200,
+        title: settings.seo_locations_title,
+        description: settings.seo_locations_description,
+        canonicalUrl: `${baseUrl}/discover`,
+        ogType: 'website',
+        ogImage: defaultOgImage,
+        robots: siteIndexing,
+        googleSiteVerification: googleVerify,
+        schemas: [
+          buildBreadcrumbSchema(baseUrl, [
+            { name: 'Home', path: '/' },
+            { name: 'Discover Cafes', path: '/discover' },
+          ]),
+          ...(itemList ? [itemList] : []),
+        ],
+      };
+    }
+
+    if (cleanPath === '/finder') {
+      return {
+        status: 200,
+        title: `Interactive Cafe Finder – ${settings.brand_name}`,
+        description:
+          'Answer a few quick preferences to discover your best-matched Bengaluru cafe for work, study, dates, or affordable coffee.',
+        canonicalUrl: `${baseUrl}/finder`,
+        ogType: 'website',
+        ogImage: defaultOgImage,
+        robots: siteIndexing,
+        googleSiteVerification: googleVerify,
+        schemas: [
+          buildBreadcrumbSchema(baseUrl, [
+            { name: 'Home', path: '/' },
+            { name: 'Cafe Finder', path: '/finder' },
+          ]),
+        ],
+      };
+    }
+
+    if (cleanPath === '/pricing') {
+      return {
+        status: 200,
+        title: `Plans & Pricing – ${settings.brand_name}`,
+        description:
+          'Explore Bengaluru cafes free forever, or upgrade to Cafe Desk memberships for full menus, prices, budget filters, comparisons, and exclusive deals.',
+        canonicalUrl: `${baseUrl}/pricing`,
+        ogType: 'website',
+        ogImage: defaultOgImage,
+        robots: siteIndexing,
+        googleSiteVerification: googleVerify,
+        schemas: [],
+      };
+    }
+
+    if (cleanPath === '/about') {
+      return {
+        status: 200,
+        title: settings.seo_about_title,
+        description: settings.seo_about_description,
+        canonicalUrl: `${baseUrl}/about`,
+        ogType: 'website',
+        ogImage: defaultOgImage,
+        robots: siteIndexing,
+        googleSiteVerification: googleVerify,
+        schemas: [],
+      };
+    }
+
+    if (cleanPath === '/contact') {
+      return {
+        status: 200,
+        title: settings.seo_contact_title,
+        description: settings.seo_contact_description,
+        canonicalUrl: `${baseUrl}/contact`,
+        ogType: 'website',
+        ogImage: defaultOgImage,
+        robots: siteIndexing,
+        googleSiteVerification: googleVerify,
+        schemas: [],
+      };
+    }
+
+    if (cleanPath === '/submit') {
+      return {
+        status: 200,
+        title: `Submit a Cafe or Report an Update – ${settings.brand_name}`,
+        description:
+          'Suggest a work or study-friendly cafe or report outdated WiFi speeds, timings, or socket counts.',
+        canonicalUrl: `${baseUrl}/submit`,
+        ogType: 'website',
+        ogImage: defaultOgImage,
+        robots: siteIndexing,
+        googleSiteVerification: googleVerify,
+        schemas: [],
+      };
+    }
+
+    if (cleanPath === '/owners') {
+      return {
+        status: 200,
+        title: `Partner With Us – Cafe Owner Plans | ${settings.brand_name}`,
+        description:
+          'List and verify your coffee house or workspace on CafeDesk to welcome steady weekday remote workers and students.',
+        canonicalUrl: `${baseUrl}/owners`,
+        ogType: 'website',
+        ogImage: defaultOgImage,
+        robots: siteIndexing,
+        googleSiteVerification: googleVerify,
+        schemas: [],
+      };
+    }
+
+    if (cleanPath === '/guides') {
+      return {
+        status: 200,
+        title: `Bengaluru Cafe, Tea & Workspace Guides | ${settings.brand_name}`,
+        description:
+          'Original local guides to Bengaluru’s best affordable cafes, study spaces, tea & filter kaapi stops, and remote work neighbourhoods.',
+        canonicalUrl: `${baseUrl}/guides`,
+        ogType: 'website',
+        ogImage: defaultOgImage,
+        robots: siteIndexing,
+        googleSiteVerification: googleVerify,
+        schemas: [
+          buildBreadcrumbSchema(baseUrl, [
+            { name: 'Home', path: '/' },
+            { name: 'Local Guides', path: '/guides' },
+          ]),
+        ],
+      };
+    }
+
+    if (cleanPath.startsWith('/guides/')) {
+      const slug = cleanPath.slice('/guides/'.length);
+      const guide = resolveGuideBySlug(slug);
+      if (!guide) {
+        return {
+          status: 404,
+          title: `Guide Not Found – ${settings.brand_name}`,
+          description: 'The requested Bengaluru cafe guide could not be found.',
+          canonicalUrl: `${baseUrl}${cleanPath}`,
+          ogType: 'website',
+          ogImage: defaultOgImage,
+          robots: 'noindex,nofollow',
+          googleSiteVerification: googleVerify,
+          schemas: [],
+        };
+      }
+      const faqSchema = buildFaqSchema(guide.faqs);
+      return {
+        status: 200,
+        title: guide.seoTitle,
+        description: guide.metaDescription,
+        canonicalUrl: `${baseUrl}/guides/${encodeURIComponent(guide.slug)}`,
+        ogType: 'article',
+        ogImage: toAbsoluteSeoUrl(baseUrl, guide.coverImage),
+        robots: siteIndexing,
+        googleSiteVerification: googleVerify,
+        schemas: [
+          buildArticleSchema(baseUrl, guide, settings.brand_name),
+          buildBreadcrumbSchema(baseUrl, [
+            { name: 'Home', path: '/' },
+            { name: 'Guides', path: '/guides' },
+            { name: guide.title, path: `/guides/${guide.slug}` },
+          ]),
+          ...(faqSchema ? [faqSchema] : []),
+        ],
+      };
+    }
+
+    const seoLandingPage = resolveSeoPageByPath(cleanPath);
+    if (seoLandingPage) {
+      const matchedCafes = filterCafesForSeoPage(publishedLocations, seoLandingPage);
+      const itemList = buildItemListSchema(
+        baseUrl,
+        seoLandingPage.h1,
+        seoLandingPage.metaDescription,
+        matchedCafes
+      );
+      const faqSchema = buildFaqSchema(seoLandingPage.faqs);
+      return {
+        status: 200,
+        title: seoLandingPage.title,
+        description: seoLandingPage.metaDescription,
+        canonicalUrl: `${baseUrl}${seoLandingPage.path}`,
+        ogType: 'website',
+        ogImage: defaultOgImage,
+        robots: !settings.seo_allow_indexing
+          ? 'noindex,nofollow'
+          : matchedCafes.length === 0
+          ? 'noindex,follow'
+          : 'index,follow',
+        googleSiteVerification: googleVerify,
+        schemas: [
+          buildBreadcrumbSchema(baseUrl, [
+            { name: 'Home', path: '/' },
+            { name: 'Discover', path: '/discover' },
+            { name: seoLandingPage.kicker, path: seoLandingPage.path },
+          ]),
+          ...(itemList ? [itemList] : []),
+          ...(faqSchema ? [faqSchema] : []),
+        ],
+      };
+    }
+
+    const cafeMatch = cleanPath.match(/^\/(?:cafe|locations)\/([^/]+)$/);
+    if (cafeMatch) {
+      let decodedKey = cafeMatch[1];
+      try {
+        decodedKey = decodeURIComponent(decodedKey);
+      } catch {
+        // Keep raw param
+      }
+      if (decodedKey.startsWith('google:')) {
+        return {
+          status: 200,
+          title: `Live Bengaluru Cafe Details – ${settings.brand_name}`,
+          description: 'Live Bengaluru cafe details powered by Google Maps.',
+          canonicalUrl: `${baseUrl}${cleanPath}`,
+          ogType: 'place',
+          ogImage: defaultOgImage,
+          robots: 'noindex,nofollow',
+          googleSiteVerification: googleVerify,
+          schemas: [],
+        };
+      }
+
+      const cafe = publishedLocations.find(
+        (l) => l.slug === decodedKey || l.id === decodedKey
+      );
+      if (!cafe) {
+        return {
+          status: 404,
+          title: `Cafe Not Found – ${settings.brand_name}`,
+          description: 'This cafe listing may have been moved or unpublished.',
+          canonicalUrl: `${baseUrl}${cleanPath}`,
+          ogType: 'website',
+          ogImage: defaultOgImage,
+          robots: 'noindex,nofollow',
+          googleSiteVerification: googleVerify,
+          schemas: [],
+        };
+      }
+
+      const canonicalPath = `/cafe/${encodeURIComponent(cafe.slug || cafe.id)}`;
+      const areaRoute = getAreaSeoRoute(cafe.area);
+      const cafeSchema = buildCafeSchema(baseUrl, cafe);
+      const desc =
+        [
+          cafe.verdict || cafe.claims[0] || `${cafe.name} in ${cafe.area}`,
+          cafe.wifi_mbps !== null
+            ? `Wi-Fi ${cafe.wifi_mbps} Mbps`
+            : cafe.wifi_available === 'yes'
+            ? 'Wi-Fi available'
+            : null,
+          cafe.avg_cost_per_person !== null ? `Avg ₹${cafe.avg_cost_per_person}` : null,
+        ]
+          .filter(Boolean)
+          .join(' · ') || settings.seo_locations_description;
+
+      return {
+        status: 200,
+        title: `${cafe.name} – ${cafe.area}, Bengaluru | ${settings.brand_name}`,
+        description: desc,
+        canonicalUrl: `${baseUrl}${canonicalPath}`,
+        ogType: 'place',
+        ogImage:
+          cafe.photos_approved && cafe.photos.length > 0
+            ? toAbsoluteSeoUrl(baseUrl, cafe.photos[0])
+            : defaultOgImage,
+        robots: siteIndexing,
+        googleSiteVerification: googleVerify,
+        schemas: [
+          buildBreadcrumbSchema(baseUrl, [
+            { name: 'Home', path: '/' },
+            { name: 'Discover Cafes', path: '/discover' },
+            ...(areaRoute ? [{ name: `${cafe.area} Cafes`, path: areaRoute }] : []),
+            { name: cafe.name, path: canonicalPath },
+          ]),
+          ...(cafeSchema ? [cafeSchema] : []),
+        ],
+      };
+    }
+
+    return {
+      status: 404,
+      title: `Page Not Found – ${settings.brand_name}`,
+      description: 'The requested page could not be found on Cafe Desk Bengaluru.',
+      canonicalUrl: `${baseUrl}${cleanPath}`,
+      ogType: 'website',
+      ogImage: defaultOgImage,
+      robots: 'noindex,nofollow',
+      googleSiteVerification: googleVerify,
+      schemas: [],
+    };
+  }
+
+  function injectSeoIntoHtml(html: string, seo: ResolvedSeoHead): string {
+    let out = html;
+
+    out = out.replace(/<title>[\s\S]*?<\/title>/i, `<title>${escapeHtmlText(seo.title)}</title>`);
+
+    const upsertTag = (pattern: RegExp, replacement: string) => {
+      if (pattern.test(out)) {
+        out = out.replace(pattern, replacement);
+      } else {
+        out = out.replace('</head>', `    ${replacement}\n  </head>`);
+      }
+    };
+
+    upsertTag(
+      /<meta\s+name=["']description["'][^>]*>/i,
+      `<meta name="description" content="${escapeHtmlAttr(seo.description)}" />`
+    );
+    upsertTag(
+      /<meta\s+name=["']robots["'][^>]*>/i,
+      `<meta name="robots" content="${escapeHtmlAttr(seo.robots)}" />`
+    );
+    upsertTag(
+      /<link\s+rel=["']canonical["'][^>]*>/i,
+      `<link rel="canonical" href="${escapeHtmlAttr(seo.canonicalUrl)}" />`
+    );
+    upsertTag(
+      /<meta\s+property=["']og:type["'][^>]*>/i,
+      `<meta property="og:type" content="${escapeHtmlAttr(seo.ogType)}" />`
+    );
+    upsertTag(
+      /<meta\s+property=["']og:url["'][^>]*>/i,
+      `<meta property="og:url" content="${escapeHtmlAttr(seo.canonicalUrl)}" />`
+    );
+    upsertTag(
+      /<meta\s+property=["']og:title["'][^>]*>/i,
+      `<meta property="og:title" content="${escapeHtmlAttr(seo.title)}" />`
+    );
+    upsertTag(
+      /<meta\s+property=["']og:description["'][^>]*>/i,
+      `<meta property="og:description" content="${escapeHtmlAttr(seo.description)}" />`
+    );
+    upsertTag(
+      /<meta\s+property=["']og:image["'][^>]*>/i,
+      `<meta property="og:image" content="${escapeHtmlAttr(seo.ogImage)}" />`
+    );
+    upsertTag(
+      /<meta\s+name=["']twitter:title["'][^>]*>/i,
+      `<meta name="twitter:title" content="${escapeHtmlAttr(seo.title)}" />`
+    );
+    upsertTag(
+      /<meta\s+name=["']twitter:description["'][^>]*>/i,
+      `<meta name="twitter:description" content="${escapeHtmlAttr(seo.description)}" />`
+    );
+    upsertTag(
+      /<meta\s+name=["']twitter:image["'][^>]*>/i,
+      `<meta name="twitter:image" content="${escapeHtmlAttr(seo.ogImage)}" />`
+    );
+
+    if (seo.googleSiteVerification) {
+      upsertTag(
+        /<meta\s+name=["']google-site-verification["'][^>]*>/i,
+        `<meta name="google-site-verification" content="${escapeHtmlAttr(seo.googleSiteVerification)}" />`
+      );
+    }
+
+    // Replace base JSON-LD scripts cleanly with route-scoped schemas
+    out = out.replace(
+      /<script\s+type=["']application\/ld\+json["'][^>]*data-cafedesk-seo=["']true["'][^>]*>[\s\S]*?<\/script>\s*/gi,
+      ''
+    );
+
+    if (seo.schemas.length > 0) {
+      const schemaTags = seo.schemas
+        .map((schema) => {
+          const jsonText = JSON.stringify(schema).replace(/</g, '\\u003c');
+          return `    <script type="application/ld+json" data-cafedesk-seo="true">${jsonText}</script>`;
+        })
+        .join('\n');
+      out = out.replace('</head>', `${schemaTags}\n  </head>`);
+    }
+
+    return out;
+  }
+
+  function isHtmlPageNavigation(req: Request): boolean {
+    const p = req.path || '/';
+    if (
+      p.startsWith('/api/') ||
+      p.startsWith('/uploads/') ||
+      p.startsWith('/src/') ||
+      p.startsWith('/assets/') ||
+      p.startsWith('/@') ||
+      p.startsWith('/node_modules/') ||
+      p === '/robots.txt' ||
+      p === '/sitemap.xml' ||
+      p === '/favicon.ico'
+    ) {
+      return false;
+    }
+    if (/\.[a-z0-9]{1,8}$/i.test(p)) {
+      return false;
+    }
+    const accept = req.headers.accept || '';
+    if (accept && !accept.includes('text/html') && !accept.includes('*/*')) {
+      return false;
+    }
+    return true;
+  }
+
+  // ============================================================================
   // VITE DEV MIDDLEWARE OR PRODUCTION STATIC HOSTING
   // ============================================================================
 
@@ -3403,12 +4003,39 @@ async function startServer() {
       server: { middlewareMode: true },
       appType: 'spa',
     });
+
+    app.get('*', async (req: Request, res: Response, next) => {
+      if (!isHtmlPageNavigation(req)) {
+        next();
+        return;
+      }
+      try {
+        const indexPath = path.resolve(process.cwd(), 'index.html');
+        const rawTemplate = fs.readFileSync(indexPath, 'utf-8');
+        const transformed = await vite.transformIndexHtml(req.originalUrl, rawTemplate);
+        const seo = resolveRouteSeoMeta(req.path, getBaseUrl(req));
+        const finalHtml = injectSeoIntoHtml(transformed, seo);
+        res.status(seo.status).setHeader('Content-Type', 'text/html; charset=utf-8').send(finalHtml);
+      } catch (err) {
+        vite.ssrFixStacktrace(err as Error);
+        next(err);
+      }
+    });
+
     app.use(vite.middlewares);
   } else {
     const distDir = path.resolve(process.cwd(), 'dist');
-    app.use(express.static(distDir));
-    app.get('*', (_req: Request, res: Response) => {
-      res.sendFile(path.join(distDir, 'index.html'));
+    const prodTemplate = fs.readFileSync(path.join(distDir, 'index.html'), 'utf-8');
+    app.use(
+      express.static(distDir, {
+        index: false,
+        maxAge: '7d',
+      })
+    );
+    app.get('*', (req: Request, res: Response) => {
+      const seo = resolveRouteSeoMeta(req.path, getBaseUrl(req));
+      const finalHtml = injectSeoIntoHtml(prodTemplate, seo);
+      res.status(seo.status).setHeader('Content-Type', 'text/html; charset=utf-8').send(finalHtml);
     });
   }
 

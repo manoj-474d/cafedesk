@@ -1,11 +1,13 @@
 import React, { Suspense, lazy, useEffect, useState } from 'react';
-import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { BrowserRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { APIProvider } from '@vis.gl/react-google-maps';
 import { MotionConfig } from 'motion/react';
 import { AlertTriangle, X } from 'lucide-react';
 import { AuthProvider } from './context/AuthContext';
 import { CmsProvider } from './context/CmsContext';
 import { DiscoveryProvider } from './context/DiscoveryContext';
+import { LOCAL_SEO_PAGES } from './config/seoPages';
+import { trackPageView } from './utils/analytics';
 import { CompareCafesDrawer } from './components/CompareCafesDrawer';
 import { PublicLayout } from './components/PublicLayout';
 import { RazorpayCheckoutModal } from './components/RazorpayCheckoutModal';
@@ -44,6 +46,18 @@ const SubmitCafePage = lazy(() =>
 const OwnersPage = lazy(() =>
   import('./pages/OwnersPage').then((m) => ({ default: m.OwnersPage }))
 );
+const LocalSeoLandingPage = lazy(() =>
+  import('./pages/LocalSeoLandingPage').then((m) => ({ default: m.LocalSeoLandingPage }))
+);
+const GuidesPage = lazy(() =>
+  import('./pages/GuidesPage').then((m) => ({ default: m.GuidesPage }))
+);
+const GuideDetailPage = lazy(() =>
+  import('./pages/GuideDetailPage').then((m) => ({ default: m.GuideDetailPage }))
+);
+const NotFoundPage = lazy(() =>
+  import('./pages/NotFoundPage').then((m) => ({ default: m.NotFoundPage }))
+);
 const AdminLoginPage = lazy(() =>
   import('./pages/AdminLoginPage').then((m) => ({ default: m.AdminLoginPage }))
 );
@@ -66,6 +80,17 @@ function ScrollToTop() {
   return null;
 }
 
+function RouteTracker() {
+  const { pathname, search } = useLocation();
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      trackPageView(`${pathname}${search}`, document.title);
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [pathname, search]);
+  return null;
+}
+
 function PageRouteFallback() {
   return (
     <div className="min-h-[55vh] flex flex-col items-center justify-center px-4 text-center bg-[#faf7f2] text-[#5c4e45] gap-3">
@@ -81,6 +106,7 @@ function AppRoutes() {
   return (
     <BrowserRouter>
       <ScrollToTop />
+      <RouteTracker />
       <Suspense fallback={<PageRouteFallback />}>
         <Routes>
           <Route element={<PublicLayout />}>
@@ -90,6 +116,11 @@ function AppRoutes() {
             <Route path="/locations/:slug" element={<LocationDetailPage />} />
             <Route path="/cafe/:id" element={<LocationDetailPage />} />
             <Route path="/finder" element={<CafeFinderPage />} />
+            <Route path="/guides" element={<GuidesPage />} />
+            <Route path="/guides/:slug" element={<GuideDetailPage />} />
+            {LOCAL_SEO_PAGES.map((page) => (
+              <Route key={page.path} path={page.path} element={<LocalSeoLandingPage />} />
+            ))}
             <Route path="/pricing" element={<PricingPage />} />
             <Route path="/login" element={<AuthPage />} />
             <Route path="/signup" element={<AuthPage />} />
@@ -99,7 +130,7 @@ function AppRoutes() {
             <Route path="/contact" element={<ContactPage />} />
             <Route path="/submit" element={<SubmitCafePage />} />
             <Route path="/owners" element={<OwnersPage />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
+            <Route path="*" element={<NotFoundPage />} />
           </Route>
           <Route path="/admin/login" element={<AdminLoginPage />} />
           <Route path="/admin" element={<AdminDashboardPage />} />

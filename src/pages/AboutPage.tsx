@@ -10,8 +10,10 @@ export function AboutPage() {
   const [openFaqIdx, setOpenFaqIdx] = useState<number | null>(0);
 
   useDocumentMeta(settings.seo_about_title, settings.seo_about_description, {
+    canonicalPath: '/about',
     ogImage: settings.seo_og_image,
     allowIndexing: settings.seo_allow_indexing,
+    googleSiteVerification: settings.google_site_verification,
   });
 
   const waUrl = buildWhatsAppUrl(

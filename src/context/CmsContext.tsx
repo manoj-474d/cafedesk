@@ -9,6 +9,7 @@ import type {
 } from '../types/cms';
 import { CAFES } from '../data/cafes';
 import { SITE_CONFIG } from '../config/constants';
+import { initAnalyticsIfConfigured } from '../utils/analytics';
 import { getUserSessionHeaders, resolveApiUrl } from './AuthContext';
 
 const FALLBACK_SETTINGS: SiteSettings = {
@@ -103,6 +104,7 @@ const FALLBACK_SETTINGS: SiteSettings = {
   seo_contact_description: 'Reach the Cafe Desk team or suggest cafe updates in Bengaluru.',
   seo_og_image: '/src/assets/images/hero_cafedesk_interior_1794976059561.jpg',
   seo_allow_indexing: true,
+  google_site_verification: '',
   currency_code: 'INR',
   currency_symbol: '₹',
   bookings_enabled: true,
@@ -286,7 +288,10 @@ export function CmsProvider({ children }: { children: React.ReactNode }) {
       }
       link.href = settings.favicon_url;
     }
-  }, [settings.accent_color, settings.favicon_url]);
+    if (settings.analytics_id) {
+      initAnalyticsIfConfigured(settings.analytics_id);
+    }
+  }, [settings.accent_color, settings.favicon_url, settings.analytics_id]);
 
   return (
     <CmsContext.Provider

@@ -414,60 +414,112 @@ export function triggerWhatsAppLink(message: string, phoneNumber?: string): stri
 }
 
 /**
- * Updates document title, meta description, OpenGraph, Twitter, and robots tags dynamically per route.
+ * Updates document title, meta description, canonical URL, OpenGraph, Twitter,
+ * robots tags, Google Search Console verification, and JSON-LD structured data per route.
  */
 export function useDocumentMeta(
   title: string,
   description: string,
-  options?: { ogImage?: string; allowIndexing?: boolean }
+  options?: {
+    ogImage?: string;
+    allowIndexing?: boolean;
+    canonicalPath?: string;
+    ogType?: 'website' | 'article' | 'place';
+    schemas?: Array<Record<string, unknown> | null | undefined>;
+    googleSiteVerification?: string;
+  }
 ) {
+  const schemasKey = JSON.stringify(options?.schemas?.filter(Boolean) ?? []);
+
   useEffect(() => {
     document.title = title;
 
-    const setMeta = (selector: string, content: string) => {
-      const el = document.querySelector<HTMLMetaElement>(selector);
-      if (el) el.setAttribute('content', content);
+    const origin = window.location.origin;
+    const rawCanonicalPath = options?.canonicalPath ?? window.location.pathname;
+    const cleanCanonicalPath =
+      rawCanonicalPath === '/' ? '/' : rawCanonicalPath.replace(/\/+$/, '');
+    const canonicalUrl = /^https?:\/\//i.test(cleanCanonicalPath)
+      ? cleanCanonicalPath
+      : `${origin}${cleanCanonicalPath.startsWith('/') ? '' : '/'}${cleanCanonicalPath}`;
+
+    const setOrCreateMeta = (attr: 'name' | 'property', key: string, content: string) => {
+      let el = document.querySelector<HTMLMetaElement>(`meta[${attr}="${key}"]`);
+      if (!el) {
+        el = document.createElement('meta');
+        el.setAttribute(attr, key);
+        document.head.appendChild(el);
+      }
+      el.setAttribute('content', content);
     };
 
-    setMeta('meta[name="description"]', description);
-    setMeta('meta[property="og:title"]', title);
-    setMeta('meta[property="og:description"]', description);
-    setMeta('meta[name="twitter:title"]', title);
-    setMeta('meta[name="twitter:description"]', description);
+    setOrCreateMeta('name', 'description', description);
+    setOrCreateMeta('property', 'og:type', options?.ogType || 'website');
+    setOrCreateMeta('property', 'og:url', canonicalUrl);
+    setOrCreateMeta('property', 'og:title', title);
+    setOrCreateMeta('property', 'og:description', description);
+    setOrCreateMeta('name', 'twitter:title', title);
+    setOrCreateMeta('name', 'twitter:description', description);
+
+    let canonicalEl = document.querySelector<HTMLLinkElement>('link[rel="canonical"]');
+    if (!canonicalEl) {
+      canonicalEl = document.createElement('link');
+      canonicalEl.setAttribute('rel', 'canonical');
+      document.head.appendChild(canonicalEl);
+    }
+    canonicalEl.setAttribute('href', canonicalUrl);
 
     if (options?.ogImage) {
-      let ogImg = document.querySelector<HTMLMetaElement>('meta[property="og:image"]');
-      if (!ogImg) {
-        ogImg = document.createElement('meta');
-        ogImg.setAttribute('property', 'og:image');
-        document.head.appendChild(ogImg);
-      }
-      ogImg.setAttribute('content', options.ogImage);
+      const absImg = /^https?:\/\//i.test(options.ogImage)
+        ? options.ogImage
+        : `${origin}${options.ogImage.startsWith('/') ? '' : '/'}${options.ogImage}`;
+      setOrCreateMeta('property', 'og:image', absImg);
+      setOrCreateMeta('name', 'twitter:image', absImg);
     }
 
-    if (options?.allowIndexing === false) {
-      let robots = document.querySelector<HTMLMetaElement>('meta[name="robots"]');
-      if (!robots) {
-        robots = document.createElement('meta');
-        robots.setAttribute('name', 'robots');
-        document.head.appendChild(robots);
-      }
-      robots.setAttribute('content', 'noindex,nofollow');
-    } else {
-      const robots = document.querySelector<HTMLMetaElement>('meta[name="robots"]');
-      if (robots) robots.setAttribute('content', 'index,follow');
+    setOrCreateMeta(
+      'name',
+      'robots',
+      options?.allowIndexing === false ? 'noindex,nofollow' : 'index,follow'
+    );
+
+    if (options?.googleSiteVerification?.trim()) {
+      setOrCreateMeta('name', 'google-site-verification', options.googleSiteVerification.trim());
     }
-  }, [title, description, options?.ogImage, options?.allowIndexing]);
+
+    // Replace route-scoped JSON-LD blocks cleanly
+    document
+      .querySelectorAll('script[type="application/ld+json"][data-cafedesk-seo="true"]')
+      .forEach((node) => node.remove());
+
+    const parsedSchemas = JSON.parse(schemasKey) as Array<Record<string, unknown>>;
+    parsedSchemas.forEach((schemaObj) => {
+      const script = document.createElement('script');
+      script.type = 'application/ld+json';
+      script.setAttribute('data-cafedesk-seo', 'true');
+      script.textContent = JSON.stringify(schemaObj);
+      document.head.appendChild(script);
+    });
+  }, [
+    title,
+    description,
+    options?.ogImage,
+    options?.allowIndexing,
+    options?.canonicalPath,
+    options?.ogType,
+    options?.googleSiteVerification,
+    schemasKey,
+  ]);
 }
 
 /**
- * Returns the direct cafe detail route so Guests, Free Explorers, and Subscribed
- * members can all view public cafe overviews and lock/unlock status cleanly.
+ * Returns the canonical cafe detail route (/cafe/:slug).
  */
 export function getCafeDetailRoute(slugOrKey: string, _authenticated?: boolean): string {
-  return slugOrKey.startsWith('/locations/')
-    ? slugOrKey
-    : `/locations/${slugOrKey}`;
+  if (slugOrKey.startsWith('/cafe/')) return slugOrKey;
+  if (slugOrKey.startsWith('/locations/')) {
+    return slugOrKey.replace(/^\/locations\//, '/cafe/');
+  }
+  return `/cafe/${slugOrKey}`;
 }
 
 /**

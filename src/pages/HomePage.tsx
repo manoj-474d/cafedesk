@@ -44,6 +44,9 @@ import {
   isRecentlyAddedCafe,
   isTrendingCafe,
 } from '../utils/cafeRecommendations';
+import { LOCAL_GUIDES } from '../config/guides';
+import { LOCAL_SEO_PAGES } from '../config/seoPages';
+import { buildOrganizationSchema, buildWebSiteSchema } from '../utils/seoSchemas';
 import { CafeAutocompleteSearch } from '../components/CafeAutocompleteSearch';
 import { InteractiveCafeMap } from '../components/InteractiveCafeMap';
 import { LocationCard } from '../components/LocationCard';
@@ -64,9 +67,16 @@ export function HomePage() {
   } = useDiscovery();
   const navigate = useNavigate();
 
+  const origin = typeof window !== 'undefined' ? window.location.origin : 'https://cafedesk.space';
   useDocumentMeta(settings.seo_home_title, settings.seo_home_description, {
+    canonicalPath: '/',
     ogImage: settings.seo_og_image,
     allowIndexing: settings.seo_allow_indexing,
+    googleSiteVerification: settings.google_site_verification,
+    schemas: [
+      buildOrganizationSchema(origin, settings),
+      buildWebSiteSchema(origin, settings.brand_name),
+    ],
   });
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -929,6 +939,66 @@ export function HomePage() {
                     onRequestNearMe={handleFindNearMe}
                     heightClassName="h-[380px]"
                   />
+                </div>
+
+                {/* Crawl-Friendly Bengaluru Neighbourhoods, Category Guides & Editorial Index */}
+                <div className="pt-6 border-t border-[#e6ddd0] space-y-5">
+                  <div className="flex flex-wrap items-end justify-between gap-2">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#1b4d3e] mb-1">
+                        Bengaluru Local SEO Guides
+                      </p>
+                      <h3 className="font-serif-display text-2xl font-bold text-[#1c1613]">
+                        Browse Bengaluru neighbourhoods &amp; cafe categories
+                      </h3>
+                    </div>
+                    <Link
+                      to="/guides"
+                      className="text-xs font-semibold text-[#b45309] hover:underline underline-offset-4"
+                    >
+                      Read all editorial guides ({LOCAL_GUIDES.length}) &rarr;
+                    </Link>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="bg-white rounded-2xl border border-[#e6ddd0] p-4 sm:p-5 space-y-3">
+                      <p className="text-xs font-semibold uppercase tracking-wider text-[#b45309]">
+                        Category &amp; Budget Guides
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {LOCAL_SEO_PAGES.filter((p) => p.group !== 'locality')
+                          .slice(0, 10)
+                          .map((p) => (
+                            <Link
+                              key={p.slug}
+                              to={p.path}
+                              className="px-3 py-1.5 rounded-full bg-[#faf7f2] hover:bg-[#fef3c7] border border-[#e6ddd0] text-xs font-medium text-[#1c1613] transition-colors"
+                            >
+                              {p.kicker}
+                            </Link>
+                          ))}
+                      </div>
+                    </div>
+
+                    <div className="bg-white rounded-2xl border border-[#e6ddd0] p-4 sm:p-5 space-y-3">
+                      <p className="text-xs font-semibold uppercase tracking-wider text-[#1b4d3e]">
+                        Popular Bengaluru Neighbourhoods
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {LOCAL_SEO_PAGES.filter((p) => p.group === 'locality')
+                          .slice(0, 12)
+                          .map((p) => (
+                            <Link
+                              key={p.slug}
+                              to={p.path}
+                              className="px-3 py-1.5 rounded-full bg-[#faf7f2] hover:bg-[#ecfdf5] border border-[#e6ddd0] text-xs font-medium text-[#1c1613] transition-colors"
+                            >
+                              {p.kicker}
+                            </Link>
+                          ))}
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </section>
