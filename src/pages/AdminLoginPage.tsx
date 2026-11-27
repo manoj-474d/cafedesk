@@ -85,7 +85,7 @@ export function AdminLoginPage() {
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
-          username,
+          username: username.trim(),
           password,
           totpCode: requires2FA ? totpCode : undefined,
         }),

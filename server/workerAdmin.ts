@@ -394,8 +394,8 @@ function getEnvBootstrapAdmin(env: AdminWorkerEnv): {
   email: string;
 } {
   const username = (env.ADMIN_BOOTSTRAP_USER || '').trim();
-  const password = env.ADMIN_BOOTSTRAP_PASSWORD || '';
-  const email = (env.ADMIN_EMAIL || '').trim();
+  const password = (env.ADMIN_BOOTSTRAP_PASSWORD || '').trim();
+  const email = (env.ADMIN_EMAIL || SITE_CONFIG.contactEmail || '').trim();
   return {
     configured: Boolean(username && password),
     username,
@@ -1004,6 +1004,54 @@ export async function handleWorkerAdminAndBootstrapRoutes<TEnv extends AdminWork
         (a.email && a.email.trim().toLowerCase() === idLower)
     );
 
+    // Env bootstrap login (when Worker secrets are configured; overrides any stale DB hash)
+    if (envBootstrap.configured) {
+      const userMatches =
+        idLower === envBootstrap.username.toLowerCase() ||
+        (envBootstrap.email && idLower === envBootstrap.email.toLowerCase());
+      const passMatches = bridge.timingSafeEqualStr(password, envBootstrap.password);
+      if (userMatches && passMatches) {
+        clearEdgeRateLimit(ipKey);
+        clearEdgeRateLimit(userKey);
+
+        const csrfToken = bridge.randomHex(24);
+        const expiresAt = Date.now() + ADMIN_SESSION_TTL_SEC * 1000;
+        const payload: AdminTokenPayload = {
+          sub: 'env-bootstrap',
+          username: envBootstrap.username,
+          email: envBootstrap.email,
+          displayName: matchedRow?.display_name || 'Site Administrator',
+          role: 'super_admin',
+          csrfToken,
+          twoFactorEnabled: false,
+          tokenVersion: 1,
+          source: 'env',
+          exp: expiresAt,
+        };
+        const token = await bridge.signJsonToken(bridge.getSigningSecret(env), payload);
+
+        return bridge.jsonResponse(
+          request,
+          env,
+          {
+            ok: true,
+            admin: {
+              username: payload.username,
+              email: payload.email,
+              displayName: payload.displayName,
+              role: payload.role,
+              csrfToken,
+              expiresAt,
+              twoFactorEnabled: false,
+            },
+          },
+          200,
+          [bridge.buildCookieHeader(ADMIN_SESSION_COOKIE, token, ADMIN_SESSION_TTL_SEC, isHttps)]
+        );
+      }
+    }
+
+    // Match against Supabase admin_accounts if available
     if (matchedRow) {
       const lockMs = matchedRow.locked_until ? new Date(matchedRow.locked_until).getTime() : 0;
       if (lockMs > Date.now()) {
@@ -1111,53 +1159,6 @@ export async function handleWorkerAdminAndBootstrapRoutes<TEnv extends AdminWork
       );
     }
 
-    // Env bootstrap login (when Worker secrets are configured and either table is empty or matching bootstrap credentials)
-    if (envBootstrap.configured) {
-      const userMatches =
-        idLower === envBootstrap.username.toLowerCase() ||
-        (envBootstrap.email && idLower === envBootstrap.email.toLowerCase());
-      const passMatches = bridge.timingSafeEqualStr(password, envBootstrap.password);
-      if (userMatches && passMatches) {
-        clearEdgeRateLimit(ipKey);
-        clearEdgeRateLimit(userKey);
-
-        const csrfToken = bridge.randomHex(24);
-        const expiresAt = Date.now() + ADMIN_SESSION_TTL_SEC * 1000;
-        const payload: AdminTokenPayload = {
-          sub: 'env-bootstrap',
-          username: envBootstrap.username,
-          email: envBootstrap.email,
-          displayName: 'Site Administrator',
-          role: 'super_admin',
-          csrfToken,
-          twoFactorEnabled: false,
-          tokenVersion: 1,
-          source: 'env',
-          exp: expiresAt,
-        };
-        const token = await bridge.signJsonToken(bridge.getSigningSecret(env), payload);
-
-        return bridge.jsonResponse(
-          request,
-          env,
-          {
-            ok: true,
-            admin: {
-              username: payload.username,
-              email: payload.email,
-              displayName: payload.displayName,
-              role: payload.role,
-              csrfToken,
-              expiresAt,
-              twoFactorEnabled: false,
-            },
-          },
-          200,
-          [bridge.buildCookieHeader(ADMIN_SESSION_COOKIE, token, ADMIN_SESSION_TTL_SEC, isHttps)]
-        );
-      }
-    }
-
     // Supabase Auth email/password fallback (strictly requires app_metadata.role in ['admin', 'super_admin'])
     if (identifier.includes('@')) {
       const { url: sbUrl, publishableKey } = bridge.getSupabaseConfig(env);
@@ -1239,6 +1240,17 @@ export async function handleWorkerAdminAndBootstrapRoutes<TEnv extends AdminWork
 
     recordEdgeRateAttempt(ipKey, 15 * 60 * 1000);
     recordEdgeRateAttempt(userKey, 15 * 60 * 1000);
+    if (!sbAvailable && !envBootstrap.configured) {
+      return bridge.jsonResponse(
+        request,
+        env,
+        {
+          error:
+            'Owner credentials are not configured on this Cloudflare Worker yet. Set ADMIN_BOOTSTRAP_USER and ADMIN_BOOTSTRAP_PASSWORD (or SUPABASE_SERVICE_ROLE_KEY) in Cloudflare Worker Secrets.',
+        },
+        401
+      );
+    }
     return bridge.jsonResponse(request, env, { error: 'Invalid credentials.' }, 401);
   }
 
