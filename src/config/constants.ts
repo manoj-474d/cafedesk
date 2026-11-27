@@ -128,51 +128,51 @@ export const DISCOVERY_CATEGORY_TABS: DiscoveryCategoryTab[] = [
   {
     id: 'coffee',
     label: 'Coffee',
-    placesQuery: 'coffee shops specialty espresso',
+    placesQuery: 'coffee shops filter coffee espresso',
     includedTypes: ['coffee_shop', 'cafe'],
-    keywords: ['coffee', 'espresso', 'roaster', 'latte', 'filter coffee'],
+    keywords: ['coffee', 'espresso', 'roaster', 'latte', 'filter coffee', 'kaapi', 'cappuccino', 'cold coffee'],
   },
   {
     id: 'tea',
     label: 'Tea',
     placesQuery: 'tea shop chai stall tea house',
     includedTypes: ['tea_house', 'cafe'],
-    keywords: ['tea', 'chai', 'irani', 'darjeeling', 'matcha', 'kulhad'],
+    keywords: ['tea', 'chai', 'irani', 'darjeeling', 'matcha', 'kulhad', 'kullad', 'dum tea'],
   },
   {
     id: 'snacks',
     label: 'Snacks',
-    placesQuery: 'snacks fast food chaat sandwich',
+    placesQuery: 'snacks fast food chaat sandwich burger',
     includedTypes: ['fast_food_restaurant', 'sandwich_shop'],
-    keywords: ['snack', 'samosa', 'puff', 'chaat', 'sandwich', 'burger', 'fast food', 'toast'],
+    keywords: ['snack', 'samosa', 'puff', 'chaat', 'sandwich', 'burger', 'maggi', 'fries', 'vada', 'fast food', 'toast'],
   },
   {
     id: 'bakery',
     label: 'Bakery',
     placesQuery: 'bakery pastries cakes puffs',
     includedTypes: ['bakery'],
-    keywords: ['bakery', 'bake', 'croissant', 'cake', 'pastry', 'bread', 'bun'],
+    keywords: ['bakery', 'bake', 'croissant', 'cake', 'pastry', 'bread', 'bun', 'biscuit'],
   },
   {
     id: 'juice',
     label: 'Juice',
     placesQuery: 'fresh juice shop smoothies shakes',
     includedTypes: ['juice_shop', 'cafe'],
-    keywords: ['juice', 'smoothie', 'shake', 'fresh', 'cooler', 'beverage'],
+    keywords: ['juice', 'smoothie', 'shake', 'milkshake', 'fresh', 'cooler', 'beverage', 'iced tea'],
   },
   {
     id: 'desserts',
     label: 'Desserts',
     placesQuery: 'desserts ice cream gelato waffles',
     includedTypes: ['ice_cream_shop', 'dessert_shop'],
-    keywords: ['dessert', 'ice cream', 'gelato', 'waffle', 'brownie', 'sweet', 'cake'],
+    keywords: ['dessert', 'ice cream', 'gelato', 'waffle', 'brownie', 'sweet', 'cake', 'donut', 'cheesecake'],
   },
   {
     id: 'budget_food',
     label: 'Budget Food',
     placesQuery: 'budget eatery darshini tiffin pocket friendly',
     includedTypes: ['restaurant', 'fast_food_restaurant', 'cafe'],
-    keywords: ['budget', 'darshini', 'tiffin', 'chai', 'student', 'affordable', 'eatery'],
+    keywords: ['budget', 'darshini', 'tiffin', 'chai', 'student', 'affordable', 'eatery', 'dosa', 'idli', 'parotta'],
   },
   {
     id: 'workspaces',
@@ -354,10 +354,15 @@ export const WORK_MOODS: WorkMoodMeta[] = [
 ];
 
 export type BudgetBracketId =
+  | 'under-30'
   | 'under-50'
+  | 'under-100'
+  | 'under-150'
+  | 'under-200'
+  | 'under-300'
+  | '300-plus'
   | '50-100'
   | '100-200'
-  | 'under-200'
   | '200-300'
   | '200-500'
   | '300-500'
@@ -371,11 +376,13 @@ export interface BudgetBracket {
 }
 
 export const BUDGET_BRACKETS: BudgetBracket[] = [
+  { id: 'under-30', label: 'Under ₹30', min: 0, max: 30 },
   { id: 'under-50', label: 'Under ₹50', min: 0, max: 50 },
-  { id: '50-100', label: '₹50–₹100', min: 50, max: 100 },
-  { id: '100-200', label: '₹100–₹200', min: 100, max: 200 },
-  { id: '200-500', label: '₹200–₹500', min: 200, max: 500 },
-  { id: '500+', label: '₹500+', min: 500, max: null },
+  { id: 'under-100', label: 'Under ₹100', min: 0, max: 100 },
+  { id: 'under-150', label: 'Under ₹150', min: 0, max: 150 },
+  { id: 'under-200', label: 'Under ₹200', min: 0, max: 200 },
+  { id: 'under-300', label: 'Under ₹300', min: 0, max: 300 },
+  { id: '300-plus', label: '₹300 and above', min: 300, max: null },
 ];
 
 export const COLLECTION_PRESETS: Array<{ name: string; description: string }> = [
@@ -441,11 +448,11 @@ export interface QuickFilterChip {
 }
 
 export const HOME_QUICK_FILTERS: QuickFilterChip[] = [
-  { id: 'coffee', label: 'Coffee', to: '/discover?category=coffee' },
-  { id: 'tea', label: 'Tea Shops', to: '/discover?category=tea' },
-  { id: 'snacks', label: 'Snacks', to: '/discover?category=snacks' },
-  { id: 'bakery', label: 'Bakeries', to: '/discover?category=bakery' },
-  { id: 'budget', label: 'Budget Under ₹200', to: '/discover?budget=100-200' },
+  { id: 'tea', label: 'Tea Under ₹30', to: '/discover?q=Tea+under+₹30' },
+  { id: 'coffee', label: 'Coffee Under ₹50', to: '/discover?q=Coffee+under+₹50' },
+  { id: 'snacks', label: 'Snacks Under ₹50', to: '/discover?category=snacks&budget=under-50' },
+  { id: 'budget', label: 'Best Food Under ₹100', to: '/discover?budget=under-100' },
+  { id: 'bakery', label: 'Bakeries & Puffs', to: '/discover?category=bakery' },
   { id: 'workspaces', label: 'Workspaces', to: '/discover?category=workspaces' },
 ];
 

@@ -91,12 +91,25 @@ const textEncoder = new TextEncoder();
 // Edge instance rate-limit map (best-effort defense-in-depth per isolate)
 const edgeRateBuckets = new Map<string, number[]>();
 
+function pruneEdgeRateBuckets(now: number, maxWindowMs = 15 * 60 * 1000): void {
+  if (edgeRateBuckets.size < 400) return;
+  for (const [k, list] of edgeRateBuckets.entries()) {
+    const fresh = list.filter((t) => now - t < maxWindowMs);
+    if (fresh.length === 0) {
+      edgeRateBuckets.delete(k);
+    } else {
+      edgeRateBuckets.set(k, fresh);
+    }
+  }
+}
+
 function checkEdgeRateLimit(
   key: string,
   maxAttempts: number,
   windowMs: number
 ): { allowed: boolean; retryAfterSec: number } {
   const now = Date.now();
+  pruneEdgeRateBuckets(now, windowMs);
   const list = (edgeRateBuckets.get(key) ?? []).filter((t) => now - t < windowMs);
   if (list.length >= maxAttempts) {
     const oldest = list[0];
@@ -110,6 +123,7 @@ function checkEdgeRateLimit(
 
 function recordEdgeRateAttempt(key: string, windowMs: number): void {
   const now = Date.now();
+  pruneEdgeRateBuckets(now, windowMs);
   const list = (edgeRateBuckets.get(key) ?? []).filter((t) => now - t < windowMs);
   list.push(now);
   edgeRateBuckets.set(key, list);
@@ -283,6 +297,13 @@ async function verifyTotpWeb(
   return false;
 }
 
+const DEV_MUTATION_ORIGINS = new Set([
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+]);
+
 function isAllowedSameOriginForMutation(req: Request, env: AdminWorkerEnv): boolean {
   const origin = req.headers.get('origin');
   if (!origin) return true; // Non-browser/direct same-origin requests without Origin header rely on CSRF token
@@ -295,7 +316,8 @@ function isAllowedSameOriginForMutation(req: Request, env: AdminWorkerEnv): bool
   return (
     origin === 'https://cafedesk.space' ||
     origin === 'https://www.cafedesk.space' ||
-    origin.endsWith('.cafedesk.space') ||
+    (origin.startsWith('https://') && origin.endsWith('.cafedesk.space')) ||
+    DEV_MUTATION_ORIGINS.has(origin) ||
     allowedList.includes(origin)
   );
 }
@@ -415,6 +437,10 @@ async function resolveAuthenticatedWorkerAdmin(
     }
   }
   return payload;
+}
+
+function isFullAdminRole(role: AdminTokenPayload['role']): boolean {
+  return role === 'super_admin' || role === 'admin';
 }
 
 async function requireWorkerAdmin(
@@ -577,12 +603,37 @@ function buildDefaultWorkerLocations(): LocationItem[] {
     rating_count: null,
     facilities: [],
     offers: [],
-    menu_services: [],
+    menu_services: c.menu_services ?? [],
     verdict: c.claims[0] ?? 'Bengaluru cafe listed from official website & public sources.',
     published: true,
     display_order: idx + 1,
     sample: false,
     updated_at: Date.now(),
+    access: {
+      hasAccess: false,
+      viewerState: 'guest',
+      cafeRule: 'inherit',
+      allowedPlanIds: [],
+      unlockedSections: {
+        wifi_details: false,
+        power_sockets: false,
+        workspace_details: false,
+        food_menu: true,
+        menu_pricing: true,
+        amenities: false,
+        subscriber_benefits: false,
+        booking: false,
+      },
+      lockedSections: [
+        'wifi_details',
+        'power_sockets',
+        'workspace_details',
+        'amenities',
+        'subscriber_benefits',
+        'booking',
+      ],
+      lockReason: 'guest',
+    },
   }));
 }
 
@@ -766,37 +817,19 @@ export async function handleWorkerAdminAndBootstrapRoutes<TEnv extends AdminWork
   if (pathname === '/api/admin/status' && request.method === 'GET') {
     const envBootstrap = getEnvBootstrapAdmin(env);
     const { available: sbAvailable, accounts } = await checkSupabaseAdminTable(env, bridge);
-    const setupRequired = sbAvailable
-      ? accounts.length === 0 && !envBootstrap.configured
-      : !envBootstrap.configured;
+    const setupRequired = sbAvailable && accounts.length === 0 && !envBootstrap.configured;
 
     const currentAdmin = await resolveAuthenticatedWorkerAdmin(request, env, bridge);
     if (!currentAdmin) {
-      if (!sbAvailable && !envBootstrap.configured) {
-        return bridge.jsonResponse(
-          request,
-          env,
-          {
-            setupRequired: false,
-            authenticated: false,
-            storageConfigured: false,
-            error:
-              'Admin storage is not configured on this Worker. Set SUPABASE_SERVICE_ROLE_KEY (with migration 006_admin_and_cms.sql) or set ADMIN_BOOTSTRAP_USER and ADMIN_BOOTSTRAP_PASSWORD in Cloudflare Worker Secrets.',
-          },
-          200
-        );
-      }
       return bridge.jsonResponse(request, env, {
         setupRequired,
         authenticated: false,
-        storageConfigured: true,
       });
     }
 
     return bridge.jsonResponse(request, env, {
       setupRequired: false,
       authenticated: true,
-      storageConfigured: true,
       admin: {
         username: currentAdmin.username,
         email: currentAdmin.email,
@@ -819,10 +852,10 @@ export async function handleWorkerAdminAndBootstrapRoutes<TEnv extends AdminWork
         env,
         {
           error: envBootstrap.configured
-            ? 'Owner account is managed via Cloudflare Worker secrets. Please sign in.'
-            : 'Admin database table is not provisioned. Add SUPABASE_SERVICE_ROLE_KEY and run migration 006_admin_and_cms.sql, or configure ADMIN_BOOTSTRAP_USER & ADMIN_BOOTSTRAP_PASSWORD.',
+            ? 'Owner account is already configured. Please sign in.'
+            : 'Initial setup is not available. Sign in with your owner credentials.',
         },
-        503
+        403
       );
     }
 
@@ -1148,6 +1181,14 @@ export async function handleWorkerAdminAndBootstrapRoutes<TEnv extends AdminWork
               };
             };
             const role = String(authJson.user?.app_metadata?.role || '');
+            if (authJson.user?.id && !isFullAdminRole(role as AdminTokenPayload['role'])) {
+              return bridge.jsonResponse(
+                request,
+                env,
+                { error: 'This account does not have owner/admin permissions.' },
+                403
+              );
+            }
             if (authJson.user?.id && (role === 'super_admin' || role === 'admin')) {
               clearEdgeRateLimit(ipKey);
               clearEdgeRateLimit(userKey);
@@ -1196,18 +1237,6 @@ export async function handleWorkerAdminAndBootstrapRoutes<TEnv extends AdminWork
       }
     }
 
-    if (!sbAvailable && !envBootstrap.configured && !identifier.includes('@')) {
-      return bridge.jsonResponse(
-        request,
-        env,
-        {
-          error:
-            'Admin authentication is not configured yet. Add SUPABASE_SERVICE_ROLE_KEY (with migration 006_admin_and_cms.sql) or set ADMIN_BOOTSTRAP_USER and ADMIN_BOOTSTRAP_PASSWORD in Cloudflare Worker Secrets.',
-        },
-        503
-      );
-    }
-
     recordEdgeRateAttempt(ipKey, 15 * 60 * 1000);
     recordEdgeRateAttempt(userKey, 15 * 60 * 1000);
     return bridge.jsonResponse(request, env, { error: 'Invalid credentials.' }, 401);
@@ -1229,61 +1258,79 @@ export async function handleWorkerAdminAndBootstrapRoutes<TEnv extends AdminWork
 
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const identifier = bridge.cleanStr(body.username, 120);
+    if (!identifier) {
+      return bridge.jsonResponse(
+        request,
+        env,
+        { error: 'Please enter your owner username or email address.' },
+        400
+      );
+    }
+
     const envBootstrap = getEnvBootstrapAdmin(env);
     const { available: sbAvailable, accounts } = await checkSupabaseAdminTable(env, bridge);
 
     if (!sbAvailable) {
-      return bridge.jsonResponse(
-        request,
-        env,
-        {
-          error: envBootstrap.configured
-            ? 'This Worker uses environment secrets (ADMIN_BOOTSTRAP_PASSWORD). Update the secret in Cloudflare Dashboard -> Workers & Pages -> Settings -> Variables and Secrets, or enable Supabase admin_accounts (migration 006) for recovery-code resets.'
-            : 'Admin password reset requires SUPABASE_SERVICE_ROLE_KEY (with migration 006_admin_and_cms.sql) configured in Cloudflare Worker Secrets.',
-        },
-        503
-      );
+      const idLower = identifier.toLowerCase();
+      if (idLower.includes('@')) {
+        const { url: sbUrl, publishableKey } = bridge.getSupabaseConfig(env);
+        if (sbUrl && publishableKey) {
+          await fetch(`${sbUrl}/auth/v1/recover`, {
+            method: 'POST',
+            headers: {
+              apikey: publishableKey,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ email: idLower }),
+          }).catch(() => {});
+        }
+      }
+      return bridge.jsonResponse(request, env, {
+        ok: true,
+        delivery: 'email',
+        message:
+          'If an owner account matches that email address, password reset instructions have been sent.',
+      });
     }
 
     let emailSent = false;
-    if (identifier) {
-      const idLower = identifier.toLowerCase();
-      const admin = accounts.find(
-        (a) =>
-          a.username.toLowerCase() === idLower ||
-          (a.email && a.email.trim().toLowerCase() === idLower)
-      );
-      if (admin) {
-        const recoveryCode = bridge.randomHex(6).toUpperCase();
-        const codeHash = await sha256HexWeb(recoveryCode);
-        const expiresAtIso = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-        await bridge.supabaseServiceRest(env, `admin_accounts?id=eq.${admin.id}`, {
-          method: 'PATCH',
-          body: JSON.stringify({
-            reset_token_hash: codeHash,
-            reset_token_expires_at: expiresAtIso,
-            updated_at: new Date().toISOString(),
-          }),
-        });
+    const idLower = identifier.toLowerCase();
+    const admin = accounts.find(
+      (a) =>
+        a.username.toLowerCase() === idLower ||
+        (a.email && a.email.trim().toLowerCase() === idLower)
+    );
+    if (admin) {
+      const recoveryCode = bridge.randomHex(6).toUpperCase();
+      const codeHash = await sha256HexWeb(recoveryCode);
+      const expiresAtIso = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+      await bridge.supabaseServiceRest(env, `admin_accounts?id=eq.${admin.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          reset_token_hash: codeHash,
+          reset_token_expires_at: expiresAtIso,
+          updated_at: new Date().toISOString(),
+        }),
+      });
 
-        console.info(
-          `[CafeDesk Security] Password recovery code for "${admin.username}" (valid 15m): ${recoveryCode}`
-        );
-        emailSent = await sendRecoveryCodeEmailIfConfigured(
-          env,
-          admin.email || envBootstrap.email,
-          admin.username,
-          recoveryCode
-        );
-        await recordWorkerActivity(env, bridge, admin.username, 'Requested password reset', 'Recovery token issued');
-      }
+      console.info(
+        `[CafeDesk Security] Password recovery code for "${admin.username}" (valid 15m): ${recoveryCode}`
+      );
+      emailSent = await sendRecoveryCodeEmailIfConfigured(
+        env,
+        admin.email || envBootstrap.email,
+        admin.username,
+        recoveryCode
+      );
+      await recordWorkerActivity(env, bridge, admin.username, 'Requested password reset', 'Recovery token issued');
     }
 
     return bridge.jsonResponse(request, env, {
       ok: true,
+      delivery: 'code',
       message: emailSent
-        ? 'If an account matches that username or email, a 15-minute single-use recovery code has been sent to your admin email and logged on the Worker console.'
-        : 'If an account matches that username or email, a 15-minute single-use recovery code has been logged in the Cloudflare Worker logs (wrangler tail / Logs).',
+        ? 'If an account matches that username or email, a 15-minute single-use recovery code has been sent to your admin email.'
+        : 'If an account matches that username or email, a 15-minute single-use recovery code has been generated on the server.',
     });
   }
 
@@ -1325,7 +1372,7 @@ export async function handleWorkerAdminAndBootstrapRoutes<TEnv extends AdminWork
       return bridge.jsonResponse(
         request,
         env,
-        { error: 'Admin database table is not provisioned on this Worker.' },
+        { error: 'Recovery-code password reset is unavailable in this configuration.' },
         503
       );
     }
@@ -1481,6 +1528,9 @@ export async function handleWorkerAdminAndBootstrapRoutes<TEnv extends AdminWork
   }
 
   if (pathname === '/api/admin/settings' && request.method === 'PUT') {
+    if (!isFullAdminRole(currentAdmin.role)) {
+      return bridge.jsonResponse(request, env, { error: 'Only full administrators can update site settings.' }, 403);
+    }
     const body = (await request.json().catch(() => ({}))) as Partial<SiteSettings>;
     const defaults = buildWorkerFallbackSettings();
     const existing = await getCmsKvValue<Partial<SiteSettings>>(env, bridge, 'site_settings', {});
@@ -1490,7 +1540,7 @@ export async function handleWorkerAdminAndBootstrapRoutes<TEnv extends AdminWork
       return bridge.jsonResponse(
         request,
         env,
-        { error: 'Unable to persist settings. Ensure Supabase migration 006_admin_and_cms.sql is applied.' },
+        { error: 'Unable to save settings right now. Please try again shortly.' },
         503
       );
     }
@@ -1536,6 +1586,9 @@ export async function handleWorkerAdminAndBootstrapRoutes<TEnv extends AdminWork
   }
 
   if (pathname === '/api/admin/users' && request.method === 'GET') {
+    if (!isFullAdminRole(currentAdmin.role)) {
+      return bridge.jsonResponse(request, env, { error: 'Only full administrators can view admin accounts.' }, 403);
+    }
     const { accounts } = await checkSupabaseAdminTable(env, bridge);
     return bridge.jsonResponse(request, env, {
       users: accounts.map((a) => ({
@@ -1582,11 +1635,15 @@ export async function handleWorkerAdminAndBootstrapRoutes<TEnv extends AdminWork
     if (!res?.ok) {
       return bridge.jsonResponse(request, env, { error: 'Could not update correction.' }, 500);
     }
+    await recordWorkerActivity(env, bridge, currentAdmin.username, 'Updated community correction', `#${id} -> ${status}`);
     const updated = (await res.json().catch(() => [])) as unknown[];
     return bridge.jsonResponse(request, env, { ok: true, correction: updated[0] ?? null });
   }
 
   if (pathname === '/api/admin/audit-logs' && request.method === 'GET') {
+    if (!isFullAdminRole(currentAdmin.role)) {
+      return bridge.jsonResponse(request, env, { error: 'Only full administrators can view security audit logs.' }, 403);
+    }
     const res = await bridge.supabaseServiceRest(
       env,
       'admin_activity_logs?select=*&order=id.desc&limit=200'
@@ -1620,7 +1677,7 @@ export async function handleWorkerAdminAndBootstrapRoutes<TEnv extends AdminWork
       return bridge.jsonResponse(
         request,
         env,
-        { error: '2FA setup requires Supabase admin_accounts storage.' },
+        { error: 'Two-factor setup is not available for this account type.' },
         503
       );
     }
@@ -1646,7 +1703,7 @@ export async function handleWorkerAdminAndBootstrapRoutes<TEnv extends AdminWork
 
   if (pathname === '/api/admin/2fa/enable' && request.method === 'POST') {
     if (currentAdmin.source !== 'supabase') {
-      return bridge.jsonResponse(request, env, { error: '2FA requires Supabase admin_accounts storage.' }, 503);
+      return bridge.jsonResponse(request, env, { error: 'Two-factor authentication is not available for this account type.' }, 503);
     }
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const code = bridge.cleanStr(body.code, 12);
@@ -1666,12 +1723,13 @@ export async function handleWorkerAdminAndBootstrapRoutes<TEnv extends AdminWork
       method: 'PATCH',
       body: JSON.stringify({ two_factor_enabled: true, updated_at: new Date().toISOString() }),
     });
+    await recordWorkerActivity(env, bridge, currentAdmin.username, 'Enabled 2FA', 'Authenticator verification enabled');
     return bridge.jsonResponse(request, env, { ok: true, twoFactorEnabled: true });
   }
 
   if (pathname === '/api/admin/2fa/disable' && request.method === 'POST') {
     if (currentAdmin.source !== 'supabase') {
-      return bridge.jsonResponse(request, env, { error: '2FA requires Supabase admin_accounts storage.' }, 503);
+      return bridge.jsonResponse(request, env, { error: 'Two-factor authentication is not available for this account type.' }, 503);
     }
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const currentPassword = String(body.currentPassword ?? '');
@@ -1688,12 +1746,13 @@ export async function handleWorkerAdminAndBootstrapRoutes<TEnv extends AdminWork
         updated_at: new Date().toISOString(),
       }),
     });
+    await recordWorkerActivity(env, bridge, currentAdmin.username, 'Disabled 2FA', 'Authenticator verification turned off');
     return bridge.jsonResponse(request, env, { ok: true, twoFactorEnabled: false });
   }
 
   if (pathname === '/api/admin/profile' && request.method === 'PUT') {
     if (currentAdmin.source !== 'supabase') {
-      return bridge.jsonResponse(request, env, { error: 'Profile updates require Supabase admin_accounts storage.' }, 503);
+      return bridge.jsonResponse(request, env, { error: 'Profile updates are not available for this account type.' }, 503);
     }
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const displayName = bridge.cleanStr(body.displayName, 60) || currentAdmin.displayName;
@@ -1710,6 +1769,8 @@ export async function handleWorkerAdminAndBootstrapRoutes<TEnv extends AdminWork
       email: email || row.email,
       updated_at: new Date().toISOString(),
     };
+    let nextVersion = Number(row.token_version ?? 1);
+    const cookiesToSet: string[] = [];
     if (newPassword) {
       if (!currentPassword || !(await verifyPasswordWeb(currentPassword, row.password_hash, bridge.timingSafeEqualStr))) {
         return bridge.jsonResponse(request, env, { error: 'Current password is incorrect.' }, 400);
@@ -1717,23 +1778,48 @@ export async function handleWorkerAdminAndBootstrapRoutes<TEnv extends AdminWork
       const pwErr = validatePasswordStrength(newPassword);
       if (pwErr) return bridge.jsonResponse(request, env, { error: pwErr }, 400);
       patch.password_hash = await hashPasswordWeb(newPassword);
+      nextVersion += 1;
+      patch.token_version = nextVersion;
     }
     await bridge.supabaseServiceRest(env, `admin_accounts?id=eq.${row.id}`, {
       method: 'PATCH',
       body: JSON.stringify(patch),
     });
-    return bridge.jsonResponse(request, env, {
-      ok: true,
-      admin: {
-        username: row.username,
-        email: String(patch.email || ''),
+    if (newPassword) {
+      const refreshedPayload: AdminTokenPayload = {
+        ...currentAdmin,
         displayName,
-        role: row.role,
+        email: String(patch.email || ''),
+        tokenVersion: nextVersion,
+        exp: Date.now() + ADMIN_SESSION_TTL_SEC * 1000,
+      };
+      const refreshedToken = await bridge.signJsonToken(bridge.getSigningSecret(env), refreshedPayload);
+      cookiesToSet.push(bridge.buildCookieHeader(ADMIN_SESSION_COOKIE, refreshedToken, ADMIN_SESSION_TTL_SEC, isHttps));
+      await recordWorkerActivity(env, bridge, currentAdmin.username, 'Changed owner password', 'Prior sessions revoked');
+    } else {
+      await recordWorkerActivity(env, bridge, currentAdmin.username, 'Updated owner profile', displayName);
+    }
+    return bridge.jsonResponse(
+      request,
+      env,
+      {
+        ok: true,
+        admin: {
+          username: row.username,
+          email: String(patch.email || ''),
+          displayName,
+          role: row.role,
+        },
       },
-    });
+      200,
+      cookiesToSet
+    );
   }
 
   if (pathname === '/api/admin/users/directory' && request.method === 'GET') {
+    if (!isFullAdminRole(currentAdmin.role)) {
+      return bridge.jsonResponse(request, env, { error: 'Only full administrators can view the user directory.' }, 403);
+    }
     const [profilesRes, subsRes, paymentsRes] = await Promise.all([
       bridge.supabaseServiceRest(env, 'profiles?select=*&order=created_at.desc&limit=200'),
       bridge.supabaseServiceRest(env, 'user_subscriptions?select=*'),
@@ -1771,6 +1857,9 @@ export async function handleWorkerAdminAndBootstrapRoutes<TEnv extends AdminWork
   }
 
   if (pathname === '/api/admin/subscriptions/overview' && request.method === 'GET') {
+    if (!isFullAdminRole(currentAdmin.role)) {
+      return bridge.jsonResponse(request, env, { error: 'Only full administrators can view subscription billing.' }, 403);
+    }
     const [plansRes, subsRes, paymentsRes, profilesRes] = await Promise.all([
       bridge.supabaseServiceRest(env, 'subscription_plans?select=*&order=sort_order.asc'),
       bridge.supabaseServiceRest(env, 'user_subscriptions?select=*'),
@@ -1801,6 +1890,9 @@ export async function handleWorkerAdminAndBootstrapRoutes<TEnv extends AdminWork
   }
 
   if (pathname === '/api/admin/navigation' && request.method === 'POST') {
+    if (!isFullAdminRole(currentAdmin.role)) {
+      return bridge.jsonResponse(request, env, { error: 'Only full administrators can modify navigation.' }, 403);
+    }
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const existing = await getCmsKvValue<NavigationItem[]>(env, bridge, 'navigation_items', []);
     const nextId = existing.reduce((max, it) => Math.max(max, Number(it.id || 0)), 0) + 1;
@@ -1814,20 +1906,35 @@ export async function handleWorkerAdminAndBootstrapRoutes<TEnv extends AdminWork
       is_external: Boolean(body.is_external),
     };
     const next = [...existing, created];
-    await setCmsKvValue(env, bridge, 'navigation_items', next);
+    const saved = await setCmsKvValue(env, bridge, 'navigation_items', next);
+    if (!saved) {
+      return bridge.jsonResponse(request, env, { error: 'Unable to save navigation changes.' }, 503);
+    }
+    await recordWorkerActivity(env, bridge, currentAdmin.username, 'Added navigation link', created.label);
     return bridge.jsonResponse(request, env, { item: created }, 201);
   }
 
   if (pathname.startsWith('/api/admin/navigation/') && (request.method === 'PUT' || request.method === 'DELETE')) {
+    if (!isFullAdminRole(currentAdmin.role)) {
+      return bridge.jsonResponse(request, env, { error: 'Only full administrators can modify navigation.' }, 403);
+    }
     const id = Number(pathname.split('/').pop());
     const existing = await getCmsKvValue<NavigationItem[]>(env, bridge, 'navigation_items', []);
     if (request.method === 'DELETE') {
-      await setCmsKvValue(env, bridge, 'navigation_items', existing.filter((i) => i.id !== id));
+      const saved = await setCmsKvValue(env, bridge, 'navigation_items', existing.filter((i) => i.id !== id));
+      if (!saved) {
+        return bridge.jsonResponse(request, env, { error: 'Unable to delete navigation item.' }, 503);
+      }
+      await recordWorkerActivity(env, bridge, currentAdmin.username, 'Deleted navigation link', `#${id}`);
       return bridge.jsonResponse(request, env, { ok: true });
     }
     const body = (await request.json().catch(() => ({}))) as Partial<NavigationItem>;
     const next = existing.map((i) => (i.id === id ? { ...i, ...body, id } : i));
-    await setCmsKvValue(env, bridge, 'navigation_items', next);
+    const saved = await setCmsKvValue(env, bridge, 'navigation_items', next);
+    if (!saved) {
+      return bridge.jsonResponse(request, env, { error: 'Unable to update navigation item.' }, 503);
+    }
+    await recordWorkerActivity(env, bridge, currentAdmin.username, 'Updated navigation link', `#${id}`);
     return bridge.jsonResponse(request, env, { ok: true });
   }
 
@@ -1844,8 +1951,9 @@ export async function handleWorkerAdminAndBootstrapRoutes<TEnv extends AdminWork
     };
     const saved = await setCmsKvValue(env, bridge, 'cafes_catalog', [created, ...existing]);
     if (!saved) {
-      return bridge.jsonResponse(request, env, { error: 'Could not persist cafe in Supabase cms_kv.' }, 503);
+      return bridge.jsonResponse(request, env, { error: 'Could not save cafe right now.' }, 503);
     }
+    await recordWorkerActivity(env, bridge, currentAdmin.username, 'Created cafe listing', created.name || id);
     return bridge.jsonResponse(request, env, { cafe: created }, 201);
   }
 
@@ -1853,12 +1961,23 @@ export async function handleWorkerAdminAndBootstrapRoutes<TEnv extends AdminWork
     const cafeId = decodeURIComponent(pathname.slice('/api/admin/cafes/'.length));
     const existing = await getCmsKvValue<LocationItem[] | null>(env, bridge, 'cafes_catalog', null) ?? buildDefaultWorkerLocations();
     if (request.method === 'DELETE') {
-      await setCmsKvValue(env, bridge, 'cafes_catalog', existing.filter((c) => c.id !== cafeId));
+      if (!isFullAdminRole(currentAdmin.role)) {
+        return bridge.jsonResponse(request, env, { error: 'Only full administrators can delete cafes.' }, 403);
+      }
+      const saved = await setCmsKvValue(env, bridge, 'cafes_catalog', existing.filter((c) => c.id !== cafeId));
+      if (!saved) {
+        return bridge.jsonResponse(request, env, { error: 'Could not delete cafe right now.' }, 503);
+      }
+      await recordWorkerActivity(env, bridge, currentAdmin.username, 'Deleted cafe listing', cafeId);
       return bridge.jsonResponse(request, env, { ok: true });
     }
     const body = (await request.json().catch(() => ({}))) as Partial<LocationItem>;
     const next = existing.map((c) => (c.id === cafeId ? { ...c, ...body, id: cafeId, updated_at: Date.now() } : c));
-    await setCmsKvValue(env, bridge, 'cafes_catalog', next);
+    const saved = await setCmsKvValue(env, bridge, 'cafes_catalog', next);
+    if (!saved) {
+      return bridge.jsonResponse(request, env, { error: 'Could not update cafe right now.' }, 503);
+    }
+    await recordWorkerActivity(env, bridge, currentAdmin.username, 'Updated cafe listing', cafeId);
     return bridge.jsonResponse(request, env, { cafe: next.find((c) => c.id === cafeId) ?? null });
   }
 
@@ -1866,7 +1985,7 @@ export async function handleWorkerAdminAndBootstrapRoutes<TEnv extends AdminWork
     request,
     env,
     {
-      error: `Admin endpoint ${pathname} requires the full Node.js backend (BACKEND_ORIGIN).`,
+      error: `This admin action (${pathname}) is not supported in the current deployment.`,
     },
     501
   );

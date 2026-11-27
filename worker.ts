@@ -57,8 +57,8 @@ const FREE_PERMISSIONS: PlanPermissions = {
   wifi_details: false,
   power_sockets: false,
   workspace_details: false,
-  food_menu: false,
-  menu_pricing: false,
+  food_menu: true,
+  menu_pricing: true,
   amenities: false,
   subscriber_benefits: false,
   booking: false,
@@ -84,15 +84,15 @@ const DEFAULT_PLANS: SubscriptionPlan[] = [
     id: 'free',
     name: 'Free Explorer',
     tagline:
-      'Discover Bengaluru cafes, save favourites, check laptops, seating, study, noise & sockets.',
+      'Discover Bengaluru cafes, verified food & tea pricing, budget filters, and nearby coffee spots.',
     price_inr: 0,
     interval_days: 0,
     badge_text: 'Free Forever',
     is_recommended: false,
     features: [
-      'Search cafes across Bengaluru by name, locality & live autocomplete',
-      'Discover nearby cafes using GPS distance, photos & Google Maps directions',
-      'Interactive Cafe Finder & curated Bengaluru discovery collections',
+      'Search food, tea, coffee, snacks & local cafes across Bengaluru with smart item matching',
+      'Browse verified food & beverage menus, INR pricing, and item-level budget filters',
+      'Discover nearby affordable cafes using GPS distance, photos & Google Maps directions',
       'Laptop-friendly status, seating, studying, noise level, sockets & ambience',
       'Save & bookmark favourite Bengaluru cafes to your free account',
     ],
@@ -189,12 +189,35 @@ function getRazorpayCredentials(env: WorkerEnv) {
   };
 }
 
+const EPHEMERAL_ISOLATE_SECRET = (() => {
+  const buf = new Uint8Array(32);
+  crypto.getRandomValues(buf);
+  let hex = '';
+  for (let i = 0; i < buf.length; i += 1) {
+    hex += buf[i].toString(16).padStart(2, '0');
+  }
+  return hex;
+})();
+
+const DEV_ALLOWED_ORIGINS = new Set([
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+]);
+
 function getSigningSecret(env: WorkerEnv): string {
   const explicit = (env.SESSION_SECRET || '').trim();
   if (explicit) return explicit;
-  const { serviceRoleKey, publishableKey, url } = getSupabaseConfig(env);
+  const { serviceRoleKey } = getSupabaseConfig(env);
+  if (serviceRoleKey) return serviceRoleKey;
   const { keySecret } = getRazorpayCredentials(env);
-  return `${url}:${serviceRoleKey || keySecret || publishableKey}`;
+  if (keySecret) return keySecret;
+  const bootstrapPass = (env.ADMIN_BOOTSTRAP_PASSWORD || '').trim();
+  if (bootstrapPass) {
+    return `bootstrap:${bootstrapPass}:${(env.ADMIN_BOOTSTRAP_USER || 'admin').trim()}`;
+  }
+  return EPHEMERAL_ISOLATE_SECRET;
 }
 
 function toBase64Url(bytes: Uint8Array): string {
@@ -313,37 +336,48 @@ function buildCookieHeader(
     `Max-Age=${maxAgeSec}`,
     isHttps ? 'Secure' : '',
     isHttps ? 'SameSite=None' : 'SameSite=Lax',
+    isHttps ? 'Partitioned' : '',
   ].filter(Boolean);
   return attrs.join('; ');
+}
+
+function applySecurityHeaders(headers: Headers, isHttps: boolean): void {
+  headers.set('X-Content-Type-Options', 'nosniff');
+  headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(self)');
+  headers.set('X-XSS-Protection', '0');
+  if (isHttps) {
+    headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+}
+
+function isAllowedCorsOrigin(origin: string, reqUrl: string, env: WorkerEnv): boolean {
+  const allowedList = (env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const reqOrigin = new URL(reqUrl).origin;
+  return (
+    origin === reqOrigin ||
+    origin === 'https://cafedesk.space' ||
+    origin === 'https://www.cafedesk.space' ||
+    (origin.startsWith('https://') && origin.endsWith('.cafedesk.space')) ||
+    DEV_ALLOWED_ORIGINS.has(origin) ||
+    allowedList.includes(origin)
+  );
 }
 
 function corsHeadersFor(req: Request, env: WorkerEnv): HeadersInit {
   const origin = req.headers.get('origin');
   const headers: Record<string, string> = {
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers':
       'Content-Type, Authorization, X-CafeDesk-Session, X-CSRF-Token',
     'Access-Control-Allow-Credentials': 'true',
   };
-  if (origin) {
-    const allowedList = (env.ALLOWED_ORIGINS || '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const reqOrigin = new URL(req.url).origin;
-    const isAllowed =
-      origin === reqOrigin ||
-      origin === 'https://cafedesk.space' ||
-      origin === 'https://www.cafedesk.space' ||
-      origin.endsWith('.cafedesk.space') ||
-      origin.endsWith('.workers.dev') ||
-      origin.endsWith('.pages.dev') ||
-      origin.startsWith('http://localhost:') ||
-      allowedList.includes(origin);
-    if (isAllowed) {
-      headers['Access-Control-Allow-Origin'] = origin;
-      headers['Vary'] = 'Origin';
-    }
+  if (origin && isAllowedCorsOrigin(origin, req.url, env)) {
+    headers['Access-Control-Allow-Origin'] = origin;
+    headers['Vary'] = 'Origin';
   }
   return headers;
 }
@@ -355,11 +389,13 @@ function jsonResponse(
   status = 200,
   setCookies: string[] = []
 ): Response {
+  const isHttps = new URL(req.url).protocol === 'https:';
   const headers = new Headers({
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
     ...corsHeadersFor(req, env),
   });
+  applySecurityHeaders(headers, isHttps);
   for (const cookie of setCookies) {
     headers.append('Set-Cookie', cookie);
   }
@@ -756,26 +792,37 @@ export default {
     const isHttps = url.protocol === 'https:';
 
     if (!pathname.startsWith('/api/')) {
-      return env.ASSETS.fetch(request);
+      const assetRes = await env.ASSETS.fetch(request);
+      const secureRes = new Response(assetRes.body, assetRes);
+      applySecurityHeaders(secureRes.headers, isHttps);
+      return secureRes;
     }
 
     if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: corsHeadersFor(request, env) });
+      const optHeaders = new Headers(corsHeadersFor(request, env));
+      applySecurityHeaders(optHeaders, isHttps);
+      return new Response(null, { status: 204, headers: optHeaders });
+    }
+
+    const originHeader = request.headers.get('origin');
+    if (
+      request.method !== 'GET' &&
+      request.method !== 'HEAD' &&
+      originHeader &&
+      !isAllowedCorsOrigin(originHeader, request.url, env)
+    ) {
+      return jsonResponse(request, env, { error: 'Origin not allowed.' }, 403);
     }
 
     const secret = getSigningSecret(env);
 
     // Health check
     if (pathname === '/api/health' && request.method === 'GET') {
-      const { serviceRoleKey } = getSupabaseConfig(env);
-      const { enabled: razorpayConfigured, hasKeyId, hasKeySecret } = getRazorpayCredentials(env);
+      const { enabled: razorpayConfigured } = getRazorpayCredentials(env);
       return jsonResponse(request, env, {
         ok: true,
         runtime: 'cloudflare-worker',
         razorpayConfigured,
-        razorpayKeyIdConfigured: hasKeyId,
-        razorpayKeySecretConfigured: hasKeySecret,
-        supabaseAdminConfigured: Boolean(serviceRoleKey),
       });
     }
 
@@ -940,14 +987,12 @@ export default {
       const currency = /^[A-Z]{3}$/.test(currencyRaw) ? currencyRaw : 'INR';
       const receipt = cleanStr(body.receipt || makeReceiptNumber(), 40) || makeReceiptNumber();
 
-      const { keyId, keySecret, missing } = getRazorpayCredentials(env);
+      const { keyId, keySecret } = getRazorpayCredentials(env);
       if (!keyId || !keySecret) {
         return jsonResponse(
           request,
           env,
-          {
-            error: `Missing Cloudflare Worker secret(s): ${missing.join(', ')}. Add them in Cloudflare Dashboard -> Workers & Pages -> cafedesk -> Settings -> Variables and Secrets, then redeploy.`,
-          },
+          { error: 'Payment gateway is temporarily unavailable.' },
           503
         );
       }
@@ -968,7 +1013,7 @@ export default {
           {
             error:
               rzpOrder.status === 401
-                ? 'Razorpay authentication failed. Verify RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET.'
+                ? 'Payment gateway authentication failed.'
                 : rzpOrder.message,
           },
           rzpOrder.status === 401 ? 401 : 502
@@ -1051,14 +1096,12 @@ export default {
         );
       }
 
-      const { keyId, keySecret, missing } = getRazorpayCredentials(env);
+      const { keyId, keySecret } = getRazorpayCredentials(env);
       if (!keyId || !keySecret) {
         return jsonResponse(
           request,
           env,
-          {
-            error: `Missing Cloudflare Worker secret(s): ${missing.join(', ')}. Add them in Cloudflare Dashboard -> Workers & Pages -> cafedesk -> Settings -> Variables and Secrets, then redeploy.`,
-          },
+          { error: 'Payment gateway is temporarily unavailable.' },
           503
         );
       }
@@ -1068,10 +1111,7 @@ export default {
         return jsonResponse(
           request,
           env,
-          {
-            error:
-              'SUPABASE_SERVICE_ROLE_KEY is not configured in Cloudflare Worker secrets to persist verified subscriptions.',
-          },
+          { error: 'Billing persistence is temporarily unavailable.' },
           503
         );
       }
@@ -1123,7 +1163,7 @@ export default {
           {
             error:
               rzpOrder.status === 401
-                ? 'Razorpay authentication failed. Verify RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in Cloudflare Worker secrets.'
+                ? 'Payment gateway authentication failed.'
                 : rzpOrder.message,
           },
           rzpOrder.status === 401 ? 401 : 502
@@ -1752,6 +1792,7 @@ export default {
         const headers = new Headers();
         headers.set('Content-Type', upstream.headers.get('content-type') || 'image/jpeg');
         headers.set('Cache-Control', 'public, max-age=86400');
+        applySecurityHeaders(headers, isHttps);
         return new Response(upstream.body, { status: 200, headers });
       }
 

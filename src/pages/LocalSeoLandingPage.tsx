@@ -36,7 +36,8 @@ export function LocalSeoLandingPage() {
   const pageDef = resolveSeoPageByPath(pathname);
 
   const { locations, settings } = useCms();
-  const { authenticated } = useAuth();
+  const { authenticated, hasPermission } = useAuth();
+  const canViewPricing = hasPermission('menu_pricing');
   const {
     getEffectiveLocation,
     nearbyPlaces,
@@ -167,7 +168,9 @@ export function LocalSeoLandingPage() {
               <span>Typical Spend</span>
             </p>
             <p className="font-mono-data text-xl font-bold text-[#1c1613] mt-0.5">
-              {minCost !== null && maxCost !== null
+              {!canViewPricing
+                ? 'Plus ₹79+'
+                : minCost !== null && maxCost !== null
                 ? minCost === maxCost
                   ? `~₹${minCost}`
                   : `₹${minCost}–₹${maxCost}`

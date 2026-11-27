@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   Clock,
   Loader2,
+  Lock,
   MapPin,
   Navigation,
   Search,
@@ -23,15 +24,28 @@ import {
   useDiscovery,
 } from '../context/DiscoveryContext';
 import type { LocationItem } from '../types/cms';
-import { formatDistanceKm, getCafeDetailRoute } from '../utils/cafeHelpers';
+import {
+  formatDistanceKm,
+  getCafeDetailRoute,
+  getStartingPriceLabel,
+  stripInlineRupeePrice,
+} from '../utils/cafeHelpers';
+import {
+  compareCafesBudgetFirst,
+  matchCafeToFoodSearch,
+  parseSmartFoodQuery,
+  type ParsedMenuEntry,
+  type SmartSearchMatchResult,
+} from '../utils/smartFoodSearch';
 
 const RECENT_SEARCHES_KEY = 'cafedesk_recent_searches_v1';
 const POPULAR_SEARCHES = [
-  'Coffee in Indiranagar',
-  'Tea shops near me',
-  'Bakeries in Jayanagar',
-  'Snacks in Koramangala',
-  'Study cafes HSR Layout',
+  'Tea under ₹30 near me',
+  'Coffee under ₹50 in Koramangala',
+  'Burger under ₹100',
+  'Sandwich under ₹80 in HSR Layout',
+  'Affordable breakfast near me',
+  'Cheap snacks in Indiranagar',
 ];
 
 interface UnifiedSuggestion {
@@ -87,7 +101,8 @@ export function CafeAutocompleteSearch({
 }: CafeAutocompleteSearchProps) {
   const navigate = useNavigate();
   const placesLib = useMapsLibrary('places');
-  const { authenticated } = useAuth();
+  const { authenticated, hasPermission } = useAuth();
+  const menuPricingUnlocked = hasPermission('menu_pricing');
   const { locations } = useCms();
   const { userLocation, getEffectiveLocation, resolvePredictionToPlace } = useDiscovery();
 
@@ -115,27 +130,77 @@ export function CafeAutocompleteSearch({
     setRecentSearches(readRecentSearches());
   };
 
-  const curatedMatches = useMemo(() => {
-    const q = value.trim().toLowerCase();
-    if (q.length < 2) return [];
-    return locations
-      .map((l) => getEffectiveLocation(l))
-      .filter((loc) => {
-        const hay = [
-          loc.name,
-          loc.area,
-          loc.city,
-          loc.category || '',
-          loc.address,
-          loc.popular_items.join(' '),
-          loc.claims.join(' '),
-        ]
-          .join(' ')
-          .toLowerCase();
-        return hay.includes(q);
-      })
-      .slice(0, 4);
-  }, [value, locations, getEffectiveLocation]);
+  const effectiveLocations = useMemo(
+    () => locations.map((l) => getEffectiveLocation(l)),
+    [locations, getEffectiveLocation]
+  );
+
+  const parsedQuery = useMemo(() => parseSmartFoodQuery(value), [value]);
+
+  const { menuItemMatches, curatedMatches, hasSmartIntent } = useMemo(() => {
+    const q = value.trim();
+    if (q.length < 2) {
+      return {
+        menuItemMatches: [] as Array<{ loc: LocationItem & { distanceKm?: number | null }; item: ParsedMenuEntry }>,
+        curatedMatches: [] as Array<{ loc: LocationItem & { distanceKm?: number | null }; match: SmartSearchMatchResult }>,
+        hasSmartIntent: false,
+      };
+    }
+
+    const matchMap = new Map<string, SmartSearchMatchResult>();
+    const pool = effectiveLocations.filter((loc) => {
+      if (parsedQuery.detectedLocality) {
+        const hayArea = `${loc.area} ${loc.address}`.toLowerCase();
+        if (!hayArea.includes(parsedQuery.detectedLocality.toLowerCase())) return false;
+      }
+      const res = matchCafeToFoodSearch(loc, parsedQuery);
+      matchMap.set(loc.id, res);
+      if (!res.matched) return false;
+      if (menuPricingUnlocked && parsedQuery.maxBudgetInr !== null) {
+        if (parsedQuery.isFoodQuery && res.matchedItems.length > 0) {
+          return res.matchedItems.some(
+            (m) => m.priceInr !== null && m.priceInr <= parsedQuery.maxBudgetInr!
+          );
+        }
+        const low = res.lowestMatchedPriceInr ?? loc.avg_cost_per_person;
+        return low !== null && low <= parsedQuery.maxBudgetInr;
+      }
+      return true;
+    });
+
+    const sorted = [...pool].sort((a, b) => compareCafesBudgetFirst(a, b, matchMap));
+
+    const itemRows: Array<{ loc: LocationItem & { distanceKm?: number | null }; item: ParsedMenuEntry }> = [];
+    for (const loc of sorted) {
+      const res = matchMap.get(loc.id);
+      if (!res) continue;
+      const items =
+        menuPricingUnlocked && parsedQuery.maxBudgetInr !== null
+          ? res.matchedItems.filter(
+              (m) => m.priceInr !== null && m.priceInr <= parsedQuery.maxBudgetInr!
+            )
+          : res.matchedItems;
+      for (const item of items.slice(0, 2)) {
+        itemRows.push({ loc, item });
+        if (itemRows.length >= 6) break;
+      }
+      if (itemRows.length >= 6) break;
+    }
+
+    const intentActive = Boolean(
+      (menuPricingUnlocked && parsedQuery.maxBudgetInr !== null) ||
+        parsedQuery.detectedLocality ||
+        parsedQuery.nearMe ||
+        parsedQuery.openNow ||
+        parsedQuery.intentTags.length > 0
+    );
+
+    return {
+      menuItemMatches: itemRows,
+      curatedMatches: sorted.slice(0, 4).map((loc) => ({ loc, match: matchMap.get(loc.id)! })),
+      hasSmartIntent: intentActive,
+    };
+  }, [value, effectiveLocations, parsedQuery, menuPricingUnlocked]);
 
   useEffect(() => {
     const trimmed = value.trim();
@@ -282,7 +347,11 @@ export function CafeAutocompleteSearch({
   const showLiveResults =
     open &&
     trimmedLen >= 2 &&
-    (curatedMatches.length > 0 || liveSuggestions.length > 0 || loadingSuggestions);
+    (menuItemMatches.length > 0 ||
+      curatedMatches.length > 0 ||
+      liveSuggestions.length > 0 ||
+      loadingSuggestions ||
+      hasSmartIntent);
   const showDropdown = showQuickHistory || showLiveResults;
 
   return (
@@ -365,7 +434,17 @@ export function CafeAutocompleteSearch({
               Popular Local Searches
             </p>
             <div className="p-2.5 flex flex-wrap gap-1.5">
-              {POPULAR_SEARCHES.map((term) => (
+              {(menuPricingUnlocked
+                ? POPULAR_SEARCHES
+                : [
+                    'Masala Chai near me',
+                    'Cafe Latte in Koramangala',
+                    'Burger & Fries',
+                    'Sandwich in HSR Layout',
+                    'Breakfast near me',
+                    'Snacks in Indiranagar',
+                  ]
+              ).map((term) => (
                 <button
                   key={term}
                   type="button"
@@ -386,15 +465,94 @@ export function CafeAutocompleteSearch({
           role="listbox"
           className="absolute left-0 right-0 mt-2 z-50 rounded-2xl bg-white border border-[#e6ddd0] shadow-xl overflow-hidden max-h-[60vh] sm:max-h-[420px] overflow-y-auto"
         >
+          {/* Smart NL Query Intent Banner */}
+          {hasSmartIntent && (
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                saveTerm(value.trim());
+                if (onSubmitQuery) {
+                  onSubmitQuery(value.trim());
+                } else {
+                  navigate(`/discover?q=${encodeURIComponent(value.trim())}&live=1`);
+                }
+              }}
+              className="w-full text-left px-3.5 py-2.5 bg-[#fef3c7]/70 hover:bg-[#fef3c7] border-b border-[#e6ddd0] flex items-center justify-between gap-2 text-xs text-[#1c1613]"
+            >
+              <span className="flex flex-wrap items-center gap-1.5 font-medium">
+                <Sparkles className="w-3.5 h-3.5 text-[#b45309] shrink-0" aria-hidden="true" />
+                <span>
+                  Smart search:{' '}
+                  {[
+                    parsedQuery.cleanFoodQuery ? `"${parsedQuery.cleanFoodQuery}"` : '',
+                    menuPricingUnlocked && parsedQuery.maxBudgetInr !== null
+                      ? `Under ₹${parsedQuery.maxBudgetInr}`
+                      : '',
+                    parsedQuery.detectedLocality ? parsedQuery.detectedLocality : '',
+                    parsedQuery.nearMe ? 'Near me' : '',
+                    parsedQuery.openNow ? 'Open now' : '',
+                    parsedQuery.intentTags.includes('student') ? 'Student-friendly' : '',
+                    parsedQuery.intentTags.includes('budget') ? 'Budget' : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </span>
+              </span>
+              <span className="font-semibold text-[#b45309] shrink-0">Apply &rarr;</span>
+            </button>
+          )}
+
+          {/* Menu & Food Item Matches (Prioritized) */}
+          {menuItemMatches.length > 0 && (
+            <div className="border-b border-[#e6ddd0]">
+              <p className="px-3.5 py-2 bg-[#faf7f2] text-[10px] font-semibold uppercase tracking-wider text-[#b45309]">
+                Menu &amp; Food Matches
+              </p>
+              {menuItemMatches.map(({ loc, item }, idx) => (
+                <button
+                  key={`${loc.id}-${item.name}-${idx}`}
+                  type="button"
+                  onClick={() => handleSelectCurated(loc)}
+                  className="w-full text-left px-3.5 py-2.5 min-h-[48px] hover:bg-[#faf7f2] flex items-center justify-between gap-3 transition-colors border-t border-[#f3ede3] first:border-t-0"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-[#1c1613] truncate">
+                      {stripInlineRupeePrice(item.name)}
+                    </p>
+                    <p className="text-xs text-[#5c4e45] truncate">
+                      {loc.name} · {loc.area}
+                    </p>
+                  </div>
+                  {menuPricingUnlocked ? (
+                    <span className="font-mono-data text-xs font-semibold text-[#1b4d3e] shrink-0">
+                      {item.priceInr !== null ? `₹${item.priceInr}` : 'Price not available'}
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#b45309] shrink-0">
+                      <Lock className="w-3 h-3" aria-hidden="true" />
+                      <span>Plus ₹79</span>
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* Curated Matches */}
           {curatedMatches.length > 0 && (
             <div className="border-b border-[#e6ddd0]">
               <p className="px-3.5 py-2 bg-[#faf7f2] text-[10px] font-semibold uppercase tracking-wider text-[#b45309]">
-                CafeDesk Directory Matches
+                {menuPricingUnlocked ? 'Budget-First Cafe Matches' : 'Cafe Matches'}
               </p>
-              {curatedMatches.map((loc) => {
+              {curatedMatches.map(({ loc, match }) => {
                 const thumb = loc.photos_approved && loc.photos.length > 0 ? loc.photos[0] : '';
                 const dist = formatDistanceKm(loc.distanceKm);
+                const priceBadge = menuPricingUnlocked
+                  ? match.lowestMatchedPriceInr !== null
+                    ? `₹${match.lowestMatchedPriceInr}`
+                    : getStartingPriceLabel(loc)
+                  : 'Menu items · Price Plus ₹79';
                 return (
                   <button
                     key={loc.id}
@@ -426,7 +584,7 @@ export function CafeAutocompleteSearch({
                         )}
                       </div>
                       <p className="text-xs text-[#5c4e45] truncate">
-                        {loc.area} · {loc.address}
+                        {loc.area} · {priceBadge}
                       </p>
                     </div>
                     <div className="text-right shrink-0 space-y-0.5">

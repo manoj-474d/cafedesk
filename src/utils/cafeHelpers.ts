@@ -8,6 +8,7 @@ import {
   type WorkMoodId,
 } from '../config/constants';
 import type { CafeSourceType, LocationItem } from '../types/cms';
+import { getCafeLowestVerifiedMenuPrice } from './smartFoodSearch';
 
 /**
  * Parses "8:00 AM – 11:00 PM" or overnight "11:00 AM – 1:30 AM" into minutes from midnight.
@@ -276,13 +277,31 @@ export function deduplicateCafeItems<
 export function matchesDiscoveryCategoryTab(
   loc: Pick<
     LocationItem,
-    'category' | 'name' | 'description' | 'popular_items' | 'claims' | 'facilities' | 'modes' | 'laptop_friendly' | 'avg_cost_per_person' | 'tea_price' | 'snacks_price'
+    | 'category'
+    | 'name'
+    | 'description'
+    | 'popular_items'
+    | 'claims'
+    | 'facilities'
+    | 'modes'
+    | 'laptop_friendly'
+    | 'avg_cost_per_person'
+    | 'tea_price'
+    | 'coffee_price'
+    | 'snacks_price'
+    | 'menu_services'
+    | 'menu_items'
   >,
   tabId: DiscoveryCategoryTabId | string
 ): boolean {
   if (!tabId || tabId === 'all') return true;
   const tab = DISCOVERY_CATEGORY_TABS.find((t) => t.id === tabId);
   if (!tab) return true;
+
+  const menuText = [
+    ...(loc.menu_services || []).map((m) => `${m.name} ${m.category} ${m.description || ''}`),
+    ...(loc.menu_items || []).map((m) => `${m.name} ${m.category || ''} ${m.description || ''}`),
+  ];
 
   const haystack = [
     loc.category || '',
@@ -291,7 +310,9 @@ export function matchesDiscoveryCategoryTab(
     ...(loc.popular_items || []),
     ...(loc.claims || []),
     ...(loc.facilities || []),
+    ...menuText,
     loc.tea_price ? 'tea chai' : '',
+    loc.coffee_price ? 'coffee espresso kaapi' : '',
     loc.snacks_price ? 'snacks' : '',
   ]
     .join(' ')
@@ -357,17 +378,40 @@ export function matchesWorkMood(
 export function matchesBudgetBracket(
   avgCost: number | null,
   priceRange: string,
-  bracketId: BudgetBracketId | string | ''
+  bracketId: BudgetBracketId | string | '',
+  lowestMenuPrice: number | null = null
 ): boolean {
   if (!bracketId) return true;
+
+  const effLow = lowestMenuPrice ?? avgCost;
+  if (bracketId === 'under-30') {
+    return effLow !== null && effLow <= 30;
+  }
   if (bracketId === 'under-50') {
-    if (avgCost !== null) return avgCost <= 50;
-    return /₹\s*[1-4]?\d\b|under ₹50/i.test(priceRange);
+    return effLow !== null && effLow <= 50;
+  }
+  if (bracketId === 'under-100') {
+    return effLow !== null && effLow <= 100;
+  }
+  if (bracketId === 'under-150') {
+    return effLow !== null && effLow <= 150;
   }
   if (bracketId === 'under-200') {
-    if (avgCost !== null) return avgCost <= 200;
-    return /₹50–₹100|₹100–₹200|Under ₹200|Budget-friendly/i.test(priceRange);
+    if (avgCost !== null && avgCost <= 200) return true;
+    if (lowestMenuPrice !== null && lowestMenuPrice <= 200) return true;
+    return false;
   }
+  if (bracketId === 'under-300') {
+    if (avgCost !== null && avgCost <= 300) return true;
+    if (lowestMenuPrice !== null && lowestMenuPrice <= 300) return true;
+    return false;
+  }
+  if (bracketId === '300-plus') {
+    if (avgCost !== null) return avgCost >= 300;
+    if (lowestMenuPrice !== null) return lowestMenuPrice >= 300;
+    return /₹300|₹400|₹500\+|Premium/i.test(priceRange);
+  }
+
   if (bracketId === '200-500') {
     if (avgCost !== null) return avgCost >= 200 && avgCost <= 500;
     return /₹200–₹300|₹300–₹500|₹200–₹500|Moderate/i.test(priceRange);
@@ -512,44 +556,56 @@ export function useDocumentMeta(
 }
 
 /**
- * Returns the canonical cafe detail route (/cafe/:slug).
+ * Strips inline INR price labels like "(₹180)" or "₹50–₹100" when menu_pricing is locked.
  */
-export function getCafeDetailRoute(slugOrKey: string, _authenticated?: boolean): string {
-  if (slugOrKey.startsWith('/cafe/')) return slugOrKey;
-  if (slugOrKey.startsWith('/locations/')) {
-    return slugOrKey.replace(/^\/locations\//, '/cafe/');
-  }
-  return `/cafe/${slugOrKey}`;
+export function stripInlineRupeePrice(text: string): string {
+  return String(text || '')
+    .replace(/\s*\([^)]*(?:₹|Rs\.?)[^)]*\)/gi, '')
+    .replace(/\s*(?:from|under|at|approx\.?)?\s*₹\s*\d+(?:\s*[–-]\s*₹?\s*\d+)?/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
 
 /**
- * Extracts a clean starting price label (e.g., "From ₹90") for public cafe cards.
+ * Returns the canonical cafe detail route (/cafe/:slug), or redirects guests to /login?next=...
+ */
+export function getCafeDetailRoute(slugOrKey: string, authenticated?: boolean): string {
+  const normalized = slugOrKey.startsWith('/cafe/')
+    ? slugOrKey
+    : slugOrKey.startsWith('/locations/')
+    ? slugOrKey.replace(/^\/locations\//, '/cafe/')
+    : `/cafe/${slugOrKey}`;
+  if (authenticated === false) {
+    return `/login?next=${encodeURIComponent(normalized)}`;
+  }
+  return normalized;
+}
+
+/**
+ * Extracts a clean verified starting price label (e.g., "From ₹15") for public cafe cards.
  */
 export function getStartingPriceLabel(
-  loc: Pick<LocationItem, 'tea_price' | 'coffee_price' | 'price_range' | 'avg_cost_per_person'>
+  loc: Pick<
+    LocationItem,
+    'tea_price' | 'coffee_price' | 'price_range' | 'avg_cost_per_person'
+  > &
+    Partial<Pick<LocationItem, 'snacks_price' | 'meals_price' | 'menu_items' | 'menu_services' | 'popular_items'>>
 ): string {
-  const candidates: number[] = [];
-  const collectNums = (raw: string | null | undefined) => {
-    if (!raw) return;
-    const matches = raw.match(/\d{2,4}/g);
-    if (matches) {
-      for (const m of matches) {
-        const n = Number(m);
-        if (Number.isFinite(n) && n >= 15 && n <= 5000) candidates.push(n);
-      }
-    }
-  };
-  collectNums(loc.tea_price);
-  collectNums(loc.coffee_price);
-  collectNums(loc.price_range);
-  if (candidates.length > 0) {
-    return `From ₹${Math.min(...candidates)}`;
+  const lowestMenu = getCafeLowestVerifiedMenuPrice({
+    menu_items: loc.menu_items ?? [],
+    menu_services: loc.menu_services ?? [],
+    popular_items: loc.popular_items ?? [],
+    tea_price: loc.tea_price,
+    coffee_price: loc.coffee_price,
+    snacks_price: loc.snacks_price ?? '',
+    meals_price: loc.meals_price ?? '',
+  } as LocationItem);
+
+  if (lowestMenu !== null) {
+    return `From ₹${lowestMenu}`;
   }
   if (loc.avg_cost_per_person !== null && loc.avg_cost_per_person > 0) {
     return `Avg ₹${loc.avg_cost_per_person}`;
-  }
-  if (loc.price_range) {
-    return loc.price_range;
   }
   return 'Price not available';
 }

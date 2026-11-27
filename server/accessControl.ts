@@ -309,9 +309,22 @@ export function sanitizeCafeForAccess(
     out.menu_items = [];
     out.menu_url = '';
   } else if (!u.menu_pricing) {
-    out.menu_services = (out.menu_services || []).map((m) => ({ ...m, price: '' }));
+    const stripItemPrice = (text: string): string =>
+      String(text || '')
+        .replace(/\s*\([^)]*(?:₹|Rs\.?)[^)]*\)/gi, '')
+        .replace(/\s*(?:from|under|at|approx\.?)?\s*₹\s*\d+(?:\s*[–-]\s*₹?\s*\d+)?/gi, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+
+    out.popular_items = (out.popular_items || []).map(stripItemPrice).filter(Boolean);
+    out.menu_services = (out.menu_services || []).map((m) => ({
+      ...m,
+      name: stripItemPrice(m.name),
+      price: '',
+    }));
     out.menu_items = (out.menu_items || []).map((m) => ({
       ...m,
+      name: stripItemPrice(m.name),
       price_inr: 0,
       discount_price_inr: null,
     }));

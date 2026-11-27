@@ -1266,9 +1266,14 @@ export function filterCafesForSeoPage(
   });
 
   return [...filtered].sort((a, b) => {
-    if (a.featured !== b.featured) return a.featured ? -1 : 1;
+    const costA = a.avg_cost_per_person ?? Number.MAX_SAFE_INTEGER;
+    const costB = b.avg_cost_per_person ?? Number.MAX_SAFE_INTEGER;
+    const budgetA = a.modes.includes('budget') || costA <= 220 ? 1 : 0;
+    const budgetB = b.modes.includes('budget') || costB <= 220 ? 1 : 0;
+    if (budgetB !== budgetA) return budgetB - budgetA;
+    if (costA !== costB) return costA - costB;
     if (a.verified !== b.verified) return a.verified ? -1 : 1;
-    if (a.display_order !== b.display_order) return a.display_order - b.display_order;
+    if (a.featured !== b.featured) return a.featured ? -1 : 1;
     return a.name.localeCompare(b.name);
   });
 }

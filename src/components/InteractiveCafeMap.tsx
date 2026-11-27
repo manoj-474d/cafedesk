@@ -94,7 +94,8 @@ function CafeMarkerPin({
   onSelect: () => void;
   onClose: () => void;
 }) {
-  const { authenticated } = useAuth();
+  const { authenticated, hasPermission } = useAuth();
+  const canViewPricing = hasPermission('menu_pricing');
   const [markerRef, marker] = useAdvancedMarkerRef();
   const isCurated = item.source === 'curated';
   const distText = formatDistanceKm(item.distanceKm);
@@ -154,7 +155,7 @@ function CafeMarkerPin({
                     : 'Not verified'}
                 </span>
               )}
-              {item.avgCost !== null && item.avgCost !== undefined && (
+              {canViewPricing && item.avgCost !== null && item.avgCost !== undefined && (
                 <span className="font-mono-data">₹{item.avgCost} avg</span>
               )}
             </div>
@@ -202,7 +203,8 @@ export function InteractiveCafeMap({
   onRequestNearMe,
   onSearchThisArea,
 }: InteractiveCafeMapProps) {
-  const { authenticated } = useAuth();
+  const { authenticated, hasPermission } = useAuth();
+  const canViewPricing = hasPermission('menu_pricing');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isExpanded, setIsExpanded] = useState(false);
   const [pannedCenter, setPannedCenter] = useState<LatLngPoint | null>(null);
@@ -512,7 +514,7 @@ export function InteractiveCafeMap({
                   {selectedItem.rating}
                 </span>
               )}
-              {selectedItem.avgCost !== null && selectedItem.avgCost !== undefined && (
+              {canViewPricing && selectedItem.avgCost !== null && selectedItem.avgCost !== undefined && (
                 <span className="font-mono-data">₹{selectedItem.avgCost} avg</span>
               )}
             </div>

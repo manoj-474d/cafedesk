@@ -19,6 +19,7 @@ import {
   RotateCcw,
   Search,
   SlidersHorizontal,
+  Sparkles,
   Star,
   Wifi,
   X,
@@ -50,7 +51,6 @@ import {
   getCafeDetailRoute,
   getCafeSourceMeta,
   isCafeOpenNow,
-  matchesBudgetBracket,
   matchesDiscoveryCategoryTab,
   matchesWorkMood,
   useDocumentMeta,
@@ -61,6 +61,19 @@ import {
   isOutdoorFriendly,
   isTrendingCafe,
 } from '../utils/cafeRecommendations';
+import {
+  compareCafesBudgetFirst,
+  extractCafeMenuEntries,
+  getCafeLowestVerifiedMenuPrice,
+  interleaveDifferentBrands,
+  matchCafeToFoodSearch,
+  matchesBudgetAndPriceFilter,
+  normalizeFoodText,
+  parseSmartFoodQuery,
+  resolveBudgetRangeFromSelection,
+  type ParsedMenuEntry,
+  type SmartSearchMatchResult,
+} from '../utils/smartFoodSearch';
 import { CafeAutocompleteSearch } from '../components/CafeAutocompleteSearch';
 import { InteractiveCafeMap } from '../components/InteractiveCafeMap';
 import { LocationCard } from '../components/LocationCard';
@@ -118,6 +131,7 @@ export function LocationsPage() {
     toggleCompareCafe,
   } = useAuth();
 
+  // Food item names are public, while INR pricing & exact price filters require Plus (from Rs 79/mo)
   const canViewPricing =
     settings.access_control?.sections?.menu_pricing === 'public' ||
     hasPermission('menu_pricing');
@@ -206,6 +220,11 @@ export function LocationsPage() {
       (searchParams.get('budget') as BudgetBracketId) ||
       (typeof stored.budget === 'string' ? (stored.budget as BudgetBracketId) : '')
   );
+  const [customMaxPrice, setCustomMaxPrice] = useState<string>(
+    () =>
+      searchParams.get('maxPrice') ??
+      (typeof stored.customMaxPrice === 'string' ? stored.customMaxPrice : '')
+  );
   const [maxDistanceKm, setMaxDistanceKm] = useState<number>(() =>
     typeof stored.maxDistanceKm === 'number' ? stored.maxDistanceKm : 0
   );
@@ -257,19 +276,20 @@ export function LocationsPage() {
     stored.atmosphere === 'quiet' || stored.atmosphere === 'lively' ? stored.atmosphere : 'any'
   );
 
-  const [sortBy, setSortBy] = useState<SortOption>(() =>
-    searchParams.get('nearby') === '1'
-      ? 'distance'
-      : typeof stored.sortBy === 'string'
-      ? (stored.sortBy as SortOption)
-      : 'featured'
-  );
+  const [sortBy, setSortBy] = useState<SortOption>(() => {
+    const sortParam = searchParams.get('sort') as SortOption | null;
+    if (sortParam) return sortParam;
+    if (searchParams.get('nearby') === '1') return 'distance';
+    return typeof stored.sortBy === 'string' ? (stored.sortBy as SortOption) : 'featured';
+  });
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const [focusCenter, setFocusCenter] = useState<{ lat: number; lng: number } | null>(null);
   const [visibleCuratedCount, setVisibleCuratedCount] = useState(9);
 
   const autoNearbyTriggeredRef = useRef(false);
   const autoLiveQueryTriggeredRef = useRef(false);
+  const lastNearMeQueryRef = useRef('');
+  const lastWrittenSearchRef = useRef(searchParams.toString());
 
   useEffect(() => {
     if (searchParams.get('view') === 'map') {
@@ -277,6 +297,26 @@ export function LocationsPage() {
     } else if (typeof window !== 'undefined' && window.innerWidth < 1024 && viewMode === 'split') {
       setViewMode('list');
     }
+  }, [searchParams]);
+
+  useEffect(() => {
+    const currentStr = searchParams.toString();
+    if (currentStr === lastWrittenSearchRef.current) return;
+    lastWrittenSearchRef.current = currentStr;
+    const nextQ = searchParams.get('q');
+    if (nextQ !== null) setQuery(nextQ);
+    const nextBudget = searchParams.get('budget');
+    if (nextBudget !== null) setBudget(nextBudget as BudgetBracketId);
+    const nextMaxPrice = searchParams.get('maxPrice');
+    if (nextMaxPrice !== null) setCustomMaxPrice(nextMaxPrice);
+    const nextCat = searchParams.get('category');
+    if (nextCat !== null) setCategoryTab(nextCat as DiscoveryCategoryTabId);
+    const nextArea = searchParams.get('area');
+    if (nextArea !== null) setArea(nextArea);
+    const nextMode = searchParams.get('mode');
+    if (nextMode !== null) setMode(nextMode);
+    const nextSort = searchParams.get('sort') as SortOption | null;
+    if (nextSort) setSortBy(nextSort);
   }, [searchParams]);
 
   useEffect(() => {
@@ -292,6 +332,7 @@ export function LocationsPage() {
           workMood,
           mode,
           budget,
+          customMaxPrice,
           maxDistanceKm,
           minWifi,
           minRating,
@@ -326,6 +367,7 @@ export function LocationsPage() {
     workMood,
     mode,
     budget,
+    customMaxPrice,
     maxDistanceKm,
     minWifi,
     minRating,
@@ -420,6 +462,7 @@ export function LocationsPage() {
     mood?: string;
     mode?: string;
     budget?: string;
+    maxPrice?: string;
   }) => {
     const next = new URLSearchParams(searchParams);
     const nextQ = updates.q !== undefined ? updates.q : query;
@@ -430,6 +473,7 @@ export function LocationsPage() {
     const nextMood = updates.mood !== undefined ? updates.mood : workMood;
     const nextMode = updates.mode !== undefined ? updates.mode : mode;
     const nextBudget = updates.budget !== undefined ? updates.budget : budget;
+    const nextMaxPrice = updates.maxPrice !== undefined ? updates.maxPrice : customMaxPrice;
 
     if (nextQ.trim()) next.set('q', nextQ.trim());
     else next.delete('q');
@@ -447,6 +491,9 @@ export function LocationsPage() {
     else next.delete('mode');
     if (nextBudget) next.set('budget', nextBudget);
     else next.delete('budget');
+    if (nextMaxPrice.trim()) next.set('maxPrice', nextMaxPrice.trim());
+    else next.delete('maxPrice');
+    lastWrittenSearchRef.current = next.toString();
     setSearchParams(next, { replace: true });
   };
 
@@ -529,6 +576,7 @@ export function LocationsPage() {
     setWorkMood('');
     setMode('');
     setBudget('');
+    setCustomMaxPrice('');
     setMaxDistanceKm(0);
     setMinWifi(0);
     setMinRating(0);
@@ -556,19 +604,51 @@ export function LocationsPage() {
     } catch {
       // Ignore
     }
+    lastWrittenSearchRef.current = '';
     setSearchParams({}, { replace: true });
   };
 
-  const filteredLocations = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const list = effectiveLocations.filter((loc) => {
-      if (selectedCity && selectedCity !== 'All India') {
-        const cityHay = `${loc.city} ${loc.address}`.toLowerCase();
-        if (!cityHay.includes(selectedCity.toLowerCase())) return false;
+  const parsedQuery = useMemo(() => parseSmartFoodQuery(query), [query]);
+
+  // Automatically request GPS when user types an explicit "near me" query
+  useEffect(() => {
+    if (!parsedQuery.nearMe || userLocation) return;
+    if (lastNearMeQueryRef.current === parsedQuery.raw) return;
+    lastNearMeQueryRef.current = parsedQuery.raw;
+    void requestUserLocation().then((pt) => {
+      if (pt) {
+        setFocusCenter(pt);
       }
-      if (area) {
+    });
+  }, [parsedQuery.nearMe, parsedQuery.raw, userLocation, requestUserLocation]);
+
+  const effectiveCustomMaxPrice = useMemo(() => {
+    const n = Number(customMaxPrice.trim());
+    return customMaxPrice.trim() && Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+  }, [customMaxPrice]);
+
+  const budgetRange = useMemo(
+    () => resolveBudgetRangeFromSelection(budget, effectiveCustomMaxPrice, parsedQuery),
+    [budget, effectiveCustomMaxPrice, parsedQuery]
+  );
+
+  const { filteredLocations, matchMap } = useMemo(() => {
+    const map = new Map<string, SmartSearchMatchResult>();
+    const effectiveCity =
+      selectedCity && selectedCity !== 'Bengaluru'
+        ? selectedCity
+        : parsedQuery.detectedCity || selectedCity;
+    const effectiveArea = area || parsedQuery.detectedLocality;
+    const effectiveOpenNow = openNowOnly || parsedQuery.openNow;
+
+    const list = effectiveLocations.filter((loc) => {
+      if (effectiveCity && effectiveCity !== 'All India') {
+        const cityHay = `${loc.city} ${loc.address}`.toLowerCase();
+        if (!cityHay.includes(effectiveCity.toLowerCase())) return false;
+      }
+      if (effectiveArea) {
         const hayArea = `${loc.area} ${loc.address}`.toLowerCase();
-        if (!hayArea.includes(area.toLowerCase())) return false;
+        if (!hayArea.includes(effectiveArea.toLowerCase())) return false;
       }
       if (categoryTab && categoryTab !== 'all' && !matchesDiscoveryCategoryTab(loc, categoryTab)) {
         return false;
@@ -583,9 +663,7 @@ export function LocationsPage() {
         return false;
       }
       if (mode && !loc.modes.includes(mode as CafeMode)) return false;
-      if (canViewPricing && budget && !matchesBudgetBracket(loc.avg_cost_per_person, loc.price_range, budget)) {
-        return false;
-      }
+
       if (maxDistanceKm > 0 && userLocation) {
         if (loc.distanceKm === null || loc.distanceKm > maxDistanceKm) return false;
       }
@@ -628,6 +706,10 @@ export function LocationsPage() {
         return false;
       }
 
+      const menuEntries = extractCafeMenuEntries(loc);
+      const menuHay = normalizeFoodText(
+        menuEntries.map((m) => `${m.name} ${m.category} ${m.description}`).join(' ')
+      );
       const itemText = [
         loc.category || '',
         loc.popular_items.join(' '),
@@ -635,6 +717,7 @@ export function LocationsPage() {
         loc.claims.join(' '),
         loc.description,
         loc.verdict,
+        menuHay,
       ].join(' ');
 
       if (
@@ -646,7 +729,6 @@ export function LocationsPage() {
         return false;
       }
       if (
-        canViewPricing &&
         teaCoffeeOnly &&
         !loc.tea_price &&
         !loc.coffee_price &&
@@ -655,7 +737,6 @@ export function LocationsPage() {
         return false;
       }
       if (
-        canViewPricing &&
         bakerySnacksOnly &&
         !loc.snacks_price &&
         !/puff|croissant|cake|pastry|pastries|bakery|bun|toast|muffin|fries|maggi|snack|cookie|biscuit|donut|waffle|samosa|vada|pakoda|dilpasand|khara/i.test(
@@ -665,49 +746,123 @@ export function LocationsPage() {
         return false;
       }
       if (
-        canViewPricing &&
         burgersSandwichesOnly &&
         !/burger|sandwich|toastie|panini|roll|sub|slider/i.test(itemText)
       ) {
         return false;
       }
 
-      if (openNowOnly && !isCafeOpenNow(loc.timings)) return false;
+      if (effectiveOpenNow && !isCafeOpenNow(loc.timings)) return false;
       if (verifiedOnly && !loc.verified) return false;
 
-      if (q) {
-        const hay = [
-          loc.name,
-          loc.category || '',
-          loc.area,
-          loc.city,
-          loc.address,
-          loc.verdict,
-          loc.description,
-          loc.claims.join(' '),
-          loc.popular_items.join(' '),
-          loc.facilities.join(' '),
-          loc.source_name,
-        ]
-          .join(' ')
-          .toLowerCase();
-        if (!hay.includes(q)) return false;
+      // Smart Food & NL Query Match
+      const smartMatch = matchCafeToFoodSearch(loc, parsedQuery);
+      map.set(loc.id, smartMatch);
+      if ((parsedQuery.cleanFoodQuery || parsedQuery.intentTags.length > 0) && !smartMatch.matched) {
+        return false;
       }
+
+      // Intent tag filters extracted from natural language queries
+      if (parsedQuery.intentTags.includes('budget')) {
+        const low = getCafeLowestVerifiedMenuPrice(loc);
+        const isBudget =
+          loc.modes.includes('budget') ||
+          (loc.avg_cost_per_person !== null && loc.avg_cost_per_person <= 225) ||
+          (low !== null && low <= 100);
+        if (!isBudget) return false;
+      }
+      if (parsedQuery.intentTags.includes('student')) {
+        const isStudent =
+          loc.best_for.some((b) => /student|college/i.test(b)) ||
+          loc.modes.includes('budget') ||
+          (loc.avg_cost_per_person !== null && loc.avg_cost_per_person <= 220);
+        if (!isStudent) return false;
+      }
+      if (parsedQuery.intentTags.includes('study')) {
+        if (
+          loc.suitable_for_studying !== 'yes' &&
+          !loc.modes.includes('calm') &&
+          (loc.noise_level === null || loc.noise_level > 2)
+        ) {
+          return false;
+        }
+      }
+      if (parsedQuery.intentTags.includes('work')) {
+        if (!loc.laptop_friendly && loc.suitable_for_working !== 'yes' && !loc.modes.includes('work')) {
+          return false;
+        }
+      }
+      if (parsedQuery.intentTags.includes('hidden_gem') && !isHiddenGem(loc)) {
+        return false;
+      }
+
+      // Item-level & cafe-level budget check (only when pricing is unlocked)
+      if (canViewPricing && (budgetRange.minInr !== null || budgetRange.maxInr !== null)) {
+        let chipMatchedItems: ParsedMenuEntry[] = [];
+        if (!parsedQuery.isFoodQuery) {
+          if (teaCoffeeOnly) {
+            chipMatchedItems = menuEntries.filter((e) =>
+              /\b(tea|chai|kullad|coffee|kaapi|espresso|latte|cappuccino|mocha)\b/i.test(
+                `${e.name} ${e.category}`
+              )
+            );
+          } else if (bakerySnacksOnly) {
+            chipMatchedItems = menuEntries.filter((e) =>
+              /\b(puff|bun|maggi|snack|snacks|bakery|cake|pastry|fries|vada|samosa|biscuit|toast)\b/i.test(
+                `${e.name} ${e.category}`
+              )
+            );
+          } else if (burgersSandwichesOnly) {
+            chipMatchedItems = menuEntries.filter((e) =>
+              /\b(burger|sandwich|toastie|panini|roll|sub)\b/i.test(`${e.name} ${e.category}`)
+            );
+          }
+        }
+        const effectiveMatchedItems = parsedQuery.isFoodQuery
+          ? smartMatch.matchedItems
+          : chipMatchedItems;
+        const itemFilterActive = Boolean(
+          parsedQuery.isFoodQuery || teaCoffeeOnly || bakerySnacksOnly || burgersSandwichesOnly
+        );
+
+        if (
+          !matchesBudgetAndPriceFilter(loc, {
+            minInr: budgetRange.minInr,
+            maxInr: budgetRange.maxInr,
+            matchedItems: effectiveMatchedItems,
+            itemFilterActive,
+            categoryFilter: categoryTab,
+          })
+        ) {
+          return false;
+        }
+      }
+
       return true;
     });
 
-    return [...list].sort((a, b) => {
-      if (sortBy === 'distance' && userLocation) {
-        return (a.distanceKm ?? Number.MAX_SAFE_INTEGER) - (b.distanceKm ?? Number.MAX_SAFE_INTEGER);
+    const sorted = [...list].sort((a, b) => {
+      if ((sortBy === 'distance' || (parsedQuery.nearMe && sortBy === 'featured')) && userLocation) {
+        const da = a.distanceKm ?? Number.MAX_SAFE_INTEGER;
+        const db = b.distanceKm ?? Number.MAX_SAFE_INTEGER;
+        if (Math.abs(da - db) > 0.25) return da - db;
       }
       if (sortBy === 'rating') return (b.rating ?? -1) - (a.rating ?? -1);
       if (sortBy === 'reviews') return (b.rating_count ?? -1) - (a.rating_count ?? -1);
       if (sortBy === 'wifi' && canViewWifi) return (b.wifi_mbps ?? -1) - (a.wifi_mbps ?? -1);
       if (sortBy === 'cheapest' && canViewPricing) {
-        return (
-          (a.avg_cost_per_person ?? Number.MAX_SAFE_INTEGER) -
-          (b.avg_cost_per_person ?? Number.MAX_SAFE_INTEGER)
-        );
+        const pa =
+          map.get(a.id)?.lowestMatchedPriceInr ??
+          getCafeLowestVerifiedMenuPrice(a) ??
+          a.avg_cost_per_person ??
+          Number.MAX_SAFE_INTEGER;
+        const pb =
+          map.get(b.id)?.lowestMatchedPriceInr ??
+          getCafeLowestVerifiedMenuPrice(b) ??
+          b.avg_cost_per_person ??
+          Number.MAX_SAFE_INTEGER;
+        if (pa !== pb) return pa - pb;
+        return compareCafesBudgetFirst(a, b, map);
       }
       if (sortBy === 'quietest' && canViewWorkspace) return (a.noise_level ?? 99) - (b.noise_level ?? 99);
       if (sortBy === 'recent') {
@@ -715,11 +870,15 @@ export function LocationsPage() {
         const db = b.last_verified_date ? Date.parse(b.last_verified_date) || 0 : 0;
         return db - da;
       }
-      if (a.display_order !== b.display_order) return a.display_order - b.display_order;
-      if (a.featured !== b.featured) return a.featured ? -1 : 1;
-      if (a.verified !== b.verified) return a.verified ? -1 : 1;
-      return a.name.localeCompare(b.name);
+      return compareCafesBudgetFirst(a, b, map);
     });
+
+    const ordered =
+      sortBy === 'featured' || sortBy === 'cheapest'
+        ? interleaveDifferentBrands(sorted, 10)
+        : sorted;
+
+    return { filteredLocations: ordered, matchMap: map };
   }, [
     effectiveLocations,
     canViewPricing,
@@ -732,7 +891,8 @@ export function LocationsPage() {
     businessCategory,
     workMood,
     mode,
-    budget,
+    budgetRange.minInr,
+    budgetRange.maxInr,
     maxDistanceKm,
     userLocation,
     wifiOnly,
@@ -753,7 +913,7 @@ export function LocationsPage() {
     burgersSandwichesOnly,
     openNowOnly,
     verifiedOnly,
-    query,
+    parsedQuery,
     sortBy,
   ]);
 
@@ -788,16 +948,20 @@ export function LocationsPage() {
     if (nearbyLabel.trim().toLowerCase() === trimmed.toLowerCase()) return;
 
     const timer = window.setTimeout(() => {
-      void searchLiveCafesInBengaluru(trimmed, {
+      const liveText = parsedQuery.cleanFoodQuery || trimmed;
+      void searchLiveCafesInBengaluru(liveText, {
         category: categoryTab || undefined,
-        locality: area || undefined,
-        city: selectedCity,
+        locality: area || parsedQuery.detectedLocality || undefined,
+        city: parsedQuery.detectedCity || selectedCity,
       });
     }, 550);
     return () => window.clearTimeout(timer);
   }, [
     placesReady,
     query,
+    parsedQuery.cleanFoodQuery,
+    parsedQuery.detectedLocality,
+    parsedQuery.detectedCity,
     filteredLocations.length,
     nearbyLabel,
     categoryTab,
@@ -1065,42 +1229,58 @@ export function LocationsPage() {
         <div>
           <label
             htmlFor="loc-budget"
-            className="flex items-center justify-between text-xs font-medium text-[#5c4e45] mb-1.5"
+            className="block text-xs font-medium text-[#5c4e45] mb-1.5"
           >
-            <span>Budget Per Person</span>
-            {!canViewPricing && (
-              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-[#b45309]">
-                <Lock className="w-3 h-3" aria-hidden="true" />
-                {isExpired ? 'Expired' : 'Subscribers'}
-              </span>
-            )}
+            Item / Cafe Budget
           </label>
-          <select
-            id="loc-budget"
-            value={canViewPricing ? budget : ''}
-            onChange={(e) => {
-              if (!canViewPricing) {
-                openUpgradeModal({
-                  featureName: 'Budget Per Person Filter',
-                  requiredPlan: 'plus',
-                  description:
-                    'Filter cafes by average spend per person and compare full food & beverage prices with an active Cafe Desk subscription.',
-                });
-                return;
-              }
-              const val = e.target.value as BudgetBracketId | '';
-              setBudget(val);
-              syncQueryParams({ budget: val });
-            }}
-            className="w-full h-12 px-3 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-sm font-medium text-[#1c1613]"
-          >
-            <option value="">Any budget</option>
-            {BUDGET_BRACKETS.map((b) => (
-              <option key={b.id} value={b.id}>
-                {canViewPricing ? b.label : `🔒 ${b.label}`}
-              </option>
-            ))}
-          </select>
+          <div className="flex gap-2">
+            <select
+              id="loc-budget"
+              value={budget}
+              onChange={(e) => {
+                const val = e.target.value as BudgetBracketId | '';
+                setBudget(val);
+                if (val) {
+                  setCustomMaxPrice('');
+                  syncQueryParams({ budget: val, maxPrice: '' });
+                } else {
+                  syncQueryParams({ budget: '' });
+                }
+              }}
+              className="flex-1 min-w-0 h-12 px-3 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-sm font-medium text-[#1c1613]"
+            >
+              <option value="">Any budget</option>
+              {BUDGET_BRACKETS.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.label}
+                </option>
+              ))}
+            </select>
+            <div className="relative w-24 shrink-0">
+              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-semibold text-[#5c4e45]">
+                ₹
+              </span>
+              <input
+                type="number"
+                min={10}
+                max={2000}
+                aria-label="Custom max budget in rupees"
+                value={customMaxPrice}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setCustomMaxPrice(val);
+                  if (val.trim()) {
+                    setBudget('');
+                    syncQueryParams({ maxPrice: val, budget: '' });
+                  } else {
+                    syncQueryParams({ maxPrice: '' });
+                  }
+                }}
+                placeholder="Max"
+                className="w-full h-12 pl-6 pr-2 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-xs font-semibold text-[#1c1613]"
+              />
+            </div>
+          </div>
         </div>
 
         <div>
@@ -1170,9 +1350,9 @@ export function LocationsPage() {
             { label: 'Wi-Fi available', checked: wifiOnly, onChange: setWifiOnly, allowed: canViewWifi },
             { label: 'Suitable for working', checked: workOnly, onChange: setWorkOnly, allowed: canViewWorkspace },
             { label: 'Meeting-friendly', checked: meetingOnly, onChange: setMeetingOnly, allowed: canViewWorkspace },
-            { label: 'Tea & coffee', checked: teaCoffeeOnly, onChange: setTeaCoffeeOnly, allowed: canViewPricing },
-            { label: 'Bakery & snacks', checked: bakerySnacksOnly, onChange: setBakerySnacksOnly, allowed: canViewPricing },
-            { label: 'Burgers & sandwiches', checked: burgersSandwichesOnly, onChange: setBurgersSandwichesOnly, allowed: canViewPricing },
+            { label: 'Tea & coffee', checked: teaCoffeeOnly, onChange: setTeaCoffeeOnly, allowed: true },
+            { label: 'Bakery & snacks', checked: bakerySnacksOnly, onChange: setBakerySnacksOnly, allowed: true },
+            { label: 'Burgers & sandwiches', checked: burgersSandwichesOnly, onChange: setBurgersSandwichesOnly, allowed: true },
             { label: 'Open now', checked: openNowOnly, onChange: setOpenNowOnly, allowed: true },
             { label: 'Verified in person', checked: verifiedOnly, onChange: setVerifiedOnly, allowed: true },
           ].map((item) => {
@@ -1239,10 +1419,6 @@ export function LocationsPage() {
                 openUpgradeModal({ featureName: 'Sort by Fastest Wi-Fi', requiredPlan: 'plus' });
                 return;
               }
-              if (nextSort === 'cheapest' && !canViewPricing) {
-                openUpgradeModal({ featureName: 'Sort by Lowest Budget', requiredPlan: 'plus' });
-                return;
-              }
               if (nextSort === 'quietest' && !canViewWorkspace) {
                 openUpgradeModal({ featureName: 'Sort by Quietest First', requiredPlan: 'plus' });
                 return;
@@ -1254,11 +1430,11 @@ export function LocationsPage() {
             <option value="distance" disabled={!userLocation}>
               Nearest First {!userLocation ? '(Requires GPS)' : ''}
             </option>
-            <option value="featured">Recommended</option>
+            <option value="featured">Lowest Price to Upper Budget</option>
+            <option value="cheapest">Cheapest Matched Item First</option>
             <option value="rating">Highest Rated</option>
             <option value="reviews">Most Reviewed</option>
             <option value="wifi">{canViewWifi ? 'Fastest Wi-Fi' : '🔒 Fastest Wi-Fi (Plus)'}</option>
-            <option value="cheapest">{canViewPricing ? 'Budget Friendly' : '🔒 Budget Friendly (Plus)'}</option>
             <option value="quietest">{canViewWorkspace ? 'Quietest First' : '🔒 Quietest First (Plus)'}</option>
             <option value="recent">Recently Verified</option>
           </select>
@@ -1441,6 +1617,12 @@ export function LocationsPage() {
           <span className="text-[11px] font-semibold uppercase tracking-wider text-[#5c4e45] mr-1">
             Budget:
           </span>
+          {!canViewPricing && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#fef3c7] text-[#92400e] text-[10px] font-semibold">
+              <Lock className="w-2.5 h-2.5" aria-hidden="true" />
+              <span>Plus ₹79/mo</span>
+            </span>
+          )}
           {BUDGET_BRACKETS.map((b) => {
             const active = canViewPricing && budget === b.id;
             return (
@@ -1449,25 +1631,119 @@ export function LocationsPage() {
                 type="button"
                 onClick={() => {
                   if (!canViewPricing) {
-                    openUpgradeModal({ featureName: 'Budget Per Person Filter', requiredPlan: 'plus' });
+                    openUpgradeModal({
+                      featureName: 'Menu Item & Budget Price Filters',
+                      requiredPlan: 'plus',
+                      description:
+                        'Unlock verified INR prices for specific menu items and exact ₹ budget filters starting with Cafe Desk Plus (₹79/month).',
+                    });
                     return;
                   }
                   const next = budget === b.id ? '' : b.id;
                   setBudget(next);
-                  syncQueryParams({ budget: next });
+                  if (next) setCustomMaxPrice('');
+                  syncQueryParams({ budget: next, maxPrice: next ? '' : customMaxPrice });
                 }}
-                className={`min-h-[34px] px-3 py-1 rounded-full text-xs font-semibold border transition-colors ${
+                className={`min-h-[34px] px-3 py-1 rounded-full text-xs font-semibold border inline-flex items-center gap-1 transition-colors ${
                   active
                     ? 'bg-[#b45309] text-white border-[#b45309]'
                     : 'bg-white text-[#5c4e45] border-[#e6ddd0] hover:border-[#b45309] hover:text-[#1c1613]'
                 }`}
               >
-                {canViewPricing ? b.label : `🔒 ${b.label}`}
+                {!canViewPricing && <Lock className="w-2.5 h-2.5 text-[#b45309]" aria-hidden="true" />}
+                <span>{b.label}</span>
               </button>
             );
           })}
+          <div className="flex items-center gap-1.5 ml-auto">
+            <label htmlFor="quick-custom-max-price" className="text-[11px] font-medium text-[#5c4e45]">
+              Custom Max ₹:
+            </label>
+            <input
+              id="quick-custom-max-price"
+              type="number"
+              min={10}
+              max={2000}
+              value={canViewPricing ? customMaxPrice : ''}
+              onFocus={() => {
+                if (!canViewPricing) {
+                  openUpgradeModal({
+                    featureName: 'Custom Budget Price Filter',
+                    requiredPlan: 'plus',
+                    description:
+                      'Unlock verified INR item prices and custom ₹ budget filtering starting with Cafe Desk Plus (₹79/month).',
+                  });
+                }
+              }}
+              onChange={(e) => {
+                if (!canViewPricing) return;
+                const val = e.target.value;
+                setCustomMaxPrice(val);
+                if (val.trim()) {
+                  setBudget('');
+                  syncQueryParams({ maxPrice: val, budget: '' });
+                } else {
+                  syncQueryParams({ maxPrice: '' });
+                }
+              }}
+              placeholder={canViewPricing ? 'e.g. 80' : 'Plus ₹79+'}
+              className="w-24 h-8 px-2.5 rounded-lg border border-[#d6cbba] bg-[#faf7f2] text-xs font-semibold text-[#1c1613]"
+            />
+          </div>
         </div>
       </div>
+
+      {/* Smart Query Understanding Bar */}
+      {(parsedQuery.isFoodQuery ||
+        parsedQuery.maxBudgetInr !== null ||
+        parsedQuery.minBudgetInr !== null ||
+        parsedQuery.detectedLocality ||
+        parsedQuery.nearMe ||
+        parsedQuery.openNow ||
+        parsedQuery.intentTags.length > 0 ||
+        effectiveCustomMaxPrice !== null) && (
+        <div
+          role="status"
+          className="px-4 py-2.5 rounded-2xl border border-[#fde68a] bg-[#fffbeb] text-xs text-[#1c1613] flex flex-wrap items-center justify-between gap-2"
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center gap-1 font-semibold text-[#b45309]">
+              <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Smart Search Active:</span>
+            </span>
+            <span className="font-medium text-[#5c4e45]">
+              {[
+                parsedQuery.cleanFoodQuery ? `Item: "${parsedQuery.cleanFoodQuery}"` : '',
+                canViewPricing && budgetRange.maxInr !== null
+                  ? `Price <= ₹${budgetRange.maxInr}`
+                  : !canViewPricing && (parsedQuery.maxBudgetInr !== null || budgetRange.maxInr !== null)
+                  ? 'Price filter requires Plus ₹79+'
+                  : '',
+                canViewPricing && budgetRange.minInr !== null
+                  ? `Price >= ₹${budgetRange.minInr}`
+                  : '',
+                area || parsedQuery.detectedLocality
+                  ? `Area: ${area || parsedQuery.detectedLocality}`
+                  : '',
+                parsedQuery.nearMe ? 'Near me' : '',
+                openNowOnly || parsedQuery.openNow ? 'Open now' : '',
+                parsedQuery.intentTags.includes('student') ? 'Student-friendly' : '',
+                parsedQuery.intentTags.includes('budget') ? 'Budget-first' : '',
+                parsedQuery.intentTags.includes('breakfast') ? 'Breakfast' : '',
+              ]
+                .filter(Boolean)
+                .join(' · ')}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={resetAll}
+            className="text-xs font-semibold text-[#b45309] hover:underline"
+          >
+            Clear
+          </button>
+        </div>
+      )}
 
       {/* Places Notice / Key Status Alert */}
       {placesNotice && (
@@ -1717,7 +1993,11 @@ export function LocationsPage() {
               <div className="space-y-5">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   {paginatedCuratedLocations.map((loc) => (
-                    <LocationCard key={loc.id} location={loc} />
+                    <LocationCard
+                      key={loc.id}
+                      location={loc}
+                      matchedMenuItems={matchMap.get(loc.id)?.matchedItems}
+                    />
                   ))}
                 </div>
                 {filteredLocations.length > paginatedCuratedLocations.length && (
@@ -1786,7 +2066,11 @@ export function LocationsPage() {
           <div className="space-y-5">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {paginatedCuratedLocations.map((loc) => (
-                <LocationCard key={loc.id} location={loc} />
+                <LocationCard
+                  key={loc.id}
+                  location={loc}
+                  matchedMenuItems={matchMap.get(loc.id)?.matchedItems}
+                />
               ))}
             </div>
             {filteredLocations.length > paginatedCuratedLocations.length && (
@@ -1929,28 +2213,12 @@ export function LocationsPage() {
                         ) : (
                           <span className="text-[#5c4e45]">Not rated yet</span>
                         )}
-                        {gc.priceLevelLabel && (
+                        {canViewPricing && gc.priceLevelLabel && (
                           <>
                             <span aria-hidden="true">·</span>
-                            {canViewPricing ? (
-                              <span className="font-semibold text-[#1c1613]">
-                                {gc.priceLevelLabel}
-                              </span>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  openUpgradeModal({
-                                    featureName: 'Price Level & Budget Details',
-                                    requiredPlan: 'plus',
-                                  })
-                                }
-                                className="inline-flex items-center gap-1 font-semibold text-[#b45309] hover:underline"
-                              >
-                                <Lock className="w-3 h-3" aria-hidden="true" />
-                                <span>{isExpired ? 'Renew to Unlock' : 'Subscribers Only'}</span>
-                              </button>
-                            )}
+                            <span className="font-semibold text-[#1c1613]">
+                              {gc.priceLevelLabel}
+                            </span>
                           </>
                         )}
                       </div>

@@ -370,7 +370,18 @@ async function startServer() {
   }
 
   app.get('/api/public/bootstrap', (req, res) => {
-    const rawLocations = listLocationsFromDb(false);
+    const rawLocations = [...listLocationsFromDb(false)].sort((a, b) => {
+      const priceA =
+        a.avg_cost_per_person !== null && a.avg_cost_per_person > 0
+          ? a.avg_cost_per_person
+          : Number.MAX_SAFE_INTEGER;
+      const priceB =
+        b.avg_cost_per_person !== null && b.avg_cost_per_person > 0
+          ? b.avg_cost_per_person
+          : Number.MAX_SAFE_INTEGER;
+      if (priceA !== priceB) return priceA - priceB;
+      return (b.rating ?? 0) - (a.rating ?? 0);
+    });
     const settings = getSiteSettingsFromDb();
     const { viewer } = getViewerContextForRequest(req, res);
     const locations = rawLocations.map((loc) => sanitizeCafeForAccess(loc, viewer, settings));

@@ -34,20 +34,24 @@ import {
   getCafeSourceMeta,
   getStartingPriceLabel,
   getWorkspaceTypesForCafe,
+  stripInlineRupeePrice,
 } from '../utils/cafeHelpers';
 import { isOutdoorFriendly } from '../utils/cafeRecommendations';
+import { getCafeLowestVerifiedMenuPrice, type ParsedMenuEntry } from '../utils/smartFoodSearch';
 import { ResilientPhoto } from './ResilientPhoto';
 
 interface LocationCardProps {
   location: LocationItem & { distanceKm?: number | null };
   matchScore?: number;
   matchReasons?: string[];
+  matchedMenuItems?: ParsedMenuEntry[];
 }
 
 export function LocationCard({
   location,
   matchScore,
   matchReasons,
+  matchedMenuItems,
 }: LocationCardProps) {
   const { getEffectiveLocation } = useDiscovery();
   const {
@@ -70,14 +74,15 @@ export function LocationCard({
   const wifiUnlocked = unlocked ? unlocked.wifi_details : isSubscribed;
   const socketsUnlocked = unlocked ? unlocked.power_sockets : isSubscribed;
   const workspaceUnlocked = unlocked ? unlocked.workspace_details : isSubscribed;
-  const menuPricingUnlocked = unlocked ? unlocked.menu_pricing : isSubscribed;
+  const menuPricingUnlocked = unlocked ? unlocked.menu_pricing : hasPermission('menu_pricing');
   const amenitiesUnlocked = unlocked ? unlocked.amenities : isSubscribed;
   const compareAllowed = hasPermission('compare');
 
   const detailRoute = getCafeDetailRoute(loc.slug, authenticated);
   const directionsUrl = buildGoogleMapsDirectionsUrl(loc);
   const sourceMeta = getCafeSourceMeta(loc);
-  const startingPrice = menuPricingUnlocked ? getStartingPriceLabel(loc) : 'Plus';
+  const startingPrice = menuPricingUnlocked ? getStartingPriceLabel(loc) : 'Plus ₹79';
+  const lowestMenuPrice = getCafeLowestVerifiedMenuPrice(loc);
   const workspaceTypes = getWorkspaceTypesForCafe(loc);
   const openStatus = getCafeOpenStatus(loc.timings);
   const approvedPhoto =
@@ -111,13 +116,14 @@ export function LocationCard({
 
   const noiseDisplay = noiseSummary ?? 'Not verified';
 
-  const costDisplay = loc.price_range
-    ? loc.avg_cost_per_person !== null
-      ? `${loc.price_range} (₹${loc.avg_cost_per_person})`
-      : loc.price_range
-    : loc.avg_cost_per_person !== null
-    ? `₹${loc.avg_cost_per_person} avg`
-    : 'Price not available';
+  const costDisplay =
+    lowestMenuPrice !== null && loc.avg_cost_per_person !== null
+      ? `From ₹${lowestMenuPrice} · Avg ₹${loc.avg_cost_per_person}`
+      : lowestMenuPrice !== null
+      ? `From ₹${lowestMenuPrice}`
+      : loc.avg_cost_per_person !== null
+      ? `Avg ₹${loc.avg_cost_per_person}`
+      : 'Price not available';
 
   const promptSubscription = (featureName: string, description: string) => {
     openUpgradeModal({
@@ -156,7 +162,10 @@ export function LocationCard({
   const summaryHighlights = [
     ...workspaceTypes,
     ...(workspaceUnlocked && outdoorFriendly ? ['Outdoor Seating'] : []),
-    ...loc.popular_items.slice(0, 2),
+    ...loc.popular_items
+      .slice(0, 2)
+      .map((item) => (menuPricingUnlocked ? item : stripInlineRupeePrice(item)))
+      .filter(Boolean),
   ];
 
   return (
@@ -203,7 +212,7 @@ export function LocationCard({
                 <span>{wifiDisplay}</span>
               </span>
             )}
-            {menuPricingUnlocked && startingPrice && (
+            {menuPricingUnlocked && startingPrice && startingPrice !== 'Price not available' && (
               <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white/95 backdrop-blur-xs text-[#1c1613] border border-[#e6ddd0] font-mono-data text-[11px] font-semibold shadow-xs">
                 <span>{startingPrice}</span>
               </span>
@@ -321,6 +330,43 @@ export function LocationCard({
           </p>
         )}
 
+        {matchedMenuItems && matchedMenuItems.length > 0 && (
+          <div className="mb-3 px-3 py-2 rounded-xl bg-[#faf7f2] border border-[#e6ddd0] text-xs text-[#1c1613] leading-snug flex flex-wrap items-center justify-between gap-1.5">
+            <div>
+              <span className="font-semibold text-[#b45309]">Popular items: </span>
+              {matchedMenuItems.slice(0, 3).map((item, idx) => (
+                <React.Fragment key={`${item.name}-${idx}`}>
+                  {idx > 0 && <span className="text-[#8c7a6b]"> · </span>}
+                  <span className="font-medium">{stripInlineRupeePrice(item.name)}</span>
+                  {menuPricingUnlocked && (
+                    <>
+                      {' '}
+                      <span className="font-mono-data text-[#1b4d3e] font-semibold">
+                        ({item.priceInr !== null ? `₹${item.priceInr}` : 'Price not available'})
+                      </span>
+                    </>
+                  )}
+                </React.Fragment>
+              ))}
+            </div>
+            {!menuPricingUnlocked && (
+              <button
+                type="button"
+                onClick={() =>
+                  promptSubscription(
+                    'Menu & Item Prices',
+                    'Unlock verified INR prices for specific menu items like Cafe Latte, Cappuccino, Tea, and Snacks starting with Cafe Desk Plus (₹79/month).'
+                  )
+                }
+                className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#b45309] hover:underline shrink-0"
+              >
+                <Lock className="w-3 h-3" aria-hidden="true" />
+                <span>Price · Plus ₹79</span>
+              </button>
+            )}
+          </div>
+        )}
+
         {summaryHighlights.length > 0 && (
           <p className="text-xs text-[#5c4e45] mb-3 line-clamp-1">
             {summaryHighlights.join(' · ')}
@@ -409,14 +455,14 @@ export function LocationCard({
                 type="button"
                 onClick={() =>
                   promptSubscription(
-                    'Menu & Budget Pricing',
-                    'Unlock coffee, tea, snacks, and average cost per person with a Cafe Desk subscription.'
+                    'Menu & Item Prices',
+                    'Unlock verified INR prices for coffee, tea, snacks, and menu items starting with Cafe Desk Plus (₹79/month).'
                   )
                 }
                 className="inline-flex items-center gap-1 text-[#b45309] font-medium hover:underline truncate text-left"
               >
                 <Lock className="w-3 h-3 shrink-0" aria-hidden="true" />
-                <span className="truncate">Menu · Plus</span>
+                <span className="truncate">{isExpired ? 'Expired' : 'Prices · Plus ₹79'}</span>
               </button>
             )}
           </div>

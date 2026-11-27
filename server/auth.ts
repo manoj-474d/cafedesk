@@ -205,6 +205,22 @@ export function createSession(
   return { rawToken, csrfToken, expiresAt };
 }
 
+function appendPartitionedCookieAttr(res: Response, cookieName: string): void {
+  const existing = res.getHeader('Set-Cookie');
+  const prefix = `${cookieName}=`;
+  const patchCookie = (val: string): string =>
+    val.startsWith(prefix) && !val.includes('Partitioned') ? `${val}; Partitioned` : val;
+
+  if (Array.isArray(existing)) {
+    res.setHeader(
+      'Set-Cookie',
+      existing.map((c) => (typeof c === 'string' ? patchCookie(c) : String(c)))
+    );
+  } else if (typeof existing === 'string') {
+    res.setHeader('Set-Cookie', patchCookie(existing));
+  }
+}
+
 export function setSessionCookie(req: Request, res: Response, rawToken: string): void {
   const secure = isHttpsRequest(req);
   res.cookie(SESSION_COOKIE_NAME, rawToken, {
@@ -214,6 +230,9 @@ export function setSessionCookie(req: Request, res: Response, rawToken: string):
     maxAge: SESSION_TTL_MS,
     path: '/',
   });
+  if (secure) {
+    appendPartitionedCookieAttr(res, SESSION_COOKIE_NAME);
+  }
 }
 
 export function clearSessionCookie(req: Request, res: Response): void {
@@ -224,6 +243,9 @@ export function clearSessionCookie(req: Request, res: Response): void {
     sameSite: secure ? 'none' : 'lax',
     path: '/',
   });
+  if (secure) {
+    appendPartitionedCookieAttr(res, SESSION_COOKIE_NAME);
+  }
 }
 
 export function getClientIp(req: Request): string {
@@ -240,12 +262,23 @@ interface AttemptBucket {
 
 const rateBuckets = new Map<string, AttemptBucket>();
 
+function pruneRateBuckets(now: number, maxWindowMs = 15 * 60 * 1000): void {
+  if (rateBuckets.size < 1000) return;
+  for (const [k, b] of rateBuckets.entries()) {
+    b.timestamps = b.timestamps.filter((t) => now - t < maxWindowMs);
+    if (b.timestamps.length === 0) {
+      rateBuckets.delete(k);
+    }
+  }
+}
+
 export function checkRateLimit(
   key: string,
   maxAttempts: number,
   windowMs: number
 ): { allowed: boolean; retryAfterSec: number } {
   const now = Date.now();
+  pruneRateBuckets(now, windowMs);
   const bucket = rateBuckets.get(key) ?? { timestamps: [] };
   bucket.timestamps = bucket.timestamps.filter((t) => now - t < windowMs);
 
@@ -262,6 +295,7 @@ export function checkRateLimit(
 
 export function recordRateAttempt(key: string, windowMs: number): void {
   const now = Date.now();
+  pruneRateBuckets(now, windowMs);
   const bucket = rateBuckets.get(key) ?? { timestamps: [] };
   bucket.timestamps = bucket.timestamps.filter((t) => now - t < windowMs);
   bucket.timestamps.push(now);
@@ -273,6 +307,53 @@ export function clearRateLimit(key: string): void {
 }
 
 const ALLOWED_ROLES = new Set<AdminRole>(['super_admin', 'admin', 'editor']);
+
+const DEV_TRUSTED_ORIGINS = new Set([
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+]);
+
+export function isTrustedMutationOrigin(req: Request): boolean {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  try {
+    const originUrl = new URL(origin);
+    const rawHost = String(req.headers['x-forwarded-host'] || req.headers.host || '')
+      .split(',')[0]
+      .trim()
+      .toLowerCase();
+    if (rawHost && originUrl.host.toLowerCase() === rawHost) {
+      return true;
+    }
+    if (DEV_TRUSTED_ORIGINS.has(origin)) {
+      return true;
+    }
+    const allowedEnv = (process.env.ALLOWED_ORIGINS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (process.env.APP_URL) {
+      try {
+        allowedEnv.push(new URL(process.env.APP_URL).origin);
+      } catch {
+        // ignore malformed APP_URL
+      }
+    }
+    if (allowedEnv.includes(origin)) return true;
+    if (
+      origin === 'https://cafedesk.space' ||
+      origin === 'https://www.cafedesk.space' ||
+      (originUrl.protocol === 'https:' && originUrl.hostname.endsWith('.cafedesk.space'))
+    ) {
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Express middleware enforcing authenticated admin session + role + CSRF header on mutations.
@@ -323,9 +404,13 @@ export function requireAdminAuth(req: Request, res: Response, next: NextFunction
     return;
   }
 
-  // Enforce CSRF token on state-changing requests
+  // Enforce Origin + CSRF token on state-changing requests
   const method = req.method.toUpperCase();
   if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+    if (!isTrustedMutationOrigin(req)) {
+      res.status(403).json({ error: 'Origin not allowed.' });
+      return;
+    }
     const headerToken = String(req.headers['x-csrf-token'] ?? '');
     const expectedBuf = Buffer.from(row.csrf_token);
     const actualBuf = Buffer.from(headerToken);
@@ -399,6 +484,9 @@ export function setUserSessionCookie(req: Request, res: Response, rawToken: stri
     maxAge: USER_SESSION_TTL_MS,
     path: '/',
   });
+  if (secure) {
+    appendPartitionedCookieAttr(res, USER_SESSION_COOKIE_NAME);
+  }
 }
 
 export function clearUserSessionCookie(req: Request, res: Response): void {
@@ -409,6 +497,9 @@ export function clearUserSessionCookie(req: Request, res: Response): void {
     sameSite: secure ? 'none' : 'lax',
     path: '/',
   });
+  if (secure) {
+    appendPartitionedCookieAttr(res, USER_SESSION_COOKIE_NAME);
+  }
 }
 
 export function resolveUserFromRequest(req: Request, res?: Response): AuthenticatedUser | null {
@@ -472,6 +563,20 @@ export function optionalUserAuth(req: Request, res: Response, next: NextFunction
 }
 
 export function requireUserAuth(req: Request, res: Response, next: NextFunction): void {
+  const method = req.method.toUpperCase();
+  const cookies = parseCookies(req.headers.cookie);
+  const usingCookieAuth = Boolean(cookies[USER_SESSION_COOKIE_NAME]) && !req.headers['x-cafedesk-session'];
+  if (
+    usingCookieAuth &&
+    method !== 'GET' &&
+    method !== 'HEAD' &&
+    method !== 'OPTIONS' &&
+    !isTrustedMutationOrigin(req)
+  ) {
+    res.status(403).json({ error: 'Origin not allowed.' });
+    return;
+  }
+
   const user = resolveUserFromRequest(req, res);
   if (!user) {
     res.status(401).json({ error: 'Please sign in to your Cafe Desk account.' });

@@ -33,14 +33,11 @@ export function AdminLoginPage() {
     let active = true;
     fetch(resolveApiUrl('/api/admin/status'), { credentials: 'include' })
       .then((r) => r.json())
-      .then((data: { setupRequired?: boolean; authenticated?: boolean; error?: string }) => {
+      .then((data: { setupRequired?: boolean; authenticated?: boolean }) => {
         if (!active) return;
         if (data.authenticated) {
           navigate(dashboardPath, { replace: true });
           return;
-        }
-        if (data.error) {
-          setErrorMsg(data.error);
         }
         setMode(data.setupRequired ? 'setup' : 'login');
       })
@@ -127,16 +124,22 @@ export function AdminLoginPage() {
         credentials: 'include',
         body: JSON.stringify({ username }),
       });
-      const data = (await res.json()) as { error?: string; message?: string };
+      const data = (await res.json()) as {
+        error?: string;
+        message?: string;
+        delivery?: 'email' | 'code';
+      };
       if (!res.ok) {
         setErrorMsg(data.error || 'Unable to request password reset.');
         return;
       }
       setInfoMsg(
         data.message ||
-          'If an account matches, a single-use recovery code has been logged on the server.'
+          'If an account matches, password reset instructions have been sent.'
       );
-      setMode('reset_confirm');
+      if (data.delivery !== 'email') {
+        setMode('reset_confirm');
+      }
     } catch {
       setErrorMsg('Network error. Please try again.');
     } finally {

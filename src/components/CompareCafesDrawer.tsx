@@ -7,6 +7,7 @@ import { useDiscovery } from '../context/DiscoveryContext';
 import {
   buildGoogleMapsDirectionsUrl,
   formatDistanceKm,
+  getCafeDetailRoute,
   getCafeSourceMeta,
 } from '../utils/cafeHelpers';
 
@@ -14,6 +15,7 @@ export function CompareCafesDrawer() {
   const { pathname } = useLocation();
   const { getEffectiveLocation } = useDiscovery();
   const {
+    authenticated,
     isSubscribed,
     hasPermission,
     compareList,
@@ -130,7 +132,7 @@ export function CompareCafesDrawer() {
                           )}
                         </div>
                         <Link
-                          to={`/locations/${c.slug}`}
+                          to={getCafeDetailRoute(c.slug, authenticated)}
                           onClick={() => setCompareModalOpen(false)}
                           className="font-serif-display text-lg font-bold text-[#1c1613] hover:text-[#b45309]"
                         >
@@ -239,7 +241,7 @@ export function CompareCafesDrawer() {
                               </span>
                               <div>
                                 <Link
-                                  to={`/locations/${cafe.slug}`}
+                                  to={getCafeDetailRoute(cafe.slug, authenticated)}
                                   onClick={() => setCompareModalOpen(false)}
                                   className="font-serif-display text-base font-bold text-[#1c1613] hover:text-[#b45309]"
                                 >

@@ -24,7 +24,7 @@ const FREE_PERMISSIONS: PlanPermissions = {
   wifi_details: false,
   power_sockets: false,
   workspace_details: false,
-  food_menu: false,
+  food_menu: true,
   menu_pricing: false,
   amenities: false,
   subscriber_benefits: false,

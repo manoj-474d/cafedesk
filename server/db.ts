@@ -35,21 +35,21 @@ export const DEFAULT_ACCESS_CONTROL: AccessControlSettings = {
     wifi_details: 'subscription',
     power_sockets: 'subscription',
     workspace_details: 'subscription',
-    food_menu: 'subscription',
+    food_menu: 'public',
     menu_pricing: 'subscription',
     amenities: 'subscription',
     subscriber_benefits: 'subscription',
     booking: 'subscription',
   },
   free_cafe_preview_note:
-    'Basic cafe overview is free to browse. Subscribe to unlock Wi-Fi speeds & credentials, charging sockets, full food & beverage pricing, and workspace booking.',
+    'Browse Bengaluru cafes and popular food & beverage items for free. Subscribe to Cafe Desk Plus (from ₹79/mo) to unlock verified menu item prices, Wi-Fi speeds, plug desk locations & workspace booking.',
 };
 
 export const DEFAULT_FREE_PERMISSIONS: PlanPermissions = {
   wifi_details: false,
   power_sockets: false,
   workspace_details: false,
-  food_menu: false,
+  food_menu: true,
   menu_pricing: false,
   amenities: false,
   subscriber_benefits: false,
@@ -1033,6 +1033,7 @@ export function getDb(): DatabaseSync {
       menu_url = CASE WHEN menu_url = '' THEN ? ELSE menu_url END,
       instagram_url = CASE WHEN instagram_url = '' THEN ? ELSE instagram_url END,
       popular_items_json = CASE WHEN popular_items_json = '[]' OR popular_items_json = '' THEN ? ELSE popular_items_json END,
+      menu_services_json = CASE WHEN (menu_services_json = '[]' OR menu_services_json = '' OR menu_services_json IS NULL) AND ? != '[]' THEN ? ELSE menu_services_json END,
       wifi_available = CASE WHEN wifi_available = 'unknown' THEN ? ELSE wifi_available END,
       price_range = CASE WHEN price_range = '' OR price_range = 'Under ₹200' THEN ? ELSE price_range END,
       coffee_price = CASE WHEN coffee_price IS NULL OR coffee_price = '' THEN ? ELSE coffee_price END,
@@ -1066,6 +1067,7 @@ export function getDb(): DatabaseSync {
       c.laptop_friendly || c.modes.includes('plan') ? 'yes' : 'unknown';
     const priceLabel = derivePriceRangeLabel(c.avg_cost_per_person);
     const popularJson = JSON.stringify(c.popular_items ?? []);
+    const menuServicesJson = JSON.stringify(c.menu_services ?? []);
     const photosJson = JSON.stringify(c.photos ?? []);
     const hasPhotos = c.photos && c.photos.length > 0 ? 1 : 0;
 
@@ -1113,7 +1115,7 @@ export function getDb(): DatabaseSync {
       JSON.stringify(c.modes),
       JSON.stringify(facilities),
       JSON.stringify([]),
-      JSON.stringify([]),
+      menuServicesJson,
       JSON.stringify(c.best_for),
       verdictText,
       c.avoid_if,
@@ -1135,6 +1137,8 @@ export function getDb(): DatabaseSync {
       c.menu_url || '',
       c.instagram_url || '',
       popularJson,
+      menuServicesJson,
+      menuServicesJson,
       c.wifi_available,
       priceLabel,
       c.coffee_price ?? null,
@@ -1434,25 +1438,23 @@ export function getDb(): DatabaseSync {
 
   // Seed streamlined Free + Cafe Desk Plus (Monthly ₹79 & Annual ₹499) subscription plans
   const freeFeatures = JSON.stringify([
-    'Search cafes across Bengaluru by name, locality & live autocomplete',
-    'Discover nearby cafes using GPS distance, photos & Google Maps directions',
-    'Interactive Cafe Finder & curated Bengaluru discovery collections',
-    'Laptop-friendly status, seating, studying, noise level, sockets & ambience',
+    'Search food, tea, coffee, snacks & local cafes across Bengaluru with smart item matching',
+    'Browse popular items and food & beverage menu offerings at curated Bengaluru cafes',
+    'Discover nearby local cafes using GPS distance, photos & Google Maps directions',
+    'Upgrade to Cafe Desk Plus (from ₹79/mo) to unlock verified item prices, Wi-Fi speeds & sockets',
     'Save & bookmark favourite Bengaluru cafes to your free account',
   ]);
   const plusMonthlyFeatures = JSON.stringify([
     'Everything in Free Explorer',
-    'Full food & beverage menus, coffee/tea/snack prices & average budget per person',
+    'Unlock verified INR prices for every coffee, tea, snack & menu item + budget filters',
     'Verified Wi-Fi availability, measured speeds (Mbps) & work/meeting filters',
-    'Advanced budget & food category filters',
-    'Compare multiple cafes side-by-side (up to 4 cafes)',
-    'Personal custom cafe collections & personalized recommendations',
+    'Power socket desk locations & deep workspace acoustics',
+    'Compare multiple cafes side-by-side & create personal custom cafe collections',
     'Exclusive cafe deals, partner perks & student discounts',
   ]);
   const plusAnnualFeatures = JSON.stringify([
     'All Cafe Desk Plus features unlocked for 365 days (₹42/mo effective)',
-    'Full food & beverage menus, prices & average budget filters',
-    'Verified Wi-Fi speeds, remote work & meeting filters',
+    'Full menu item INR pricing, verified Wi-Fi speeds & socket maps',
     'Side-by-side cafe comparison & unlimited custom collections',
     'Personalized cafe recommendations & exclusive partner deals',
   ]);
@@ -1465,7 +1467,7 @@ export function getDb(): DatabaseSync {
   insertPlan.run(
     'free',
     'Free Explorer',
-    'Discover Bengaluru cafes, save favourites, check laptops, seating, study, noise & sockets.',
+    'Discover Bengaluru cafes, popular menu items, and Google Maps directions.',
     0,
     0,
     'Free Forever',
@@ -1476,7 +1478,7 @@ export function getDb(): DatabaseSync {
   insertPlan.run(
     'plus',
     'Cafe Desk Plus (Monthly)',
-    'Complete menus & prices, budget filters, verified Wi-Fi speeds, comparisons & deals.',
+    'Verified menu item INR prices, Wi-Fi speeds, power socket maps, comparisons & deals.',
     79,
     30,
     'Most Popular',
@@ -1502,20 +1504,22 @@ export function getDb(): DatabaseSync {
      SET tagline = ?, features_json = ?, updated_at = ?
      WHERE id = 'free' AND tagline IN (
        'Search and locate Bengaluru cafes with live directions.',
-       'Search Bengaluru cafes with laptops, seating, studying, noise level & charging sockets.'
+       'Search Bengaluru cafes with laptops, seating, studying, noise level & charging sockets.',
+       'Discover Bengaluru cafes, save favourites, check laptops, seating, study, noise & sockets.',
+       'Discover Bengaluru cafes, verified food & tea pricing, budget filters, and nearby coffee spots.'
      )`
   ).run(
-    'Discover Bengaluru cafes, save favourites, check laptops, seating, study, noise & sockets.',
+    'Discover Bengaluru cafes, popular menu items, and Google Maps directions.',
     freeFeatures,
     now
   );
   db.prepare(
     `UPDATE subscription_plans
      SET name = ?, tagline = ?, price_inr = 79, interval_days = 30, badge_text = 'Most Popular', features_json = ?, updated_at = ?
-     WHERE id = 'plus' AND (price_inr = 99 OR name = 'Cafe Explorer Plus')`
+     WHERE id = 'plus' AND (price_inr = 99 OR name = 'Cafe Explorer Plus' OR tagline = 'Verified Wi-Fi speeds, power socket maps, cafe comparisons, custom collections & partner deals.')`
   ).run(
     'Cafe Desk Plus (Monthly)',
-    'Complete menus & prices, budget filters, verified Wi-Fi speeds, comparisons & deals.',
+    'Verified menu item INR prices, Wi-Fi speeds, power socket maps, comparisons & deals.',
     plusMonthlyFeatures,
     now
   );
@@ -1538,7 +1542,7 @@ export function getDb(): DatabaseSync {
     db.exec("UPDATE subscription_plans SET is_recommended = 1 WHERE id = 'plus'");
   }
 
-  // Backfill plan permissions_json if uninitialized
+  // Backfill plan permissions_json if uninitialized and ensure Free Explorer shows food_menu items without menu_pricing
   const planPermRows = db
     .prepare('SELECT id, price_inr, permissions_json FROM subscription_plans')
     .all() as Array<{ id: string; price_inr: number; permissions_json: string }>;
@@ -1547,12 +1551,56 @@ export function getDb(): DatabaseSync {
     if (!pr.permissions_json || pr.permissions_json.trim() === '{}' || pr.permissions_json.trim() === '') {
       const isPaid = pr.id !== 'free' && Number(pr.price_inr) > 0;
       updPerm.run(JSON.stringify(isPaid ? DEFAULT_PAID_PERMISSIONS : DEFAULT_FREE_PERMISSIONS), pr.id);
+    } else if (pr.id === 'free') {
+      const parsedFree = safeParseJson<Record<string, boolean>>(pr.permissions_json, {});
+      if (!parsedFree.food_menu || parsedFree.menu_pricing !== false) {
+        updPerm.run(
+          JSON.stringify({ ...DEFAULT_FREE_PERMISSIONS, ...parsedFree, food_menu: true, menu_pricing: false }),
+          'free'
+        );
+      }
+    } else if (Number(pr.price_inr) > 0) {
+      const parsedPaid = safeParseJson<Record<string, boolean>>(pr.permissions_json, {});
+      if (!parsedPaid.menu_pricing) {
+        updPerm.run(
+          JSON.stringify({ ...DEFAULT_PAID_PERMISSIONS, ...parsedPaid, menu_pricing: true }),
+          pr.id
+        );
+      }
+    }
+  }
+
+  // Ensure access_control keeps food_menu public (shows popular item names) while locking menu_pricing behind subscription (from Rs 79 Plus)
+  const existingAcRow = db
+    .prepare("SELECT value FROM site_settings WHERE key = 'access_control'")
+    .get() as { value: string } | undefined;
+  if (existingAcRow?.value) {
+    const parsedAc = safeParseJson<Partial<AccessControlSettings>>(existingAcRow.value, {});
+    if (
+      parsedAc.sections &&
+      (parsedAc.sections.food_menu === 'subscription' || parsedAc.sections.menu_pricing === 'public')
+    ) {
+      const nextAc: AccessControlSettings = {
+        ...DEFAULT_ACCESS_CONTROL,
+        ...parsedAc,
+        sections: {
+          ...DEFAULT_ACCESS_CONTROL.sections,
+          ...parsedAc.sections,
+          food_menu: 'public',
+          menu_pricing: 'subscription',
+        },
+      };
+      db.prepare('UPDATE site_settings SET value = ?, updated_at = ? WHERE key = ?').run(
+        JSON.stringify(nextAc),
+        now,
+        'access_control'
+      );
     }
   }
 
   db.exec('UPDATE cafes SET created_at = updated_at WHERE created_at IS NULL');
 
-  // One-time backfill of structured menu_items from legacy menu_services_json where menu_items is empty for that cafe
+  // Backfill structured menu_items from verified priced menu_services_json where menu_items is empty for that cafe
   const cafesWithMenuJson = db
     .prepare(
       `SELECT c.id, c.menu_services_json
@@ -1580,6 +1628,7 @@ export function getDb(): DatabaseSync {
         if (!cleanName) return;
         const parsedPrice = Number(String(it?.price || '').replace(/[^\d.]/g, ''));
         const priceInr = Number.isFinite(parsedPrice) && parsedPrice > 0 ? Math.round(parsedPrice) : 0;
+        if (priceInr <= 0) return;
         insMenu.run(
           c.id,
           cleanName,

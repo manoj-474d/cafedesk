@@ -813,7 +813,7 @@ export function AuthPage() {
               : mode === 'reset'
               ? 'Set new password'
               : isCafeRedirect
-              ? 'Discover your perfect workspace.'
+              ? 'Sign in to view cafe details'
               : mode === 'signup'
               ? 'Create your account'
               : 'Welcome back'}
@@ -822,7 +822,7 @@ export function AuthPage() {
             {mode === 'forgot' || mode === 'reset'
               ? 'Recover access to your Cafe Desk account cleanly.'
               : isCafeRedirect
-              ? 'Sign in to explore cafe details, workspace availability, membership plans, menus, amenities, and booking options.'
+              ? 'Sign in or create a free account to explore cafe details, photos, popular menu items, and directions. Unlock item prices & Wi-Fi specs from ₹79/month.'
               : mode === 'signup'
               ? 'Every new account includes Free Explorer (₹0/month) automatically.'
               : 'Access your Bengaluru cafe plans, saved cafes, and personal collections.'}
