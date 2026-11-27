@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { ArrowLeft, KeyRound, Lock, ShieldCheck, UserPlus } from 'lucide-react';
+import { ArrowLeft, Eye, EyeOff, KeyRound, Lock, ShieldCheck, UserPlus } from 'lucide-react';
 import { useDocumentMeta } from '../utils/cafeHelpers';
 import { resolveApiUrl } from '../context/AuthContext';
 
@@ -25,6 +25,7 @@ export function AdminLoginPage() {
   const [totpCode, setTotpCode] = useState('');
   const [recoveryCode, setRecoveryCode] = useState('');
   const [newPassword, setNewPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [infoMsg, setInfoMsg] = useState('');
@@ -247,6 +248,9 @@ export function AdminLoginPage() {
                   id="st-user"
                   type="text"
                   required
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   placeholder="e.g. cafedesk_owner"
@@ -324,9 +328,12 @@ export function AdminLoginPage() {
                       type="text"
                       required
                       autoComplete="username"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
                       value={username}
                       onChange={(e) => setUsername(e.target.value)}
-                      placeholder="Username or email"
+                      placeholder="owner or hellocafedeskspace@gmail.com"
                       className="w-full h-11 px-3.5 rounded-lg border border-[#cbd5e1] bg-[#f8fafc] text-sm"
                     />
                   </div>
@@ -335,16 +342,26 @@ export function AdminLoginPage() {
                     <label htmlFor="lg-pass" className="block text-xs font-semibold text-[#334155] mb-1">
                       Password *
                     </label>
-                    <input
-                      id="lg-pass"
-                      type="password"
-                      required
-                      autoComplete="current-password"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      placeholder="Enter password"
-                      className="w-full h-11 px-3.5 rounded-lg border border-[#cbd5e1] bg-[#f8fafc] text-sm"
-                    />
+                    <div className="relative">
+                      <input
+                        id="lg-pass"
+                        type={showPassword ? 'text' : 'password'}
+                        required
+                        autoComplete="current-password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        placeholder="Enter password"
+                        className="w-full h-11 pl-3.5 pr-11 rounded-lg border border-[#cbd5e1] bg-[#f8fafc] text-sm"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((prev) => !prev)}
+                        aria-label={showPassword ? 'Hide password' : 'Show password'}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1.5 text-[#64748b] hover:text-[#0f172a]"
+                      >
+                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
                   </div>
                 </>
               ) : (
@@ -439,6 +456,9 @@ export function AdminLoginPage() {
                   id="rs-user"
                   type="text"
                   required
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   placeholder="Enter owner username or email"

@@ -58,7 +58,7 @@ const FREE_PERMISSIONS: PlanPermissions = {
   power_sockets: false,
   workspace_details: false,
   food_menu: true,
-  menu_pricing: true,
+  menu_pricing: false,
   amenities: false,
   subscriber_benefits: false,
   booking: false,
@@ -84,16 +84,16 @@ const DEFAULT_PLANS: SubscriptionPlan[] = [
     id: 'free',
     name: 'Free Explorer',
     tagline:
-      'Discover Bengaluru cafes, verified food & tea pricing, budget filters, and nearby coffee spots.',
+      'Discover Bengaluru cafes, popular menu items, and Google Maps directions.',
     price_inr: 0,
     interval_days: 0,
     badge_text: 'Free Forever',
     is_recommended: false,
     features: [
       'Search food, tea, coffee, snacks & local cafes across Bengaluru with smart item matching',
-      'Browse verified food & beverage menus, INR pricing, and item-level budget filters',
-      'Discover nearby affordable cafes using GPS distance, photos & Google Maps directions',
-      'Laptop-friendly status, seating, studying, noise level, sockets & ambience',
+      'Browse popular items and food & beverage menu offerings at curated Bengaluru cafes',
+      'Discover nearby local cafes using GPS distance, photos & Google Maps directions',
+      'Upgrade to Cafe Desk Plus (from ₹79/mo) to unlock verified item prices, Wi-Fi speeds & sockets',
       'Save & bookmark favourite Bengaluru cafes to your free account',
     ],
     permissions: { ...FREE_PERMISSIONS },
@@ -189,15 +189,19 @@ function getRazorpayCredentials(env: WorkerEnv) {
   };
 }
 
-const EPHEMERAL_ISOLATE_SECRET = (() => {
-  const buf = new Uint8Array(32);
-  crypto.getRandomValues(buf);
-  let hex = '';
-  for (let i = 0; i < buf.length; i += 1) {
-    hex += buf[i].toString(16).padStart(2, '0');
+let ephemeralIsolateSecret: string | null = null;
+function getEphemeralIsolateSecret(): string {
+  if (!ephemeralIsolateSecret) {
+    const buf = new Uint8Array(32);
+    crypto.getRandomValues(buf);
+    let hex = '';
+    for (let i = 0; i < buf.length; i += 1) {
+      hex += buf[i].toString(16).padStart(2, '0');
+    }
+    ephemeralIsolateSecret = hex;
   }
-  return hex;
-})();
+  return ephemeralIsolateSecret;
+}
 
 const DEV_ALLOWED_ORIGINS = new Set([
   'http://localhost:3000',
@@ -217,7 +221,7 @@ function getSigningSecret(env: WorkerEnv): string {
   if (bootstrapPass) {
     return `bootstrap:${bootstrapPass}:${(env.ADMIN_BOOTSTRAP_USER || 'admin').trim()}`;
   }
-  return EPHEMERAL_ISOLATE_SECRET;
+  return getEphemeralIsolateSecret();
 }
 
 function toBase64Url(bytes: Uint8Array): string {

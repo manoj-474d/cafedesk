@@ -868,7 +868,7 @@ async function startServer() {
         `SELECT id, username, email, display_name, password_hash, role,
                 two_factor_enabled, two_factor_secret, failed_attempts, locked_until
          FROM admins
-         WHERE username = ? OR (email IS NOT NULL AND email != '' AND LOWER(email) = LOWER(?))`
+         WHERE LOWER(username) = LOWER(?) OR (email IS NOT NULL AND email != '' AND LOWER(email) = LOWER(?))`
       )
       .get(identifier, identifier) as
       | {
@@ -976,7 +976,7 @@ async function startServer() {
       const admin = db
         .prepare(
           `SELECT id, username FROM admins
-           WHERE username = ? OR (email IS NOT NULL AND email != '' AND LOWER(email) = LOWER(?))`
+           WHERE LOWER(username) = LOWER(?) OR (email IS NOT NULL AND email != '' AND LOWER(email) = LOWER(?))`
         )
         .get(identifier, identifier) as { id: number; username: string } | undefined;
 
@@ -1031,7 +1031,7 @@ async function startServer() {
     const admin = db
       .prepare(
         `SELECT id, username, reset_token_hash, reset_token_expires_at FROM admins
-         WHERE username = ? OR (email IS NOT NULL AND email != '' AND LOWER(email) = LOWER(?))`
+         WHERE LOWER(username) = LOWER(?) OR (email IS NOT NULL AND email != '' AND LOWER(email) = LOWER(?))`
       )
       .get(identifier, identifier) as
       | {
