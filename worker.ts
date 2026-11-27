@@ -7,26 +7,21 @@ import type {
   UserProfile,
   UserSubscription,
 } from './src/types/subscription';
+import {
+  handleWorkerAdminAndBootstrapRoutes,
+  type AdminWorkerEnv,
+} from './server/workerAdmin.ts';
 
-interface WorkerEnv {
+interface WorkerEnv extends AdminWorkerEnv {
   ASSETS: {
     fetch: (request: Request) => Promise<Response>;
   };
-  SUPABASE_URL?: string;
-  VITE_SUPABASE_URL?: string;
-  SUPABASE_PUBLISHABLE_KEY?: string;
-  VITE_SUPABASE_PUBLISHABLE_KEY?: string;
-  SUPABASE_ANON_KEY?: string;
-  VITE_SUPABASE_ANON_KEY?: string;
-  SUPABASE_SERVICE_ROLE_KEY?: string;
   RAZORPAY_KEY_ID?: string;
   VITE_RAZORPAY_KEY_ID?: string;
   RAZORPAY_KEY_SECRET?: string;
   GOOGLE_PLACES_API_KEY?: string;
   GOOGLE_MAPS_API_KEY?: string;
   VITE_GOOGLE_MAPS_API_KEY?: string;
-  SESSION_SECRET?: string;
-  ALLOWED_ORIGINS?: string;
 }
 
 interface WorkerSessionPayload {
@@ -1966,6 +1961,23 @@ export default {
         return jsonResponse(request, env, { error: 'Could not store correction report.' }, 500);
       }
       return jsonResponse(request, env, { ok: true, message: 'Correction report submitted.' }, 201);
+    }
+
+    const adminOrBootstrapResponse = await handleWorkerAdminAndBootstrapRoutes(request, env, {
+      cleanStr,
+      getSupabaseConfig,
+      getSigningSecret,
+      jsonResponse,
+      parseCookies,
+      buildCookieHeader,
+      signJsonToken,
+      verifyJsonToken,
+      supabaseServiceRest,
+      randomHex,
+      timingSafeEqualStr,
+    });
+    if (adminOrBootstrapResponse) {
+      return adminOrBootstrapResponse;
     }
 
     return jsonResponse(request, env, { error: `API route not found: ${pathname}` }, 404);

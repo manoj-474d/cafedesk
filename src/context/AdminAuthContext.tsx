@@ -1,4 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { resolveApiUrl } from './AuthContext';
 
 export interface AdminUser {
   username: string;
@@ -27,7 +28,7 @@ export function AdminAuthProvider({ children }: { children: React.ReactNode }) {
 
   const refreshStatus = useCallback(async () => {
     try {
-      const res = await fetch('/api/admin/status', { credentials: 'include' });
+      const res = await fetch(resolveApiUrl('/api/admin/status'), { credentials: 'include' });
       if (!res.ok) {
         setAdmin(null);
         return;
@@ -67,7 +68,7 @@ export function AdminAuthProvider({ children }: { children: React.ReactNode }) {
         headers.set('Content-Type', 'application/json');
       }
 
-      const res = await fetch(input, {
+      const res = await fetch(resolveApiUrl(input), {
         ...init,
         headers,
         credentials: 'include',

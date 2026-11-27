@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import express, { type Request, type Response } from 'express';
 import {
+  closeDb,
   DEFAULT_SITE_SETTINGS,
   getDb,
   getSiteSettingsFromDb,
@@ -4039,12 +4040,26 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`CafeDesk server running on http://0.0.0.0:${PORT}`);
   });
+
+  const shutdown = () => {
+    server.close(() => {
+      closeDb();
+      process.exit(0);
+    });
+    setTimeout(() => {
+      closeDb();
+      process.exit(0);
+    }, 1500).unref();
+  };
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
 }
 
 startServer().catch((err) => {
   console.error('Failed to start CafeDesk server:', err);
+  closeDb();
   process.exit(1);
 });

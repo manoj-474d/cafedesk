@@ -27,6 +27,7 @@ import {
   X,
 } from 'lucide-react';
 import { useCms } from '../context/CmsContext';
+import { resolveApiUrl } from '../context/AuthContext';
 import { useDocumentMeta } from '../utils/cafeHelpers';
 import type {
   CommunityCorrectionRecord,
@@ -176,12 +177,12 @@ export function AdminDashboardPage() {
   );
 
   const loadOverview = useCallback(async () => {
-    const res = await fetch('/api/admin/overview', { credentials: 'include' });
+    const res = await fetch(resolveApiUrl('/api/admin/overview'), { credentials: 'include' });
     if (handleAuthStatusCheck(res)) setOverview((await res.json()) as OverviewStats);
   }, [handleAuthStatusCheck]);
 
   const loadLocations = useCallback(async () => {
-    const res = await fetch('/api/admin/cafes', { credentials: 'include' });
+    const res = await fetch(resolveApiUrl('/api/admin/cafes'), { credentials: 'include' });
     if (handleAuthStatusCheck(res)) {
       const data = (await res.json()) as { cafes?: LocationItem[] };
       if (Array.isArray(data.cafes)) setLocations(data.cafes);
@@ -189,7 +190,7 @@ export function AdminDashboardPage() {
   }, [handleAuthStatusCheck]);
 
   const loadSettings = useCallback(async () => {
-    const res = await fetch('/api/admin/settings', { credentials: 'include' });
+    const res = await fetch(resolveApiUrl('/api/admin/settings'), { credentials: 'include' });
     if (handleAuthStatusCheck(res)) {
       const data = (await res.json()) as { settings?: SiteSettings };
       if (data.settings) {
@@ -200,7 +201,7 @@ export function AdminDashboardPage() {
   }, [handleAuthStatusCheck]);
 
   const loadNavigation = useCallback(async () => {
-    const res = await fetch('/api/admin/navigation', { credentials: 'include' });
+    const res = await fetch(resolveApiUrl('/api/admin/navigation'), { credentials: 'include' });
     if (handleAuthStatusCheck(res)) {
       const data = (await res.json()) as { navigation?: NavigationItem[] };
       if (Array.isArray(data.navigation)) setNavigation(data.navigation);
@@ -208,7 +209,7 @@ export function AdminDashboardPage() {
   }, [handleAuthStatusCheck]);
 
   const loadTestimonials = useCallback(async () => {
-    const res = await fetch('/api/admin/testimonials', { credentials: 'include' });
+    const res = await fetch(resolveApiUrl('/api/admin/testimonials'), { credentials: 'include' });
     if (handleAuthStatusCheck(res)) {
       const data = (await res.json()) as { testimonials?: TestimonialItem[] };
       if (Array.isArray(data.testimonials)) setTestimonials(data.testimonials);
@@ -216,7 +217,7 @@ export function AdminDashboardPage() {
   }, [handleAuthStatusCheck]);
 
   const loadMedia = useCallback(async () => {
-    const res = await fetch('/api/admin/media', { credentials: 'include' });
+    const res = await fetch(resolveApiUrl('/api/admin/media'), { credentials: 'include' });
     if (handleAuthStatusCheck(res)) {
       const data = (await res.json()) as { media?: MediaAsset[] };
       if (Array.isArray(data.media)) setMedia(data.media);
@@ -224,7 +225,7 @@ export function AdminDashboardPage() {
   }, [handleAuthStatusCheck]);
 
   const loadSubmissions = useCallback(async () => {
-    const res = await fetch('/api/admin/submissions', { credentials: 'include' });
+    const res = await fetch(resolveApiUrl('/api/admin/submissions'), { credentials: 'include' });
     if (handleAuthStatusCheck(res)) {
       const data = (await res.json()) as { submissions?: SubmissionRecord[] };
       if (Array.isArray(data.submissions)) setSubmissions(data.submissions);
@@ -232,7 +233,7 @@ export function AdminDashboardPage() {
   }, [handleAuthStatusCheck]);
 
   const loadSuggestions = useCallback(async () => {
-    const res = await fetch('/api/admin/suggestions', { credentials: 'include' });
+    const res = await fetch(resolveApiUrl('/api/admin/suggestions'), { credentials: 'include' });
     if (handleAuthStatusCheck(res)) {
       const data = (await res.json()) as { suggestions?: FeatureSuggestion[] };
       if (Array.isArray(data.suggestions)) setSuggestions(data.suggestions);
@@ -240,7 +241,7 @@ export function AdminDashboardPage() {
   }, [handleAuthStatusCheck]);
 
   const loadBookings = useCallback(async () => {
-    const res = await fetch('/api/admin/bookings', { credentials: 'include' });
+    const res = await fetch(resolveApiUrl('/api/admin/bookings'), { credentials: 'include' });
     if (handleAuthStatusCheck(res)) {
       const data = (await res.json()) as { bookings?: BookingRecord[] };
       if (Array.isArray(data.bookings)) setBookings(data.bookings);
@@ -250,7 +251,7 @@ export function AdminDashboardPage() {
   const loadUsers = useCallback(
     async (role: AdminIdentity['role']) => {
       if (role !== 'super_admin' && role !== 'admin') return;
-      const res = await fetch('/api/admin/users', { credentials: 'include' });
+      const res = await fetch(resolveApiUrl('/api/admin/users'), { credentials: 'include' });
       if (handleAuthStatusCheck(res)) {
         const data = (await res.json()) as { users?: AdminUserRecord[] };
         if (Array.isArray(data.users)) setTeamUsers(data.users);
@@ -260,7 +261,7 @@ export function AdminDashboardPage() {
   );
 
   const loadCorrections = useCallback(async () => {
-    const res = await fetch('/api/admin/corrections', { credentials: 'include' });
+    const res = await fetch(resolveApiUrl('/api/admin/corrections'), { credentials: 'include' });
     if (handleAuthStatusCheck(res)) {
       const data = (await res.json()) as { corrections?: CommunityCorrectionRecord[] };
       if (Array.isArray(data.corrections)) setCorrections(data.corrections);
@@ -300,7 +301,7 @@ export function AdminDashboardPage() {
 
   useEffect(() => {
     let active = true;
-    fetch('/api/admin/status', { credentials: 'include' })
+    fetch(resolveApiUrl('/api/admin/status'), { credentials: 'include' })
       .then((r) => r.json())
       .then((data: { authenticated?: boolean; admin?: AdminIdentity }) => {
         if (!active) return;
@@ -324,7 +325,7 @@ export function AdminDashboardPage() {
   const handleSaveSettings = async (next: SiteSettings): Promise<boolean> => {
     if (!admin) return false;
     try {
-      const res = await fetch('/api/admin/settings', {
+      const res = await fetch(resolveApiUrl('/api/admin/settings'), {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -349,7 +350,7 @@ export function AdminDashboardPage() {
 
   const handleLogout = async () => {
     if (admin) {
-      await fetch('/api/admin/logout', {
+      await fetch(resolveApiUrl('/api/admin/logout'), {
         method: 'POST',
         headers: { 'x-csrf-token': admin.csrfToken },
         credentials: 'include',

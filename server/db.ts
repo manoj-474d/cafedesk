@@ -373,15 +373,63 @@ function parseAmenityState(val: unknown): AmenityState {
   return 'unknown';
 }
 
+export function closeDb(): void {
+  if (!dbInstance) return;
+  try {
+    dbInstance.close();
+  } catch {
+    // Ignore close errors during shutdown
+  } finally {
+    dbInstance = null;
+  }
+}
+
+function openSqliteWithRecovery(dbPath: string): DatabaseSync {
+  const shmPath = `${dbPath}-shm`;
+  const walPath = `${dbPath}-wal`;
+
+  const configure = (db: DatabaseSync): DatabaseSync => {
+    db.exec('PRAGMA busy_timeout = 5000;');
+    const check = db.prepare('PRAGMA quick_check(1);').get() as { quick_check?: string } | undefined;
+    if (check?.quick_check !== 'ok') {
+      throw new Error(`SQLite quick_check failed: ${check?.quick_check ?? 'unknown'}`);
+    }
+    db.exec('PRAGMA journal_mode = DELETE;');
+    db.exec('PRAGMA synchronous = NORMAL;');
+    db.exec('PRAGMA foreign_keys = ON;');
+    return db;
+  };
+
+  try {
+    return configure(new DatabaseSync(dbPath));
+  } catch (err) {
+    console.warn('[db] SQLite open/check failed, attempting sidecar recovery:', (err as Error).message);
+    if (fs.existsSync(shmPath)) {
+      try {
+        fs.unlinkSync(shmPath);
+        return configure(new DatabaseSync(dbPath));
+      } catch {
+        // Fall through to full sidecar quarantine
+      }
+    }
+    const stamp = Date.now();
+    if (fs.existsSync(shmPath)) {
+      fs.renameSync(shmPath, `${shmPath}.corrupt-${stamp}`);
+    }
+    if (fs.existsSync(walPath)) {
+      fs.renameSync(walPath, `${walPath}.corrupt-${stamp}`);
+    }
+    return configure(new DatabaseSync(dbPath));
+  }
+}
+
 export function getDb(): DatabaseSync {
   if (dbInstance) return dbInstance;
 
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
-  const db = new DatabaseSync(DB_PATH);
-  db.exec('PRAGMA journal_mode = WAL;');
-  db.exec('PRAGMA foreign_keys = ON;');
+  const db = openSqliteWithRecovery(DB_PATH);
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS admins (

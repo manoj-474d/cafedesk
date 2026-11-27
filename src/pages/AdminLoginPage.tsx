@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { ArrowLeft, KeyRound, Lock, ShieldCheck, UserPlus } from 'lucide-react';
 import { useDocumentMeta } from '../utils/cafeHelpers';
+import { resolveApiUrl } from '../context/AuthContext';
 
 type AuthMode = 'checking' | 'setup' | 'login' | 'reset_req' | 'reset_confirm';
 
@@ -30,13 +31,16 @@ export function AdminLoginPage() {
 
   useEffect(() => {
     let active = true;
-    fetch('/api/admin/status', { credentials: 'include' })
+    fetch(resolveApiUrl('/api/admin/status'), { credentials: 'include' })
       .then((r) => r.json())
-      .then((data: { setupRequired?: boolean; authenticated?: boolean }) => {
+      .then((data: { setupRequired?: boolean; authenticated?: boolean; error?: string }) => {
         if (!active) return;
         if (data.authenticated) {
           navigate(dashboardPath, { replace: true });
           return;
+        }
+        if (data.error) {
+          setErrorMsg(data.error);
         }
         setMode(data.setupRequired ? 'setup' : 'login');
       })
@@ -53,7 +57,7 @@ export function AdminLoginPage() {
     setErrorMsg('');
     setBusy(true);
     try {
-      const res = await fetch('/api/admin/setup', {
+      const res = await fetch(resolveApiUrl('/api/admin/setup'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -78,7 +82,7 @@ export function AdminLoginPage() {
     setInfoMsg('');
     setBusy(true);
     try {
-      const res = await fetch('/api/admin/login', {
+      const res = await fetch(resolveApiUrl('/api/admin/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -117,9 +121,10 @@ export function AdminLoginPage() {
     setInfoMsg('');
     setBusy(true);
     try {
-      const res = await fetch('/api/admin/reset-request', {
+      const res = await fetch(resolveApiUrl('/api/admin/reset-request'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ username }),
       });
       const data = (await res.json()) as { error?: string; message?: string };
@@ -145,9 +150,10 @@ export function AdminLoginPage() {
     setInfoMsg('');
     setBusy(true);
     try {
-      const res = await fetch('/api/admin/reset-confirm', {
+      const res = await fetch(resolveApiUrl('/api/admin/reset-confirm'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ username, recoveryCode, newPassword }),
       });
       const data = (await res.json()) as { error?: string; message?: string };
