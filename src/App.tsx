@@ -134,6 +134,10 @@ function AppRoutes() {
           </Route>
           <Route path="/admin/login" element={<AdminLoginPage />} />
           <Route path="/admin" element={<AdminDashboardPage />} />
+          <Route path="/admin/dashboard" element={<AdminDashboardPage />} />
+          <Route path="/owner/login" element={<AdminLoginPage />} />
+          <Route path="/owner" element={<AdminDashboardPage />} />
+          <Route path="/owner/dashboard" element={<AdminDashboardPage />} />
         </Routes>
       </Suspense>
       <SuggestIdeaModal />

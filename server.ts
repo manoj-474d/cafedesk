@@ -3560,11 +3560,16 @@ async function startServer() {
       cleanPath === '/forgot-password' ||
       cleanPath === '/account' ||
       cleanPath === '/admin' ||
-      cleanPath === '/admin/login'
+      cleanPath === '/admin/login' ||
+      cleanPath === '/admin/dashboard' ||
+      cleanPath === '/owner' ||
+      cleanPath === '/owner/login' ||
+      cleanPath === '/owner/dashboard'
     ) {
+      const isOwnerPortal = cleanPath.startsWith('/admin') || cleanPath === '/owner' || cleanPath.startsWith('/owner/');
       return {
         status: 200,
-        title: `${cleanPath.startsWith('/admin') ? 'Owner Panel' : 'Member Account'} – ${settings.brand_name}`,
+        title: `${isOwnerPortal ? 'Owner Panel' : 'Member Account'} – ${settings.brand_name}`,
         description: `Manage your ${settings.brand_name} Bengaluru cafe workspace account.`,
         canonicalUrl: `${baseUrl}${cleanPath}`,
         ogType: 'website',
