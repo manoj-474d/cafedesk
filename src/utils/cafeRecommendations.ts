@@ -118,6 +118,18 @@ export function isRecentlyAddedCafe(loc: LocationItem): boolean {
   return loc.display_order > 12;
 }
 
+export function isFamilyFriendlyCafe(loc: LocationItem): boolean {
+  if (loc.family_friendly === 'yes') return true;
+  if (loc.family_friendly === 'no') return false;
+  const text = combinedSearchText(loc);
+  return (
+    /\b(family|kids|all[\s-]?day|brunch|bakery|pastry|waffle|pancake|breakfast|garden|spacious|group|dessert|ice cream)\b/i.test(
+      text
+    ) ||
+    (loc.comfortable_seating === 'yes' && loc.modes.includes('plan'))
+  );
+}
+
 export function getCafeOfTheDay(
   locations: Array<LocationItem & { distanceKm?: number | null }>,
   overrideSlug?: string
@@ -201,6 +213,15 @@ export const CURATED_COLLECTIONS: CuratedCollectionDef[] = [
     to: '/locations?collection=dates',
     accent: 'forest',
     match: (loc) => isOutdoorFriendly(loc) || isGoodForDates(loc),
+  },
+  {
+    id: 'family-friendly-cafes',
+    title: 'Family-Friendly & All-Day Cafes',
+    subtitle: 'Welcoming seating, breakfast plates, desserts, and relaxed tables for everyone.',
+    areaLabel: 'Families & Groups',
+    to: '/discover?family=1',
+    accent: 'amber',
+    match: isFamilyFriendlyCafe,
   },
 ];
 

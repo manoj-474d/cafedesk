@@ -20,8 +20,10 @@ import {
   LogOut,
   MapPin,
   Menu,
+  MessageSquare,
   Settings,
   ShieldCheck,
+  Sliders,
   Sparkles,
   Users,
   X,
@@ -61,6 +63,21 @@ import { AdminPlansTab } from '../components/admin/AdminPlansTab';
 import { AdminAuditTab } from '../components/admin/AdminAuditTab';
 import { AdminSuggestionsTab } from '../components/admin/AdminSuggestionsTab';
 import { AdminBookingsTab } from '../components/admin/AdminBookingsTab';
+import {
+  AdminModerationTab,
+  type AdminContributionQueueItem,
+  type AdminPromotionQueueItem,
+  type AdminReviewQueueItem,
+} from '../components/admin/AdminModerationTab';
+import {
+  AdminOwnerClaimsTab,
+  type AdminClaimQueueItem,
+  type AdminOwnerChangeQueueItem,
+} from '../components/admin/AdminOwnerClaimsTab';
+import {
+  AdminSystemControlsTab,
+  type AdminSystemHealthPayload,
+} from '../components/admin/AdminSystemControlsTab';
 import type { BookingRecord, FeatureSuggestion } from '../types/subscription';
 
 type TabKey =
@@ -78,9 +95,12 @@ type TabKey =
   | 'content'
   | 'navigation'
   | 'seo'
+  | 'moderation'
+  | 'claims'
   | 'suggestions'
   | 'enquiries'
   | 'audit'
+  | 'system'
   | 'settings';
 
 interface NavGroup {
@@ -128,9 +148,12 @@ const NAV_GROUPS: NavGroup[] = [
   {
     heading: 'Operations & Security',
     items: [
+      { key: 'moderation', label: 'Moderation & Promos', icon: MessageSquare },
+      { key: 'claims', label: 'Owner Claims & Edits', icon: ShieldCheck },
       { key: 'suggestions', label: 'User Suggestions', icon: Lightbulb },
       { key: 'enquiries', label: 'Enquiries & Inbox', icon: Inbox },
       { key: 'audit', label: 'Audit Logs', icon: Activity },
+      { key: 'system', label: 'Feature Flags & Health', icon: Sliders },
       { key: 'settings', label: 'Settings & 2FA', icon: Settings },
     ],
   },
@@ -164,6 +187,16 @@ export function AdminDashboardPage() {
   const [bookings, setBookings] = useState<BookingRecord[]>([]);
   const [teamUsers, setTeamUsers] = useState<AdminUserRecord[]>([]);
   const [corrections, setCorrections] = useState<CommunityCorrectionRecord[]>([]);
+  const [ecosystemReviews, setEcosystemReviews] = useState<AdminReviewQueueItem[]>([]);
+  const [ecosystemContributions, setEcosystemContributions] = useState<
+    AdminContributionQueueItem[]
+  >([]);
+  const [ecosystemPromotions, setEcosystemPromotions] = useState<AdminPromotionQueueItem[]>([]);
+  const [ecosystemClaims, setEcosystemClaims] = useState<AdminClaimQueueItem[]>([]);
+  const [ecosystemOwnerChanges, setEcosystemOwnerChanges] = useState<AdminOwnerChangeQueueItem[]>(
+    []
+  );
+  const [systemHealth, setSystemHealth] = useState<AdminSystemHealthPayload | null>(null);
 
   const handleAuthStatusCheck = useCallback(
     (res: Response) => {
@@ -268,6 +301,26 @@ export function AdminDashboardPage() {
     }
   }, [handleAuthStatusCheck]);
 
+  const loadEcosystem = useCallback(async () => {
+    const res = await fetch(resolveApiUrl('/api/admin/ecosystem'), { credentials: 'include' });
+    if (handleAuthStatusCheck(res)) {
+      const data = (await res.json()) as {
+        reviews?: AdminReviewQueueItem[];
+        contributions?: AdminContributionQueueItem[];
+        claims?: AdminClaimQueueItem[];
+        ownerChanges?: AdminOwnerChangeQueueItem[];
+        promotions?: AdminPromotionQueueItem[];
+        systemHealth?: AdminSystemHealthPayload | null;
+      };
+      if (Array.isArray(data.reviews)) setEcosystemReviews(data.reviews);
+      if (Array.isArray(data.contributions)) setEcosystemContributions(data.contributions);
+      if (Array.isArray(data.claims)) setEcosystemClaims(data.claims);
+      if (Array.isArray(data.ownerChanges)) setEcosystemOwnerChanges(data.ownerChanges);
+      if (Array.isArray(data.promotions)) setEcosystemPromotions(data.promotions);
+      if (data.systemHealth !== undefined) setSystemHealth(data.systemHealth);
+    }
+  }, [handleAuthStatusCheck]);
+
   const loadAllAdminData = useCallback(
     async (role: AdminIdentity['role']) => {
       await Promise.all([
@@ -281,6 +334,7 @@ export function AdminDashboardPage() {
         loadSuggestions(),
         loadBookings(),
         loadCorrections(),
+        loadEcosystem(),
         loadUsers(role),
       ]);
     },
@@ -295,6 +349,7 @@ export function AdminDashboardPage() {
       loadSuggestions,
       loadBookings,
       loadCorrections,
+      loadEcosystem,
       loadUsers,
     ]
   );
@@ -373,6 +428,13 @@ export function AdminDashboardPage() {
   const newSuggestions = suggestions.filter((s) => s.status === 'new').length;
   const pendingBookings = bookings.filter((b) => b.status === 'pending').length;
   const pendingCorrections = corrections.filter((c) => c.status === 'pending').length;
+  const pendingModeration =
+    ecosystemReviews.filter((r) => r.moderation_status === 'pending').length +
+    ecosystemContributions.filter((c) => c.moderation_status === 'pending').length +
+    ecosystemPromotions.filter((p) => p.status === 'pending').length;
+  const pendingClaimsAndEdits =
+    ecosystemClaims.filter((c) => c.status === 'pending').length +
+    ecosystemOwnerChanges.filter((o) => o.status === 'pending').length;
 
   const sessionMinsLeft = admin.expiresAt
     ? Math.max(0, Math.round((admin.expiresAt - Date.now()) / 60000))
@@ -418,6 +480,10 @@ export function AdminDashboardPage() {
               ? pendingBookings
               : key === 'discovery'
               ? pendingCorrections
+              : key === 'moderation'
+              ? pendingModeration
+              : key === 'claims'
+              ? pendingClaimsAndEdits
               : key === 'enquiries'
               ? unreadEnquiries
               : key === 'suggestions'
@@ -509,6 +575,16 @@ export function AdminDashboardPage() {
                       {key === 'discovery' && pendingCorrections > 0 && (
                         <span className="px-1.5 py-0.5 rounded bg-white text-[#1c1613] text-[10px] font-bold font-mono-data">
                           {pendingCorrections}
+                        </span>
+                      )}
+                      {key === 'moderation' && pendingModeration > 0 && (
+                        <span className="px-1.5 py-0.5 rounded bg-white text-[#1c1613] text-[10px] font-bold font-mono-data">
+                          {pendingModeration}
+                        </span>
+                      )}
+                      {key === 'claims' && pendingClaimsAndEdits > 0 && (
+                        <span className="px-1.5 py-0.5 rounded bg-white text-[#1c1613] text-[10px] font-bold font-mono-data">
+                          {pendingClaimsAndEdits}
                         </span>
                       )}
                       {key === 'enquiries' && unreadEnquiries > 0 && (
@@ -667,6 +743,29 @@ export function AdminDashboardPage() {
           />
         )}
 
+        {activeTab === 'moderation' && (
+          <AdminModerationTab
+            reviews={ecosystemReviews}
+            contributions={ecosystemContributions}
+            promotions={ecosystemPromotions}
+            csrfToken={admin.csrfToken}
+            onRefresh={async () => {
+              await Promise.all([loadEcosystem(), loadLocations(), loadOverview(), refreshCms()]);
+            }}
+          />
+        )}
+
+        {activeTab === 'claims' && (
+          <AdminOwnerClaimsTab
+            claims={ecosystemClaims}
+            ownerChanges={ecosystemOwnerChanges}
+            csrfToken={admin.csrfToken}
+            onRefresh={async () => {
+              await Promise.all([loadEcosystem(), loadLocations(), loadOverview(), refreshCms()]);
+            }}
+          />
+        )}
+
         {activeTab === 'suggestions' && (
           <AdminSuggestionsTab
             suggestions={suggestions}
@@ -688,6 +787,16 @@ export function AdminDashboardPage() {
         )}
 
         {activeTab === 'audit' && <AdminAuditTab />}
+
+        {activeTab === 'system' && (
+          <AdminSystemControlsTab
+            key={`sys-${settingsRevision}`}
+            settings={cmsSettings}
+            systemHealth={systemHealth}
+            onSaveSettings={handleSaveSettings}
+            onRefreshSystem={loadEcosystem}
+          />
+        )}
 
         {activeTab === 'settings' && (
           <AdminSettingsTab

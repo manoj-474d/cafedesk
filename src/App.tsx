@@ -55,6 +55,12 @@ const GuidesPage = lazy(() =>
 const GuideDetailPage = lazy(() =>
   import('./pages/GuideDetailPage').then((m) => ({ default: m.GuideDetailPage }))
 );
+const SharedCollectionPage = lazy(() =>
+  import('./pages/SharedCollectionPage').then((m) => ({ default: m.SharedCollectionPage }))
+);
+const PartnerPortalPage = lazy(() =>
+  import('./pages/PartnerPortalPage').then((m) => ({ default: m.PartnerPortalPage }))
+);
 const NotFoundPage = lazy(() =>
   import('./pages/NotFoundPage').then((m) => ({ default: m.NotFoundPage }))
 );
@@ -130,6 +136,8 @@ function AppRoutes() {
             <Route path="/contact" element={<ContactPage />} />
             <Route path="/submit" element={<SubmitCafePage />} />
             <Route path="/owners" element={<OwnersPage />} />
+            <Route path="/partner-portal" element={<PartnerPortalPage />} />
+            <Route path="/collections/:slug" element={<SharedCollectionPage />} />
             <Route path="*" element={<NotFoundPage />} />
           </Route>
           <Route path="/admin/login" element={<AdminLoginPage />} />

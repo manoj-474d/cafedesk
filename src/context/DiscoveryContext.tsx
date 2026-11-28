@@ -1,8 +1,13 @@
 /// <reference types="google.maps" />
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useMapsLibrary } from '@vis.gl/react-google-maps';
-import { BENGALURU_CENTER, DISCOVERY_CATEGORY_TABS } from '../config/constants';
-import type { LocationItem } from '../types/cms';
+import {
+  BENGALURU_CENTER,
+  BENGALURU_REGIONS,
+  DEFAULT_BENGALURU_LOCALITIES,
+  DISCOVERY_CATEGORY_TABS,
+} from '../config/constants';
+import type { BengaluruRegionName, LocalityRecord, LocationItem } from '../types/cms';
 import { buildGoogleMapsDirectionsUrl, buildGoogleMapsViewUrl, computeDistanceKm } from '../utils/cafeHelpers';
 import { resolveApiUrl } from './AuthContext';
 
@@ -101,6 +106,21 @@ interface DiscoveryContextValue {
     suggestion: google.maps.places.AutocompleteSuggestion
   ) => Promise<GoogleDiscoveryCafe | null>;
   placesReady: boolean;
+  localities: LocalityRecord[];
+  localitiesByRegion: Record<BengaluruRegionName, LocalityRecord[]>;
+  refreshLocalities: () => Promise<void>;
+  localityPlaces: LocationItem[];
+  localityLoading: boolean;
+  activeLocalityMeta: LocalityRecord | null;
+  loadLocalityPlaces: (
+    slugOrName: string,
+    options?: { category?: string; warm?: boolean }
+  ) => Promise<{
+    locality: LocalityRecord | null;
+    places: LocationItem[];
+    curatedCount: number;
+    discoveredCount: number;
+  }>;
 }
 
 const CACHE_STORAGE_KEY = 'cafedesk_places_meta_v2';
@@ -400,6 +420,25 @@ const DiscoveryContext = createContext<DiscoveryContextValue>({
   fetchGooglePlaceDetails: async () => null,
   resolvePredictionToPlace: async () => null,
   placesReady: false,
+  localities: [],
+  localitiesByRegion: {
+    'North Bengaluru': [],
+    'South Bengaluru': [],
+    'East Bengaluru': [],
+    'West Bengaluru': [],
+    'Central Bengaluru': [],
+    'Outer Bengaluru': [],
+  },
+  refreshLocalities: async () => {},
+  localityPlaces: [],
+  localityLoading: false,
+  activeLocalityMeta: null,
+  loadLocalityPlaces: async () => ({
+    locality: null,
+    places: [],
+    curatedCount: 0,
+    discoveredCount: 0,
+  }),
 });
 
 const LIVE_PLACE_FIELDS = [
@@ -436,12 +475,86 @@ export function DiscoveryProvider({ children }: { children: React.ReactNode }) {
   const [nextPageToken, setNextPageToken] = useState<string | null>(null);
   const [nearbyLabel, setNearbyLabel] = useState('');
   const [placesNotice, setPlacesNotice] = useState('');
+  const [localities, setLocalities] = useState<LocalityRecord[]>(() =>
+    DEFAULT_BENGALURU_LOCALITIES.map((seed, idx) => ({
+      id: idx + 1,
+      slug: seed.slug,
+      name: seed.name,
+      region: seed.region,
+      city: 'Bengaluru',
+      alt_spellings: seed.altSpellings,
+      local_names: seed.localNames,
+      keywords: seed.keywords,
+      lat: seed.lat,
+      lng: seed.lng,
+      radius_meters: seed.radiusMeters,
+      subzones: seed.subzones,
+      active: true,
+      admin_approved: true,
+      discovery_status: 'pending',
+      last_discovery_at: null,
+      discovery_progress: 0,
+      categories_completed: [],
+      categories_failed: [],
+      discovered_count: 0,
+      unique_place_count: 0,
+      duplicate_count: 0,
+      coverage_notes: '',
+      last_error: '',
+      retry_count: 0,
+      next_retry_at: null,
+      created_at: 0,
+      updated_at: 0,
+    }))
+  );
+  const [localityPlaces, setLocalityPlaces] = useState<LocationItem[]>([]);
+  const [localityLoading, setLocalityLoading] = useState(false);
+  const [activeLocalityMeta, setActiveLocalityMeta] = useState<LocalityRecord | null>(null);
 
   const inFlightIdsRef = useRef<Record<string, boolean>>({});
   const nearbyCacheRef = useRef<
     Record<string, { places: GoogleDiscoveryCafe[]; nextPageToken: string | null }>
   >({});
   const lastSearchPayloadRef = useRef<Record<string, unknown> | null>(null);
+
+  const refreshLocalities = useCallback(async () => {
+    try {
+      const res = await fetch(resolveApiUrl('/api/localities'));
+      if (!res.ok) return;
+      const data = (await res.json()) as { localities?: LocalityRecord[] };
+      if (Array.isArray(data.localities) && data.localities.length > 0) {
+        setLocalities(data.localities);
+      }
+    } catch {
+      // Fallback to default Bengaluru seed localities
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshLocalities();
+  }, [refreshLocalities]);
+
+  const localitiesByRegion = React.useMemo(() => {
+    const grouped: Record<BengaluruRegionName, LocalityRecord[]> = {
+      'North Bengaluru': [],
+      'South Bengaluru': [],
+      'East Bengaluru': [],
+      'West Bengaluru': [],
+      'Central Bengaluru': [],
+      'Outer Bengaluru': [],
+    };
+    for (const loc of localities) {
+      if (grouped[loc.region]) {
+        grouped[loc.region].push(loc);
+      } else {
+        grouped['Outer Bengaluru'].push(loc);
+      }
+    }
+    for (const r of BENGALURU_REGIONS) {
+      grouped[r].sort((a, b) => a.name.localeCompare(b.name));
+    }
+    return grouped;
+  }, [localities]);
 
   const clearPlacesNotice = useCallback(() => setPlacesNotice(''), []);
 
@@ -998,6 +1111,117 @@ export function DiscoveryProvider({ children }: { children: React.ReactNode }) {
     [placeMetaByCafeId, userLocation]
   );
 
+  const loadLocalityPlaces = useCallback(
+    async (
+      slugOrName: string,
+      options?: { category?: string; warm?: boolean }
+    ): Promise<{
+      locality: LocalityRecord | null;
+      places: LocationItem[];
+      curatedCount: number;
+      discoveredCount: number;
+    }> => {
+      const clean = String(slugOrName || '').trim().toLowerCase();
+      if (!clean) {
+        setLocalityPlaces([]);
+        setActiveLocalityMeta(null);
+        return { locality: null, places: [], curatedCount: 0, discoveredCount: 0 };
+      }
+
+      const matched = localities.find(
+        (l) =>
+          l.slug === clean ||
+          l.name.toLowerCase() === clean ||
+          l.alt_spellings.some((a) => a.toLowerCase() === clean) ||
+          l.local_names.some((n) => n.toLowerCase() === clean)
+      );
+      const targetSlug = matched?.slug || clean.replace(/[^a-z0-9]+/g, '-');
+
+      setLocalityLoading(true);
+      try {
+        const params = new URLSearchParams();
+        if (options?.category && options.category !== 'all') {
+          params.set('category', options.category);
+        }
+        if (options?.warm !== false) {
+          params.set('warm', '1');
+        }
+        const res = await fetch(
+          resolveApiUrl(
+            `/api/localities/${encodeURIComponent(targetSlug)}/places?${params.toString()}`
+          ),
+          { credentials: 'include' }
+        );
+        if (res.status === 429) {
+          checkGmpQuotaError('RESOURCE_EXHAUSTED');
+        }
+        if (!res.ok) {
+          return { locality: matched ?? null, places: [], curatedCount: 0, discoveredCount: 0 };
+        }
+        const data = (await res.json()) as {
+          locality?: LocalityRecord;
+          places?: LocationItem[];
+          curated_count?: number;
+          discovered_count?: number;
+        };
+        const rawPlaces = Array.isArray(data.places) ? data.places : [];
+        const withDistance = rawPlaces.map((p) => {
+          const dist =
+            userLocation && p.lat !== null && p.lng !== null
+              ? computeDistanceKm(userLocation.lat, userLocation.lng, p.lat, p.lng)
+              : null;
+          return { ...p, distanceKm: dist };
+        });
+        setLocalityPlaces(withDistance);
+        setActiveLocalityMeta(data.locality ?? matched ?? null);
+        if (data.locality) {
+          setLocalities((prev) =>
+            prev.map((item) => (item.id === data.locality!.id ? data.locality! : item))
+          );
+        }
+        // Cache discovered Google entries into livePlaceCache for instant detail view
+        const googleItems: GoogleDiscoveryCafe[] = withDistance
+          .filter((p) => p.isLiveGooglePlace && p.place_id)
+          .map((p) => ({
+            id: p.id,
+            placeId: p.place_id!,
+            name: p.name,
+            areaLabel: p.area,
+            address: p.address,
+            lat: p.lat ?? BENGALURU_CENTER.lat,
+            lng: p.lng ?? BENGALURU_CENTER.lng,
+            rating: p.rating,
+            ratingCount: p.rating_count,
+            websiteUrl: p.website_url || '',
+            mapLink: p.map_link,
+            viewMapUrl: p.source_url || p.map_link,
+            phone: p.phone || '',
+            photos: p.photos || [],
+            openingHours: p.opening_hours_list || [],
+            priceLevelLabel: p.price_level_label || p.price_range || '',
+            categoryLabel: p.category,
+            distanceKm: p.distanceKm ?? null,
+            sourceType: 'google_places',
+            cachedAt: Date.now(),
+          }));
+        if (googleItems.length > 0) cacheLiveCafes(googleItems);
+
+        return {
+          locality: data.locality ?? matched ?? null,
+          places: withDistance,
+          curatedCount: Number(data.curated_count ?? 0),
+          discoveredCount: Number(data.discovered_count ?? 0),
+        };
+      } catch (err) {
+        checkGmpQuotaError(err);
+        return { locality: matched ?? null, places: [], curatedCount: 0, discoveredCount: 0 };
+      } finally {
+        setLocalityLoading(false);
+      }
+    },
+    [localities, userLocation, cacheLiveCafes]
+  );
+
   return (
     <DiscoveryContext.Provider
       value={{
@@ -1024,6 +1248,13 @@ export function DiscoveryProvider({ children }: { children: React.ReactNode }) {
         fetchGooglePlaceDetails,
         resolvePredictionToPlace,
         placesReady: Boolean(placesLib),
+        localities,
+        localitiesByRegion,
+        refreshLocalities,
+        localityPlaces,
+        localityLoading,
+        activeLocalityMeta,
+        loadLocalityPlaces,
       }}
     >
       {children}

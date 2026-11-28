@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { getNoiseSummary } from '../config/constants';
 import { locationToLibrarySnapshot, useAuth } from '../context/AuthContext';
+import { useCms } from '../context/CmsContext';
 import { useDiscovery } from '../context/DiscoveryContext';
 import type { LocationItem } from '../types/cms';
 import {
@@ -36,7 +37,11 @@ import {
   getWorkspaceTypesForCafe,
   stripInlineRupeePrice,
 } from '../utils/cafeHelpers';
-import { isOutdoorFriendly } from '../utils/cafeRecommendations';
+import { isFamilyFriendlyCafe, isOutdoorFriendly } from '../utils/cafeRecommendations';
+import {
+  computeInformationConfidenceScore,
+  computeWorkReadyScore,
+} from '../utils/cafeScoring';
 import { getCafeLowestVerifiedMenuPrice, type ParsedMenuEntry } from '../utils/smartFoodSearch';
 import { ResilientPhoto } from './ResilientPhoto';
 
@@ -54,6 +59,7 @@ export function LocationCard({
   matchedMenuItems,
 }: LocationCardProps) {
   const { getEffectiveLocation } = useDiscovery();
+  const { settings, isFeatureEnabled } = useCms();
   const {
     authenticated,
     isSubscribed,
@@ -69,6 +75,14 @@ export function LocationCard({
   const [copiedShare, setCopiedShare] = useState(false);
 
   const loc = location.distanceKm !== undefined ? location : getEffectiveLocation(location);
+  const showQualityScores = isFeatureEnabled('quality_scores');
+  const workReadyResult = showQualityScores
+    ? computeWorkReadyScore(loc, settings.scoring_config)
+    : null;
+  const confidenceResult = showQualityScores
+    ? computeInformationConfidenceScore(loc, settings.scoring_config)
+    : null;
+  const familyFriendly = isFamilyFriendlyCafe(loc);
 
   const unlocked = loc.access?.unlockedSections;
   const wifiUnlocked = unlocked ? unlocked.wifi_details : isSubscribed;
@@ -312,7 +326,38 @@ export function LocationCard({
               Featured
             </span>
           )}
+          {familyFriendly && loc.family_friendly === 'yes' && (
+            <span className="text-[11px] font-medium text-[#1b4d3e]">· Family-friendly</span>
+          )}
         </div>
+
+        {showQualityScores && confidenceResult && (
+          <div className="mb-2.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] text-[#5c4e45] font-mono-data tabular-nums">
+            <span className="font-semibold text-[#1c1613]">
+              Work-Ready:{' '}
+              {workReadyResult && !workReadyResult.insufficientData && workReadyResult.score !== null ? (
+                <span className="text-[#1b4d3e]">{workReadyResult.score}/100</span>
+              ) : (
+                <span className="text-[#5c4e45] font-normal font-sans">Not verified</span>
+              )}
+            </span>
+            <span aria-hidden="true">·</span>
+            <span className="font-semibold text-[#1c1613]">
+              Confidence:{' '}
+              <span
+                className={
+                  confidenceResult.tier === 'High'
+                    ? 'text-[#1b4d3e]'
+                    : confidenceResult.tier === 'Moderate'
+                    ? 'text-[#b45309]'
+                    : 'text-[#5c4e45]'
+                }
+              >
+                {confidenceResult.score}/100 ({confidenceResult.tier})
+              </span>
+            </span>
+          </div>
+        )}
 
         <p className="text-sm text-[#5c4e45] leading-relaxed line-clamp-2 mb-3">
           {loc.verdict || loc.claims[0] || loc.description}

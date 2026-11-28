@@ -4,22 +4,30 @@ import {
   AlertTriangle,
   ArrowUpRight,
   Award,
+  Bell,
   Bookmark,
+  Building2,
+  Check,
   CheckCircle2,
+  Copy,
   Crown,
   FolderPlus,
+  Globe,
   Heart,
   Lock,
   LogOut,
   MailCheck,
   Receipt,
   RefreshCw,
+  Share2,
+  Shield,
+  Sliders,
   Sparkles,
   Trash2,
   UserCheck,
   X,
 } from 'lucide-react';
-import { COLLECTION_PRESETS, EXPLORER_BADGES } from '../config/constants';
+import { BENGALURU_AREAS, COLLECTION_PRESETS, EXPLORER_BADGES } from '../config/constants';
 import {
   getUserAuthHeaders,
   getUserSessionHeaders,
@@ -37,7 +45,7 @@ import { useDocumentMeta } from '../utils/cafeHelpers';
 export function AccountPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { settings, locations } = useCms();
+  const { settings, locations, isFeatureEnabled } = useCms();
   const { getEffectiveLocation } = useDiscovery();
   const {
     loading,
@@ -60,6 +68,7 @@ export function AccountPage() {
     createCollection,
     deleteCollection,
     removeCafeFromCollection,
+    toggleCollectionShare,
   } = useAuth();
 
   const canUseCollections = isSubscribed && hasPermission('collections');
@@ -95,6 +104,61 @@ export function AccountPage() {
   const [billingBusy, setBillingBusy] = useState(false);
   const [achievements, setAchievements] = useState<ExplorerAchievementStatus[]>([]);
   const [creatingPresetName, setCreatingPresetName] = useState<string | null>(null);
+  const [shareBusyId, setShareBusyId] = useState<number | null>(null);
+  const [copiedShareSlug, setCopiedShareSlug] = useState<string | null>(null);
+  const [pointsData, setPointsData] = useState<{
+    totalPoints: number;
+    ledger: Array<{
+      id: number;
+      points: number;
+      reason: string;
+      reference_type: string;
+      created_at: number;
+    }>;
+    earnedBadges: Array<{
+      id: string;
+      title: string;
+      description: string;
+      unlocked: boolean;
+    }>;
+  } | null>(null);
+
+  const [follows, setFollows] = useState<
+    Array<{ id: number; cafe_key: string; cafe_name: string; created_at: number }>
+  >([]);
+  const [unfollowingKey, setUnfollowingKey] = useState<string | null>(null);
+  const [notifications, setNotifications] = useState<
+    Array<{
+      id: number;
+      cafe_key: string;
+      title: string;
+      message: string;
+      link: string;
+      is_read: boolean;
+      created_at: number;
+    }>
+  >([]);
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
+  const [notifBusy, setNotifBusy] = useState(false);
+
+  const [prefs, setPrefs] = useState<{
+    favourite_areas: string[];
+    favourite_categories: string[];
+    preferred_max_budget: string;
+    personalisation_enabled: boolean;
+    public_profile_enabled: boolean;
+    save_visit_history: boolean;
+  }>({
+    favourite_areas: [],
+    favourite_categories: [],
+    preferred_max_budget: '',
+    personalisation_enabled: true,
+    public_profile_enabled: false,
+    save_visit_history: true,
+  });
+  const [prefsBusy, setPrefsBusy] = useState(false);
+  const [prefsSavedMsg, setPrefsSavedMsg] = useState('');
+  const [prefsErrorMsg, setPrefsErrorMsg] = useState('');
 
   useEffect(() => {
     if (!loading && !authenticated) {
@@ -157,29 +221,108 @@ export function AccountPage() {
     }
   };
 
+  const loadCommunityPoints = async () => {
+    try {
+      const res = await fetch(resolveApiUrl('/api/user/points'), {
+        credentials: 'include',
+        headers: await getUserAuthHeaders(),
+      });
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        const data = await res.json();
+        setPointsData(data);
+      }
+    } catch {
+      // Non-blocking
+    }
+  };
+
+  const loadPersonalisationAndInbox = async () => {
+    try {
+      const headers = await getUserAuthHeaders();
+      const [prefRes, followRes, notifRes] = await Promise.all([
+        fetch(resolveApiUrl('/api/user/preferences'), { credentials: 'include', headers }),
+        fetch(resolveApiUrl('/api/user/follows'), { credentials: 'include', headers }),
+        fetch(resolveApiUrl('/api/user/notifications'), { credentials: 'include', headers }),
+      ]);
+
+      if (prefRes.ok && (prefRes.headers.get('content-type') || '').includes('application/json')) {
+        const pd = await prefRes.json();
+        if (pd?.preferences) {
+          setPrefs({
+            favourite_areas: Array.isArray(pd.preferences.favourite_areas)
+              ? pd.preferences.favourite_areas
+              : [],
+            favourite_categories: Array.isArray(pd.preferences.favourite_categories)
+              ? pd.preferences.favourite_categories
+              : [],
+            preferred_max_budget:
+              pd.preferences.preferred_max_budget !== null &&
+              pd.preferences.preferred_max_budget !== undefined
+                ? String(pd.preferences.preferred_max_budget)
+                : '',
+            personalisation_enabled: pd.preferences.personalisation_enabled !== false,
+            public_profile_enabled: Boolean(pd.preferences.public_profile_enabled),
+            save_visit_history: pd.preferences.save_visit_history !== false,
+          });
+        }
+      }
+
+      if (followRes.ok && (followRes.headers.get('content-type') || '').includes('application/json')) {
+        const fd = await followRes.json();
+        if (Array.isArray(fd?.follows)) setFollows(fd.follows);
+      }
+
+      if (notifRes.ok && (notifRes.headers.get('content-type') || '').includes('application/json')) {
+        const nd = await notifRes.json();
+        if (Array.isArray(nd?.notifications)) setNotifications(nd.notifications);
+        if (typeof nd?.unreadCount === 'number') setUnreadNotifications(nd.unreadCount);
+      }
+    } catch {
+      // Non-blocking
+    }
+  };
+
   useEffect(() => {
     if (authenticated) {
       void loadBillingHistory();
       void loadAchievements();
+      void loadCommunityPoints();
+      void loadPersonalisationAndInbox();
     }
   }, [authenticated, tier, savedCafes.length, collections.length]);
 
-  // Personalized recommendations based on user's saved cafe localities or top verified picks
+  // Personalized recommendations based on user preferences, saved localities, or verified picks
   const recommendedCafes = useMemo(() => {
+    if (!prefs.personalisation_enabled) return [];
     const savedKeys = new Set(savedCafes.map((s) => s.cafe_key));
-    const preferredAreas = new Set(savedCafes.map((s) => s.snapshot.area.toLowerCase()));
+    const preferredAreas = new Set(
+      [...prefs.favourite_areas, ...savedCafes.map((s) => s.snapshot.area)].map((a) =>
+        a.toLowerCase()
+      )
+    );
+    const preferredCats = prefs.favourite_categories.map((c) => c.toLowerCase());
+    const maxBudgetNum = prefs.preferred_max_budget ? Number(prefs.preferred_max_budget) : null;
 
     return locations
       .map((l) => getEffectiveLocation(l))
       .filter((l) => !savedKeys.has(l.slug))
+      .filter((l) =>
+        maxBudgetNum && l.avg_cost_per_person !== null ? l.avg_cost_per_person <= maxBudgetNum : true
+      )
       .sort((a, b) => {
-        const aAreaMatch = preferredAreas.has(a.area.toLowerCase()) ? 1 : 0;
-        const bAreaMatch = preferredAreas.has(b.area.toLowerCase()) ? 1 : 0;
-        if (aAreaMatch !== bAreaMatch) return bAreaMatch - aAreaMatch;
+        const aAreaMatch = preferredAreas.has(a.area.toLowerCase()) ? 2 : 0;
+        const bAreaMatch = preferredAreas.has(b.area.toLowerCase()) ? 2 : 0;
+        const aHay = `${a.category || ''} ${a.verdict} ${a.best_for.join(' ')}`.toLowerCase();
+        const bHay = `${b.category || ''} ${b.verdict} ${b.best_for.join(' ')}`.toLowerCase();
+        const aCatMatch = preferredCats.some((c) => aHay.includes(c.split(' ')[0])) ? 1 : 0;
+        const bCatMatch = preferredCats.some((c) => bHay.includes(c.split(' ')[0])) ? 1 : 0;
+        const scoreDiff = bAreaMatch + bCatMatch - (aAreaMatch + aCatMatch);
+        if (scoreDiff !== 0) return scoreDiff;
         return Number(b.verified) - Number(a.verified) || (b.rating ?? 0) - (a.rating ?? 0);
       })
       .slice(0, 3);
-  }, [locations, savedCafes, getEffectiveLocation]);
+  }, [locations, savedCafes, getEffectiveLocation, prefs]);
 
   if (loading || !authenticated || !user) {
     return (
@@ -377,6 +520,75 @@ export function AccountPage() {
       await createCollection(preset.name, preset.description);
     } finally {
       setCreatingPresetName(null);
+    }
+  };
+
+  const handleSavePreferences = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPrefsBusy(true);
+    setPrefsSavedMsg('');
+    setPrefsErrorMsg('');
+    try {
+      const res = await fetch(resolveApiUrl('/api/user/preferences'), {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', ...(await getUserAuthHeaders()) },
+        body: JSON.stringify({
+          favourite_areas: prefs.favourite_areas,
+          favourite_categories: prefs.favourite_categories,
+          preferred_max_budget: prefs.preferred_max_budget ? Number(prefs.preferred_max_budget) : null,
+          personalisation_enabled: prefs.personalisation_enabled,
+          public_profile_enabled: prefs.public_profile_enabled,
+          save_visit_history: prefs.save_visit_history,
+        }),
+      });
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))) as { error?: string };
+        setPrefsErrorMsg(err.error || 'Could not save preferences.');
+      } else {
+        setPrefsSavedMsg('Personalisation & privacy preferences saved.');
+      }
+    } catch {
+      setPrefsErrorMsg('Network error saving preferences.');
+    } finally {
+      setPrefsBusy(false);
+    }
+  };
+
+  const handleUnfollowCafe = async (cafeKey: string) => {
+    setUnfollowingKey(cafeKey);
+    try {
+      const res = await fetch(resolveApiUrl(`/api/cafes/${encodeURIComponent(cafeKey)}/follow`), {
+        method: 'DELETE',
+        credentials: 'include',
+        headers: await getUserAuthHeaders(),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data?.follows)) setFollows(data.follows);
+      }
+    } finally {
+      setUnfollowingKey(null);
+    }
+  };
+
+  const handleMarkNotificationsRead = async (notifId?: number) => {
+    setNotifBusy(true);
+    try {
+      const res = await fetch(resolveApiUrl('/api/user/notifications/read'), {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', ...(await getUserAuthHeaders()) },
+        body: JSON.stringify(notifId ? { id: notifId } : {}),
+      });
+      if (res.ok) {
+        setNotifications((prev) =>
+          prev.map((n) => (!notifId || n.id === notifId ? { ...n, is_read: true } : n))
+        );
+        setUnreadNotifications((prev) => (notifId ? Math.max(0, prev - 1) : 0));
+      }
+    } finally {
+      setNotifBusy(false);
     }
   };
 
@@ -954,20 +1166,82 @@ export function AccountPage() {
                       key={col.id}
                       className="rounded-xl border border-[#e6ddd0] p-4 bg-[#faf7f2] space-y-2.5"
                     >
-                      <div className="flex items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
                         <div>
-                          <p className="text-sm font-semibold text-[#1c1613]">{col.name}</p>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-sm font-semibold text-[#1c1613]">{col.name}</p>
+                            {col.is_public && (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#ecfdf5] border border-[#bbf7d0] text-[#1b4d3e] text-[10px] font-semibold">
+                                <Globe className="w-3 h-3" aria-hidden="true" />
+                                Public
+                              </span>
+                            )}
+                          </div>
                           <p className="text-[11px] text-[#57493f]">
                             {col.items.length} {col.items.length === 1 ? 'cafe' : 'cafes'}
                           </p>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => void deleteCollection(col.id)}
-                          className="min-h-[36px] px-2.5 text-xs font-semibold text-[#dc2626] hover:underline"
-                        >
-                          Delete
-                        </button>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {isFeatureEnabled('public_collections') && (
+                            <button
+                              type="button"
+                              disabled={shareBusyId === col.id}
+                              onClick={async () => {
+                                setShareBusyId(col.id);
+                                try {
+                                  await toggleCollectionShare(col.id, !col.is_public);
+                                } finally {
+                                  setShareBusyId(null);
+                                }
+                              }}
+                              className="min-h-[36px] px-2.5 rounded-lg bg-white border border-[#d6cbba] hover:border-[#b45309] text-xs font-semibold text-[#1c1613] inline-flex items-center gap-1"
+                            >
+                              <Share2 className="w-3.5 h-3.5 text-[#b45309]" aria-hidden="true" />
+                              <span>{col.is_public ? 'Make Private' : 'Make Public'}</span>
+                            </button>
+                          )}
+                          {col.is_public && col.share_slug && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  try {
+                                    await navigator.clipboard.writeText(
+                                      `${window.location.origin}/collections/${col.share_slug}`
+                                    );
+                                    setCopiedShareSlug(col.share_slug || '');
+                                    window.setTimeout(() => setCopiedShareSlug(null), 2000);
+                                  } catch {
+                                    // ignore clipboard block
+                                  }
+                                }}
+                                className="min-h-[36px] px-2.5 rounded-lg bg-[#ecfdf5] border border-[#bbf7d0] text-xs font-semibold text-[#1b4d3e] inline-flex items-center gap-1"
+                              >
+                                {copiedShareSlug === col.share_slug ? (
+                                  <Check className="w-3.5 h-3.5" aria-hidden="true" />
+                                ) : (
+                                  <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+                                )}
+                                <span>
+                                  {copiedShareSlug === col.share_slug ? 'Copied Link' : 'Copy Link'}
+                                </span>
+                              </button>
+                              <Link
+                                to={`/collections/${col.share_slug}`}
+                                className="min-h-[36px] px-2 inline-flex items-center text-xs font-semibold text-[#b45309] hover:underline"
+                              >
+                                View &rarr;
+                              </Link>
+                            </>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => void deleteCollection(col.id)}
+                            className="min-h-[36px] px-2.5 text-xs font-semibold text-[#dc2626] hover:underline"
+                          >
+                            Delete
+                          </button>
+                        </div>
                       </div>
                       {col.items.length > 0 && (
                         <ul className="space-y-1.5 pt-2 border-t border-[#e6ddd0] text-xs">
@@ -1067,7 +1341,403 @@ export function AccountPage() {
             );
           })}
         </div>
+
+        {/* Community Trust Points & Contributor Badges */}
+        {pointsData && (
+          <div className="pt-5 border-t border-[#e6ddd0] space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#1b4d3e]">
+                  Community Contributions &amp; Trust Score
+                </p>
+                <p className="text-xs text-[#57493f]">
+                  Earn points by reviewing cafes (+15), reporting accuracy fixes (+10), or sharing photos &amp; menu prices (+5 to +25).
+                </p>
+              </div>
+              <span className="font-mono-data tabular-nums px-3.5 py-1.5 rounded-full bg-[#fef3c7] border border-[#fde68a] text-[#92400e] text-xs font-bold">
+                {pointsData.totalPoints} Contribution Points
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {pointsData.earnedBadges.map((b) => (
+                <div
+                  key={b.id}
+                  className={`rounded-xl border p-3.5 space-y-1 text-xs ${
+                    b.unlocked
+                      ? 'bg-[#ecfdf5]/60 border-[#a7f3d0]'
+                      : 'bg-[#faf7f2] border-[#e6ddd0] opacity-80'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-[#1c1613]">{b.title}</span>
+                    <span
+                      className={`text-[10px] font-semibold uppercase ${
+                        b.unlocked ? 'text-[#1b4d3e]' : 'text-[#57493f]'
+                      }`}
+                    >
+                      {b.unlocked ? 'Earned' : 'Locked'}
+                    </span>
+                  </div>
+                  <p className="text-[#57493f] leading-relaxed">{b.description}</p>
+                </div>
+              ))}
+            </div>
+
+            {pointsData.ledger.length > 0 && (
+              <div className="space-y-1.5 text-xs">
+                <p className="font-semibold text-[#57493f]">Recent Points Activity</p>
+                <ul className="divide-y divide-[#e6ddd0] rounded-xl border border-[#e6ddd0] bg-[#faf7f2] px-3.5">
+                  {pointsData.ledger.slice(0, 6).map((entry) => (
+                    <li key={entry.id} className="py-2 flex items-center justify-between gap-3">
+                      <span className="text-[#1c1613] truncate">{entry.reason}</span>
+                      <span className="font-mono-data font-semibold text-[#1b4d3e] shrink-0">
+                        +{entry.points} pts
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
       </section>
+
+      {/* Cafe Update Notifications & Followed Cafes */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {isFeatureEnabled('notifications') && (
+          <section className="lg:col-span-6 rounded-2xl bg-white border border-[#e6ddd0] p-5 sm:p-6 space-y-4 shadow-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-lg bg-[#fef3c7] border border-[#fde68a] flex items-center justify-center text-[#b45309]">
+                  <Bell className="w-4 h-4" aria-hidden="true" />
+                </div>
+                <div>
+                  <h2 className="font-serif-display text-2xl font-semibold text-[#1c1613]">
+                    Cafe Update Alerts
+                  </h2>
+                  <p className="text-xs text-[#57493f]">
+                    Approved menu, hours, and facility updates from cafes you follow.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {unreadNotifications > 0 && (
+                  <span className="font-mono-data px-2.5 py-0.5 rounded-full bg-[#b45309] text-white text-xs font-semibold">
+                    {unreadNotifications} unread
+                  </span>
+                )}
+                {unreadNotifications > 0 && (
+                  <button
+                    type="button"
+                    disabled={notifBusy}
+                    onClick={() => void handleMarkNotificationsRead()}
+                    className="min-h-[36px] px-3 rounded-lg bg-[#faf7f2] border border-[#d6cbba] hover:border-[#b45309] text-xs font-semibold text-[#1c1613]"
+                  >
+                    Mark all read
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {notifications.length === 0 ? (
+              <div className="p-4 rounded-xl bg-[#faf7f2] border border-dashed border-[#d6cbba] text-xs text-[#57493f]">
+                No updates yet. Follow any Bengaluru cafe on its detail page to receive menu or
+                facility update alerts here.
+              </div>
+            ) : (
+              <ul className="space-y-2.5 max-h-80 overflow-y-auto pr-1">
+                {notifications.map((n) => (
+                  <li
+                    key={n.id}
+                    className={`rounded-xl border p-3.5 text-xs space-y-1 transition-colors ${
+                      n.is_read
+                        ? 'bg-[#faf7f2] border-[#e6ddd0]'
+                        : 'bg-[#fffbeb] border-[#fde68a]'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <Link
+                        to={n.link || `/cafe/${encodeURIComponent(n.cafe_key)}`}
+                        onClick={() => {
+                          if (!n.is_read) void handleMarkNotificationsRead(n.id);
+                        }}
+                        className="font-semibold text-[#1c1613] hover:text-[#b45309]"
+                      >
+                        {n.title}
+                      </Link>
+                      <span className="font-mono-data text-[11px] text-[#57493f] shrink-0">
+                        {new Date(n.created_at).toLocaleDateString('en-IN')}
+                      </span>
+                    </div>
+                    <p className="text-[#57493f] leading-relaxed">{n.message}</p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
+
+        <section
+          className={`${
+            isFeatureEnabled('notifications') ? 'lg:col-span-6' : 'lg:col-span-12'
+          } rounded-2xl bg-white border border-[#e6ddd0] p-5 sm:p-6 space-y-4 shadow-xs`}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <h2 className="font-serif-display text-2xl font-semibold text-[#1c1613]">
+                Followed Cafes ({follows.length})
+              </h2>
+              <p className="text-xs text-[#57493f]">
+                Get notified whenever an owner or admin updates hours, menus, or amenities.
+              </p>
+            </div>
+            <Link to="/discover" className="text-xs font-semibold text-[#b45309] hover:underline">
+              Browse Cafes &rarr;
+            </Link>
+          </div>
+
+          {follows.length === 0 ? (
+            <div className="p-4 rounded-xl bg-[#faf7f2] border border-dashed border-[#d6cbba] text-xs text-[#57493f]">
+              You are not following any cafes yet. Open any cafe detail page and tap{' '}
+              <strong>Follow Cafe</strong>.
+            </div>
+          ) : (
+            <ul className="space-y-2.5 max-h-80 overflow-y-auto pr-1">
+              {follows.map((f) => (
+                <li
+                  key={f.id}
+                  className="rounded-xl border border-[#e6ddd0] p-3.5 bg-[#faf7f2] flex items-center justify-between gap-3"
+                >
+                  <div className="min-w-0">
+                    <Link
+                      to={`/cafe/${encodeURIComponent(f.cafe_key)}`}
+                      className="text-sm font-semibold text-[#1c1613] hover:text-[#b45309] truncate block"
+                    >
+                      {f.cafe_name}
+                    </Link>
+                    <p className="text-[11px] font-mono-data text-[#57493f]">
+                      Following since {new Date(f.created_at).toLocaleDateString('en-IN')}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={unfollowingKey === f.cafe_key}
+                    onClick={() => void handleUnfollowCafe(f.cafe_key)}
+                    className="min-h-[38px] px-3 rounded-lg bg-white border border-[#d6cbba] hover:border-[#dc2626] hover:text-[#dc2626] text-xs font-semibold text-[#57493f] shrink-0 transition-colors"
+                  >
+                    {unfollowingKey === f.cafe_key ? 'Removing...' : 'Unfollow'}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      </div>
+
+      {/* Personalisation & Privacy Preferences + Owner Partner Portal */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {isFeatureEnabled('personalisation') && (
+          <section className="lg:col-span-8 rounded-2xl bg-white border border-[#e6ddd0] p-5 sm:p-6 space-y-5 shadow-xs">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-lg bg-[#ecfdf5] border border-[#bbf7d0] flex items-center justify-center text-[#1b4d3e]">
+                <Sliders className="w-4 h-4" aria-hidden="true" />
+              </div>
+              <div>
+                <h2 className="font-serif-display text-2xl font-semibold text-[#1c1613]">
+                  Discovery Personalisation &amp; Privacy
+                </h2>
+                <p className="text-xs text-[#57493f]">
+                  Tailor homepage picks by neighbourhood, category, and budget — or turn off tracking anytime.
+                </p>
+              </div>
+            </div>
+
+            <form onSubmit={handleSavePreferences} className="space-y-4">
+              <div className="space-y-2">
+                <p className="text-xs font-semibold text-[#1c1613]">Favourite Bengaluru Areas</p>
+                <div className="flex flex-wrap gap-2">
+                  {BENGALURU_AREAS.slice(0, 12).map((area) => {
+                    const active = prefs.favourite_areas.includes(area);
+                    return (
+                      <button
+                        key={area}
+                        type="button"
+                        onClick={() =>
+                          setPrefs((p) => ({
+                            ...p,
+                            favourite_areas: active
+                              ? p.favourite_areas.filter((a) => a !== area)
+                              : [...p.favourite_areas, area],
+                          }))
+                        }
+                        className={`min-h-[36px] px-3 py-1 rounded-full text-xs font-semibold border transition-colors ${
+                          active
+                            ? 'bg-[#1c1613] text-white border-[#1c1613]'
+                            : 'bg-[#faf7f2] border-[#d6cbba] text-[#1c1613] hover:border-[#b45309]'
+                        }`}
+                      >
+                        {active ? `✓ ${area}` : area}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-xs font-semibold text-[#1c1613]">Favourite Cafe Categories</p>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    'Tea & Chai',
+                    'Coffee',
+                    'Bakeries & Snacks',
+                    'Desserts',
+                    'Laptop Work',
+                    'Quiet Study',
+                    'Family-Friendly',
+                  ].map((cat) => {
+                    const active = prefs.favourite_categories.includes(cat);
+                    return (
+                      <button
+                        key={cat}
+                        type="button"
+                        onClick={() =>
+                          setPrefs((p) => ({
+                            ...p,
+                            favourite_categories: active
+                              ? p.favourite_categories.filter((c) => c !== cat)
+                              : [...p.favourite_categories, cat],
+                          }))
+                        }
+                        className={`min-h-[36px] px-3 py-1 rounded-full text-xs font-semibold border transition-colors ${
+                          active
+                            ? 'bg-[#b45309] text-white border-[#b45309]'
+                            : 'bg-[#faf7f2] border-[#d6cbba] text-[#1c1613] hover:border-[#b45309]'
+                        }`}
+                      >
+                        {active ? `✓ ${cat}` : cat}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label
+                    htmlFor="pref-max-budget"
+                    className="block text-xs font-semibold text-[#57493f] mb-1"
+                  >
+                    Preferred Max Avg Spend per Visit (₹ INR)
+                  </label>
+                  <input
+                    id="pref-max-budget"
+                    type="number"
+                    min={20}
+                    max={5000}
+                    value={prefs.preferred_max_budget}
+                    onChange={(e) =>
+                      setPrefs((p) => ({ ...p, preferred_max_budget: e.target.value }))
+                    }
+                    placeholder="e.g. 200 (leave blank for any)"
+                    className="w-full h-11 px-3.5 rounded-lg bg-[#faf7f2] border border-[#d6cbba] text-sm font-mono-data text-[#1c1613] focus:outline-none focus:border-[#b45309]"
+                  />
+                </div>
+              </div>
+
+              <div className="pt-2 border-t border-[#e6ddd0] space-y-2.5 text-xs">
+                <p className="font-semibold text-[#1c1613] flex items-center gap-1.5">
+                  <Shield className="w-3.5 h-3.5 text-[#1b4d3e]" aria-hidden="true" />
+                  <span>Privacy Controls</span>
+                </p>
+                <label className="flex items-center gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={prefs.personalisation_enabled}
+                    onChange={(e) =>
+                      setPrefs((p) => ({ ...p, personalisation_enabled: e.target.checked }))
+                    }
+                    className="w-4 h-4 accent-[#b45309]"
+                  />
+                  <span className="text-[#1c1613]">
+                    Enable personalised Bengaluru recommendations on my homepage and account
+                  </span>
+                </label>
+                <label className="flex items-center gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={prefs.save_visit_history}
+                    onChange={(e) =>
+                      setPrefs((p) => ({ ...p, save_visit_history: e.target.checked }))
+                    }
+                    className="w-4 h-4 accent-[#b45309]"
+                  />
+                  <span className="text-[#1c1613]">
+                    Remember recently viewed cafes on this browser
+                  </span>
+                </label>
+                <label className="flex items-center gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={prefs.public_profile_enabled}
+                    onChange={(e) =>
+                      setPrefs((p) => ({ ...p, public_profile_enabled: e.target.checked }))
+                    }
+                    className="w-4 h-4 accent-[#b45309]"
+                  />
+                  <span className="text-[#1c1613]">
+                    Show my first name on public collections &amp; verified reviews
+                  </span>
+                </label>
+              </div>
+
+              {prefsErrorMsg && (
+                <p className="text-xs font-medium text-[#dc2626]">{prefsErrorMsg}</p>
+              )}
+              {prefsSavedMsg && (
+                <p className="text-xs font-medium text-[#1b4d3e]">{prefsSavedMsg}</p>
+              )}
+
+              <button
+                type="submit"
+                disabled={prefsBusy}
+                className="inline-flex items-center justify-center min-h-[44px] px-5 py-2.5 rounded-lg bg-[#1b4d3e] hover:bg-[#143a2f] disabled:opacity-60 text-white text-xs font-semibold transition-colors"
+              >
+                {prefsBusy ? 'Saving Preferences...' : 'Save Preferences & Privacy'}
+              </button>
+            </form>
+          </section>
+        )}
+
+        <section
+          className={`${
+            isFeatureEnabled('personalisation') ? 'lg:col-span-4' : 'lg:col-span-12'
+          } rounded-2xl bg-[#1c1613] text-[#faf7f2] p-5 sm:p-6 flex flex-col justify-between gap-4 shadow-xs`}
+        >
+          <div className="space-y-2.5">
+            <div className="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center text-[#f59e0b]">
+              <Building2 className="w-5 h-5" aria-hidden="true" />
+            </div>
+            <p className="text-[11px] uppercase tracking-[0.14em] font-semibold text-[#f59e0b]">
+              Own or Manage a Cafe?
+            </p>
+            <h2 className="font-serif-display text-2xl font-semibold text-white">
+              Cafe Owner Partner Portal
+            </h2>
+            <p className="text-xs text-[#d6cbba] leading-relaxed">
+              Claim your Bengaluru cafe listing, verify ownership, update Wi-Fi speeds, hours, and
+              menu pricing, post customer offers, and track real engagement metrics.
+            </p>
+          </div>
+          <Link
+            to="/partner-portal"
+            className="inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2.5 rounded-xl bg-[#b45309] hover:bg-[#92400e] text-white text-xs font-semibold transition-colors"
+          >
+            <span>Open Cafe Owner Partner Portal</span>
+            <ArrowUpRight className="w-4 h-4" aria-hidden="true" />
+          </Link>
+        </section>
+      </div>
 
       {/* Personalized Cafe Recommendations */}
       <section className="rounded-2xl bg-white border border-[#e6ddd0] p-5 sm:p-6 space-y-4 shadow-xs">
@@ -1088,7 +1758,12 @@ export function AccountPage() {
           )}
         </div>
 
-        {isSubscribed ? (
+        {!prefs.personalisation_enabled ? (
+          <p className="text-xs text-[#57493f] p-4 rounded-xl bg-[#faf7f2] border border-[#e6ddd0]">
+            Personalisation is paused in your privacy settings above. Enable it anytime to see
+            recommendations matched to your areas and categories.
+          </p>
+        ) : isSubscribed ? (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {recommendedCafes.map((cafe) => (
               <Link

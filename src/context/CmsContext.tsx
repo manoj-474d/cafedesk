@@ -1,5 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import type {
+  CafePromotionRecord,
+  FeatureFlagKey,
   LocationItem,
   MediaAsset,
   NavigationItem,
@@ -8,7 +10,11 @@ import type {
   TestimonialItem,
 } from '../types/cms';
 import { CAFES } from '../data/cafes';
-import { SITE_CONFIG } from '../config/constants';
+import {
+  DEFAULT_FEATURE_FLAGS,
+  DEFAULT_SCORING_CONFIG,
+  SITE_CONFIG,
+} from '../config/constants';
 import { initAnalyticsIfConfigured } from '../utils/analytics';
 import { getUserSessionHeaders, resolveApiUrl } from './AuthContext';
 
@@ -116,6 +122,11 @@ const FALLBACK_SETTINGS: SiteSettings = {
   notify_new_payment: true,
   notify_new_suggestion: true,
   notification_email: '',
+  feature_flags: { ...DEFAULT_FEATURE_FLAGS },
+  scoring_config: {
+    work_ready_weights: { ...DEFAULT_SCORING_CONFIG.work_ready_weights },
+    confidence_weights: { ...DEFAULT_SCORING_CONFIG.confidence_weights },
+  },
 };
 
 const FALLBACK_NAV: NavigationItem[] = [
@@ -225,7 +236,9 @@ interface CmsContextValue {
   navigation: NavigationItem[];
   testimonials: TestimonialItem[];
   media: MediaAsset[];
+  activePromotions: CafePromotionRecord[];
   loading: boolean;
+  isFeatureEnabled: (key: FeatureFlagKey) => boolean;
   refreshCms: () => Promise<void>;
 }
 
@@ -235,7 +248,9 @@ const CmsContext = createContext<CmsContextValue>({
   navigation: FALLBACK_NAV,
   testimonials: [],
   media: [],
+  activePromotions: [],
   loading: true,
+  isFeatureEnabled: () => true,
   refreshCms: async () => {},
 });
 
@@ -245,6 +260,7 @@ export function CmsProvider({ children }: { children: React.ReactNode }) {
   const [navigation, setNavigation] = useState<NavigationItem[]>(FALLBACK_NAV);
   const [testimonials, setTestimonials] = useState<TestimonialItem[]>([]);
   const [media, setMedia] = useState<MediaAsset[]>([]);
+  const [activePromotions, setActivePromotions] = useState<CafePromotionRecord[]>([]);
   const [loading, setLoading] = useState(true);
 
   const refreshCms = useCallback(async () => {
@@ -257,16 +273,47 @@ export function CmsProvider({ children }: { children: React.ReactNode }) {
       if (!res.ok || !ct.includes('application/json')) return;
       const data = (await res.json()) as PublicBootstrapResponse;
       if (Array.isArray(data.locations)) setLocations(data.locations);
-      if (data.settings) setSettings({ ...FALLBACK_SETTINGS, ...data.settings });
+      if (data.settings) {
+        setSettings({
+          ...FALLBACK_SETTINGS,
+          ...data.settings,
+          feature_flags: {
+            ...DEFAULT_FEATURE_FLAGS,
+            ...(data.settings.feature_flags || {}),
+          },
+          scoring_config: {
+            work_ready_weights: {
+              ...DEFAULT_SCORING_CONFIG.work_ready_weights,
+              ...(data.settings.scoring_config?.work_ready_weights || {}),
+            },
+            confidence_weights: {
+              ...DEFAULT_SCORING_CONFIG.confidence_weights,
+              ...(data.settings.scoring_config?.confidence_weights || {}),
+            },
+          },
+        });
+      }
       if (Array.isArray(data.navigation)) setNavigation(data.navigation);
       if (Array.isArray(data.testimonials)) setTestimonials(data.testimonials);
       if (Array.isArray(data.media)) setMedia(data.media);
+      if (Array.isArray(data.active_promotions)) setActivePromotions(data.active_promotions);
     } catch {
       // Keep fallback data on transient network errors
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const isFeatureEnabled = useCallback(
+    (key: FeatureFlagKey) => {
+      const flags = settings.feature_flags;
+      if (!flags || typeof flags[key] !== 'boolean') {
+        return DEFAULT_FEATURE_FLAGS[key];
+      }
+      return flags[key];
+    },
+    [settings.feature_flags]
+  );
 
   useEffect(() => {
     void refreshCms();
@@ -307,7 +354,9 @@ export function CmsProvider({ children }: { children: React.ReactNode }) {
         navigation,
         testimonials,
         media,
+        activePromotions,
         loading,
+        isFeatureEnabled,
         refreshCms,
       }}
     >

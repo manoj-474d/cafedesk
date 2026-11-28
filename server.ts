@@ -41,6 +41,12 @@ import {
 } from './server/auth.ts';
 import { registerSubscriptionRoutes } from './server/subscriptionRoutes.ts';
 import { registerPlacesDiscoveryRoutes } from './server/placesDiscoveryRoutes.ts';
+import { registerLocalityRoutes } from './server/localityRoutes.ts';
+import { startScheduledDiscoveryRunner } from './server/localityDiscoveryEngine.ts';
+import { registerCommunityRoutes } from './server/communityRoutes.ts';
+import { registerPersonalisationRoutes } from './server/personalisationRoutes.ts';
+import { registerOwnerPortalRoutes } from './server/ownerPortalRoutes.ts';
+import { registerAdminEcosystemRoutes } from './server/adminEcosystemRoutes.ts';
 import {
   ACCESS_SECTION_KEYS,
   evaluateCafeAccess,
@@ -65,14 +71,20 @@ import {
   buildWebSiteSchema,
   toAbsoluteSeoUrl,
 } from './src/utils/seoSchemas.ts';
-import type { CafeMode } from './src/config/constants.ts';
+import {
+  DEFAULT_FEATURE_FLAGS,
+  DEFAULT_SCORING_CONFIG,
+  type CafeMode,
+} from './src/config/constants.ts';
 import type {
   AccessSectionKey,
   AmenityState,
   CafeAccessRule,
   CafeSourceType,
   DietaryType,
+  FeatureFlags,
   LocationItem,
+  ScoringConfig,
   SectionOverrideMode,
   SiteSettings,
 } from './src/types/cms.ts';
@@ -250,6 +262,8 @@ async function startServer() {
         'Disallow: /admin',
         'Disallow: /admin/',
         'Disallow: /owner/',
+        'Disallow: /partner-portal',
+        'Disallow: /partner-portal/',
         'Disallow: /account',
         'Disallow: /login',
         'Disallow: /signup',
@@ -314,6 +328,25 @@ async function startServer() {
         priority: '0.7',
       }));
 
+    const collectionRows = getDb()
+      .prepare(
+        "SELECT share_slug, updated_at FROM user_collections WHERE is_public = 1 AND share_slug != '' ORDER BY updated_at DESC LIMIT 200"
+      )
+      .all() as Array<{ share_slug: string; updated_at: number }>;
+
+    const collectionUrls = collectionRows.map((c) => {
+      const updatedDate =
+        c.updated_at && Number.isFinite(c.updated_at)
+          ? new Date(c.updated_at).toISOString().slice(0, 10)
+          : todayIso;
+      return {
+        loc: `${baseUrl}/collections/${encodeURIComponent(c.share_slug)}`,
+        lastmod: /^\d{4}-\d{2}-\d{2}$/.test(updatedDate) ? updatedDate : todayIso,
+        changefreq: 'weekly',
+        priority: '0.6',
+      };
+    });
+
     const allEntries = [
       ...coreRoutes.map((r) => ({
         loc: `${baseUrl}${r.path}`,
@@ -324,6 +357,7 @@ async function startServer() {
       ...seoLandingUrls,
       ...guideUrls,
       ...cafeUrls,
+      ...collectionUrls,
     ];
 
     const urlNodes = allEntries.map(
@@ -343,6 +377,11 @@ async function startServer() {
 
   registerSubscriptionRoutes(app);
   registerPlacesDiscoveryRoutes(app, requireAdminAuth);
+  registerLocalityRoutes(app, requireAdminAuth);
+  registerCommunityRoutes(app);
+  registerPersonalisationRoutes(app);
+  registerOwnerPortalRoutes(app);
+  registerAdminEcosystemRoutes(app);
 
   // ============================================================================
   // PUBLIC CMS PREVIEW & AUTH-GATED CAFE DETAILS API
@@ -388,12 +427,42 @@ async function startServer() {
     const navigation = listNavigationFromDb(false);
     const testimonials = listTestimonialsFromDb(false);
     const media = listMediaFromDb();
+
+    let activePromotions: Array<Record<string, unknown>> = [];
+    if (settings.feature_flags?.promotions !== false) {
+      const db = getDb();
+      const now = Date.now();
+      const promoRows = db
+        .prepare(
+          `SELECT * FROM cafe_promotions
+           WHERE status = 'active' AND starts_at <= ? AND ends_at >= ?
+           ORDER BY created_at DESC LIMIT 20`
+        )
+        .all(now, now) as Array<Record<string, unknown>>;
+      activePromotions = promoRows.map((p) => ({
+        id: Number(p.id),
+        cafe_id: String(p.cafe_id),
+        cafe_name: String(p.cafe_name),
+        owner_user_id: Number(p.owner_user_id),
+        title: String(p.title),
+        badge_label: String(p.badge_label || 'Sponsored'),
+        placement: String(p.placement || 'homepage'),
+        area: String(p.area || ''),
+        budget_inr: Number(p.budget_inr || 0),
+        starts_at: Number(p.starts_at),
+        ends_at: Number(p.ends_at),
+        status: String(p.status),
+        created_at: Number(p.created_at),
+      }));
+    }
+
     res.json({
       locations,
       settings,
       navigation,
       testimonials,
       media,
+      active_promotions: activePromotions,
       viewerAccess: {
         viewerState: viewer.viewerState,
         hasActiveSubscription: viewer.hasActiveSubscription,
@@ -1626,7 +1695,12 @@ async function startServer() {
     const coffeePrice = toNullableStr(body.coffee_price, 80);
     const teaPrice = toNullableStr(body.tea_price, 80);
     const snacksPrice = toNullableStr(body.snacks_price, 80);
+    const dessertsPrice = toNullableStr(body.desserts_price, 80);
     const mealsPrice = toNullableStr(body.meals_price, 80);
+    const familyFriendly = parseAmenityState(body.family_friendly);
+    const ownerVerified = Boolean(body.owner_verified);
+    const claimedByOwnerId = toNullableInt(body.claimed_by_owner_id, 1, 100000000);
+    const dataSourceNotes = cleanStr(body.data_source_notes, 300);
     const popularItems = (Array.isArray(body.popular_items) ? body.popular_items : [])
       .map((item) => cleanStr(item, 80))
       .filter(Boolean)
@@ -1785,6 +1859,7 @@ async function startServer() {
         seating_info: seatingInfo,
         ambience,
         outdoor_seating: outdoorSeating,
+        family_friendly: familyFriendly,
         suitable_for_studying: suitableForStudying,
         suitable_for_working: suitableForWorking,
         noise_level: noiseLevel as 1 | 2 | 3 | 4 | 5 | null,
@@ -1793,6 +1868,7 @@ async function startServer() {
         coffee_price: coffeePrice,
         tea_price: teaPrice,
         snacks_price: snacksPrice,
+        desserts_price: dessertsPrice,
         meals_price: mealsPrice,
         popular_items: popularItems,
         rating,
@@ -1818,6 +1894,9 @@ async function startServer() {
         source_name: sourceName,
         source_url: sourceUrl,
         source_type: sourceType,
+        owner_verified: ownerVerified,
+        claimed_by_owner_id: claimedByOwnerId,
+        data_source_notes: dataSourceNotes,
         sample: Boolean(body.sample),
         access_rule: accessRule,
         allowed_plan_ids: allowedPlanIds,
@@ -1846,17 +1925,18 @@ async function startServer() {
         website_url, menu_url, instagram_url, other_social_links, place_id, lat, lng,
         timings, description, photos_json, interior_photos_json, exterior_photos_json, photos_approved,
         wifi_available, wifi_mbps, wifi_password, charging_sockets, sockets_count, sockets_claimed,
-        comfortable_seating, seating_info, ambience, outdoor_seating,
+        comfortable_seating, seating_info, ambience, outdoor_seating, family_friendly,
         suitable_for_studying, suitable_for_working,
         noise_level, avg_cost_per_person, price_range,
-        coffee_price, tea_price, snacks_price, meals_price, popular_items_json,
+        coffee_price, tea_price, snacks_price, desserts_price, meals_price, popular_items_json,
         rating, rating_count, min_spend, laptop_friendly, time_limit,
         modes_json, facilities_json, offers_json, subscriber_benefits_json, menu_services_json,
         best_for_json, verdict, avoid_if, student_discount,
         verified, featured, published, display_order, last_verified_date, claims_json,
-        source_name, source_url, source_type, sample, access_rule, allowed_plan_ids_json, locked_sections_override_json,
+        source_name, source_url, source_type, owner_verified, claimed_by_owner_id, data_source_notes,
+        sample, access_rule, allowed_plan_ids_json, locked_sections_override_json,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       c.id,
       finalSlug,
@@ -1890,6 +1970,7 @@ async function startServer() {
       c.seating_info,
       c.ambience,
       c.outdoor_seating,
+      c.family_friendly,
       c.suitable_for_studying,
       c.suitable_for_working,
       c.noise_level,
@@ -1898,6 +1979,7 @@ async function startServer() {
       c.coffee_price,
       c.tea_price,
       c.snacks_price,
+      c.desserts_price,
       c.meals_price,
       JSON.stringify(c.popular_items),
       c.rating,
@@ -1923,6 +2005,9 @@ async function startServer() {
       c.source_name,
       c.source_url,
       c.source_type,
+      c.owner_verified ? 1 : 0,
+      c.claimed_by_owner_id,
+      c.data_source_notes,
       c.sample ? 1 : 0,
       c.access_rule,
       JSON.stringify(c.allowed_plan_ids),
@@ -1981,15 +2066,16 @@ async function startServer() {
         booking_url = '', website_url = ?, menu_url = ?, instagram_url = ?, other_social_links = ?, place_id = ?,
         lat = ?, lng = ?, timings = ?, description = ?, photos_json = ?, interior_photos_json = ?, exterior_photos_json = ?, photos_approved = ?,
         wifi_available = ?, wifi_mbps = ?, wifi_password = ?, charging_sockets = ?, sockets_count = ?, sockets_claimed = ?,
-        comfortable_seating = ?, seating_info = ?, ambience = ?, outdoor_seating = ?,
+        comfortable_seating = ?, seating_info = ?, ambience = ?, outdoor_seating = ?, family_friendly = ?,
         suitable_for_studying = ?, suitable_for_working = ?,
         noise_level = ?, avg_cost_per_person = ?, price_range = ?,
-        coffee_price = ?, tea_price = ?, snacks_price = ?, meals_price = ?, popular_items_json = ?,
+        coffee_price = ?, tea_price = ?, snacks_price = ?, desserts_price = ?, meals_price = ?, popular_items_json = ?,
         rating = ?, rating_count = ?, min_spend = ?, laptop_friendly = ?, time_limit = ?,
         modes_json = ?, facilities_json = ?, offers_json = ?, subscriber_benefits_json = ?, menu_services_json = ?,
         best_for_json = ?, verdict = ?, avoid_if = ?, student_discount = ?, verified = ?,
         featured = ?, published = ?, display_order = ?, last_verified_date = ?,
-        claims_json = ?, source_name = ?, source_url = ?, source_type = ?, sample = ?,
+        claims_json = ?, source_name = ?, source_url = ?, source_type = ?,
+        owner_verified = ?, claimed_by_owner_id = ?, data_source_notes = ?, sample = ?,
         access_rule = ?, allowed_plan_ids_json = ?, locked_sections_override_json = ?, updated_at = ?
        WHERE id = ?`
     ).run(
@@ -2024,6 +2110,7 @@ async function startServer() {
       c.seating_info,
       c.ambience,
       c.outdoor_seating,
+      c.family_friendly,
       c.suitable_for_studying,
       c.suitable_for_working,
       c.noise_level,
@@ -2032,6 +2119,7 @@ async function startServer() {
       c.coffee_price,
       c.tea_price,
       c.snacks_price,
+      c.desserts_price,
       c.meals_price,
       JSON.stringify(c.popular_items),
       c.rating,
@@ -2057,6 +2145,9 @@ async function startServer() {
       c.source_name,
       c.source_url,
       c.source_type,
+      c.owner_verified ? 1 : 0,
+      c.claimed_by_owner_id,
+      c.data_source_notes,
       c.sample ? 1 : 0,
       c.access_rule,
       JSON.stringify(c.allowed_plan_ids),
@@ -2824,6 +2915,48 @@ async function startServer() {
         b.access_control === undefined
           ? normalizeAccessControlSettings(current.access_control)
           : normalizeAccessControlSettings(b.access_control),
+      feature_flags: (() => {
+        const base: FeatureFlags = {
+          ...DEFAULT_FEATURE_FLAGS,
+          ...(current.feature_flags || {}),
+        };
+        if (b.feature_flags && typeof b.feature_flags === 'object') {
+          (Object.keys(DEFAULT_FEATURE_FLAGS) as Array<keyof FeatureFlags>).forEach((k) => {
+            const val = (b.feature_flags as Record<string, unknown>)[k];
+            if (typeof val === 'boolean') base[k] = val;
+          });
+        }
+        return base;
+      })(),
+      scoring_config: (() => {
+        const curSc: ScoringConfig = {
+          work_ready_weights: {
+            ...DEFAULT_SCORING_CONFIG.work_ready_weights,
+            ...(current.scoring_config?.work_ready_weights || {}),
+          },
+          confidence_weights: {
+            ...DEFAULT_SCORING_CONFIG.confidence_weights,
+            ...(current.scoring_config?.confidence_weights || {}),
+          },
+        };
+        if (b.scoring_config && typeof b.scoring_config === 'object') {
+          const wr = (b.scoring_config as Partial<ScoringConfig>).work_ready_weights;
+          const cf = (b.scoring_config as Partial<ScoringConfig>).confidence_weights;
+          if (wr && typeof wr === 'object') {
+            (Object.keys(curSc.work_ready_weights) as Array<keyof ScoringConfig['work_ready_weights']>).forEach((k) => {
+              const n = Number(wr[k]);
+              if (Number.isFinite(n)) curSc.work_ready_weights[k] = Math.max(0, Math.min(100, Math.round(n)));
+            });
+          }
+          if (cf && typeof cf === 'object') {
+            (Object.keys(curSc.confidence_weights) as Array<keyof ScoringConfig['confidence_weights']>).forEach((k) => {
+              const n = Number(cf[k]);
+              if (Number.isFinite(n)) curSc.confidence_weights[k] = Math.max(0, Math.min(100, Math.round(n)));
+            });
+          }
+        }
+        return curSc;
+      })(),
     };
 
     const db = getDb();
@@ -3320,17 +3453,19 @@ async function startServer() {
           id, slug, name, category, city, area, address, phone, map_link, booking_url,
           website_url, menu_url, instagram_url, other_social_links, place_id, lat, lng,
           timings, description, photos_json, interior_photos_json, exterior_photos_json, photos_approved,
-          wifi_available, wifi_mbps, charging_sockets, sockets_count, sockets_claimed,
-          comfortable_seating, seating_info, ambience, outdoor_seating,
+          wifi_available, wifi_mbps, wifi_password, charging_sockets, sockets_count, sockets_claimed,
+          comfortable_seating, seating_info, ambience, outdoor_seating, family_friendly,
           suitable_for_studying, suitable_for_working,
           noise_level, avg_cost_per_person, price_range,
-          coffee_price, tea_price, snacks_price, meals_price, popular_items_json,
+          coffee_price, tea_price, snacks_price, desserts_price, meals_price, popular_items_json,
           rating, rating_count, min_spend, laptop_friendly, time_limit,
-          modes_json, facilities_json, offers_json, menu_services_json,
+          modes_json, facilities_json, offers_json, subscriber_benefits_json, menu_services_json,
           best_for_json, verdict, avoid_if, student_discount,
           verified, featured, published, display_order, last_verified_date, claims_json,
-          source_name, source_url, sample, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          source_name, source_url, source_type, owner_verified, claimed_by_owner_id, data_source_notes,
+          sample, access_rule, allowed_plan_ids_json, locked_sections_override_json,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const rawLoc of snap.locations as Array<Record<string, unknown>>) {
         const parsed = validateLocationPayload(
@@ -3364,6 +3499,7 @@ async function startServer() {
             c.photos_approved ? 1 : 0,
             c.wifi_available,
             c.wifi_mbps,
+            c.wifi_password,
             c.charging_sockets,
             c.sockets_count,
             c.sockets_claimed ? 1 : 0,
@@ -3371,6 +3507,7 @@ async function startServer() {
             c.seating_info,
             c.ambience,
             c.outdoor_seating,
+            c.family_friendly,
             c.suitable_for_studying,
             c.suitable_for_working,
             c.noise_level,
@@ -3379,6 +3516,7 @@ async function startServer() {
             c.coffee_price,
             c.tea_price,
             c.snacks_price,
+            c.desserts_price,
             c.meals_price,
             JSON.stringify(c.popular_items),
             c.rating,
@@ -3389,6 +3527,7 @@ async function startServer() {
             JSON.stringify(c.modes),
             JSON.stringify(c.facilities),
             JSON.stringify(c.offers),
+            JSON.stringify(c.subscriber_benefits),
             JSON.stringify(c.menu_services),
             JSON.stringify(c.best_for),
             c.verdict,
@@ -3402,7 +3541,14 @@ async function startServer() {
             JSON.stringify(c.claims),
             c.source_name,
             c.source_url,
+            c.source_type,
+            c.owner_verified ? 1 : 0,
+            c.claimed_by_owner_id,
+            c.data_source_notes,
             c.sample ? 1 : 0,
+            c.access_rule,
+            JSON.stringify(c.allowed_plan_ids),
+            JSON.stringify(c.locked_sections_override),
             now,
             now
           );
@@ -3559,6 +3705,7 @@ async function startServer() {
       cleanPath === '/signup' ||
       cleanPath === '/forgot-password' ||
       cleanPath === '/account' ||
+      cleanPath === '/partner-portal' ||
       cleanPath === '/admin' ||
       cleanPath === '/admin/login' ||
       cleanPath === '/admin/dashboard' ||
@@ -3566,10 +3713,17 @@ async function startServer() {
       cleanPath === '/owner/login' ||
       cleanPath === '/owner/dashboard'
     ) {
-      const isOwnerPortal = cleanPath.startsWith('/admin') || cleanPath === '/owner' || cleanPath.startsWith('/owner/');
+      const isAdminPortal =
+        cleanPath.startsWith('/admin') || cleanPath === '/owner' || cleanPath.startsWith('/owner/');
+      const isPartnerPortal = cleanPath === '/partner-portal';
+      const portalTitle = isAdminPortal
+        ? 'Owner Panel'
+        : isPartnerPortal
+        ? 'Cafe Owner Partner Portal'
+        : 'Member Account';
       return {
         status: 200,
-        title: `${isOwnerPortal ? 'Owner Panel' : 'Member Account'} – ${settings.brand_name}`,
+        title: `${portalTitle} – ${settings.brand_name}`,
         description: `Manage your ${settings.brand_name} Bengaluru cafe workspace account.`,
         canonicalUrl: `${baseUrl}${cleanPath}`,
         ogType: 'website',
@@ -3577,6 +3731,56 @@ async function startServer() {
         robots: 'noindex,nofollow',
         googleSiteVerification: googleVerify,
         schemas: [],
+      };
+    }
+
+    if (cleanPath.startsWith('/collections/')) {
+      let colSlug = cleanPath.slice('/collections/'.length);
+      try {
+        colSlug = decodeURIComponent(colSlug);
+      } catch {
+        // Keep raw slug
+      }
+      const colRow = colSlug
+        ? (getDb()
+            .prepare(
+              'SELECT name, description, is_public, share_slug FROM user_collections WHERE share_slug = ? AND is_public = 1'
+            )
+            .get(colSlug) as
+            | { name: string; description: string; is_public: number; share_slug: string }
+            | undefined)
+        : undefined;
+      if (!colRow) {
+        return {
+          status: 404,
+          title: `Collection Not Found – ${settings.brand_name}`,
+          description: 'This shared Bengaluru cafe collection is unavailable or private.',
+          canonicalUrl: `${baseUrl}${cleanPath}`,
+          ogType: 'website',
+          ogImage: defaultOgImage,
+          robots: 'noindex,nofollow',
+          googleSiteVerification: googleVerify,
+          schemas: [],
+        };
+      }
+      return {
+        status: 200,
+        title: `${colRow.name} – Bengaluru Cafe Collection | ${settings.brand_name}`,
+        description:
+          colRow.description ||
+          `Curated Bengaluru cafe collection (${colRow.name}) shared on ${settings.brand_name}.`,
+        canonicalUrl: `${baseUrl}/collections/${encodeURIComponent(colRow.share_slug)}`,
+        ogType: 'website',
+        ogImage: defaultOgImage,
+        robots: siteIndexing,
+        googleSiteVerification: googleVerify,
+        schemas: [
+          buildBreadcrumbSchema(baseUrl, [
+            { name: 'Home', path: '/' },
+            { name: 'Discover Cafes', path: '/discover' },
+            { name: colRow.name, path: `/collections/${colRow.share_slug}` },
+          ]),
+        ],
       };
     }
 
@@ -4058,6 +4262,7 @@ async function startServer() {
 
   const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`CafeDesk server running on http://0.0.0.0:${PORT}`);
+    startScheduledDiscoveryRunner();
   });
 
   const shutdown = () => {

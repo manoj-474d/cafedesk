@@ -43,17 +43,18 @@ export function PublicLayout() {
     (pathname === '/discover' || pathname === '/locations' || pathname === '/cafes') &&
     search.includes('view=map');
   const isHomeActive = pathname === '/';
-  const isDiscoverActive =
+  const isExploreActive =
     ((pathname === '/discover' || pathname === '/locations' || pathname === '/cafes') &&
       !isMapView) ||
     pathname === '/finder';
   const isMapActive = isMapView;
-  const isMembershipActive = pathname === '/pricing';
+  const isSavedActive = pathname === '/account' && hash === '#saved';
   const isAccountActive =
-    pathname === '/account' ||
+    (pathname === '/account' && hash !== '#saved') ||
     pathname === '/login' ||
     pathname === '/signup' ||
-    pathname === '/forgot-password';
+    pathname === '/forgot-password' ||
+    pathname === '/partner-portal';
 
   const openSuggestModal = () => {
     setMobileMenuOpen(false);
@@ -88,10 +89,10 @@ export function PublicLayout() {
       icon: Home,
     },
     {
-      id: 'discover',
-      label: 'Discover',
+      id: 'explore',
+      label: 'Explore',
       to: '/discover',
-      active: isDiscoverActive,
+      active: isExploreActive,
       icon: Compass,
     },
     {
@@ -102,11 +103,11 @@ export function PublicLayout() {
       icon: MapIcon,
     },
     {
-      id: 'membership',
-      label: 'Membership',
-      to: '/pricing',
-      active: isMembershipActive,
-      icon: Crown,
+      id: 'saved',
+      label: 'Saved',
+      to: authenticated ? '/account#saved' : '/login?next=%2Faccount%23saved',
+      active: isSavedActive,
+      icon: Bookmark,
     },
     {
       id: 'account',
@@ -126,12 +127,10 @@ export function PublicLayout() {
         Skip to content
       </a>
 
-      {/* Optional Admin-Controlled Announcement Banner */}
+      {/* Optional Admin-Controlled Announcement Banner (hidden on mobile to preserve <=15% sticky chrome budget) */}
       {settings.banner_enabled && settings.banner_text && bannerInWindow && (
         <div
-          className={`bg-[#1c1613] text-[#faf7f2] border-b border-[#312722] text-xs sm:text-sm py-2 px-4 ${
-            isDetailRoute ? 'hidden md:block' : ''
-          }`}
+          className={`bg-[#1c1613] text-[#faf7f2] border-b border-[#312722] text-xs sm:text-sm py-2 px-4 hidden md:block`}
         >
           <div className="max-w-7xl mx-auto flex items-center justify-center gap-2 sm:gap-3 text-center flex-wrap">
             <span className="font-medium text-[#faf7f2] line-clamp-1 sm:line-clamp-none">
@@ -328,6 +327,13 @@ export function PublicLayout() {
               className="flex items-center min-h-[44px] px-3 rounded-xl text-sm font-medium text-[#1c1613] hover:bg-white"
             >
               For Cafe Owners
+            </Link>
+            <Link
+              to="/partner-portal"
+              onClick={() => setMobileMenuOpen(false)}
+              className="flex items-center min-h-[44px] px-3 rounded-xl text-sm font-medium text-[#b45309] hover:bg-white"
+            >
+              Cafe Partner Portal
             </Link>
             <button
               type="button"

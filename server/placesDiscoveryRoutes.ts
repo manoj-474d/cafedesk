@@ -26,10 +26,15 @@ import {
   recordActivity,
   recordExplorerEventInDb,
 } from './db.ts';
-import { getClientIp, resolveUserFromRequest } from './auth.ts';
+import {
+  checkRateLimit,
+  getClientIp,
+  recordRateAttempt,
+  resolveUserFromRequest,
+} from './auth.ts';
 import { resolveViewerAccessContext, sanitizeCafeForAccess } from './accessControl.ts';
 
-interface PlaceSearchResult {
+export interface PlaceSearchResult {
   id: string;
   placeId: string;
   name: string;
@@ -82,7 +87,7 @@ function isRateLimited(ip: string): boolean {
   return false;
 }
 
-function getPlacesApiKey(): string {
+export function getPlacesApiKey(): string {
   return (
     process.env.GOOGLE_PLACES_API_KEY ||
     process.env.GOOGLE_MAPS_API_KEY ||
@@ -152,7 +157,7 @@ function deriveCategoryLabel(primaryType: string, types: string[]): string {
   return 'Cafe';
 }
 
-function mapRawGooglePlace(
+export function mapRawGooglePlace(
   raw: Record<string, unknown>,
   areaFallback: string,
   originPoint?: { lat: number; lng: number } | null
@@ -300,7 +305,7 @@ function toLocationItem(place: PlaceSearchResult, cityLabel = 'Bengaluru'): Loca
   };
 }
 
-const PLACES_SEARCH_FIELDMASK = [
+export const PLACES_SEARCH_FIELDMASK = [
   'places.id',
   'places.displayName',
   'places.formattedAddress',
@@ -318,7 +323,7 @@ const PLACES_SEARCH_FIELDMASK = [
   'nextPageToken',
 ].join(',');
 
-const PLACES_DETAIL_FIELDMASK = [
+export const PLACES_DETAIL_FIELDMASK = [
   'id',
   'displayName',
   'formattedAddress',
@@ -335,7 +340,9 @@ const PLACES_DETAIL_FIELDMASK = [
   'photos',
 ].join(',');
 
-async function callGooglePlacesJson(
+export const GMP_SOLUTION_ATTRIBUTION_ID = 'gmp_mcp_codeassist_v1_aistudio';
+
+export async function callGooglePlacesJson(
   url: string,
   options: {
     method: 'GET' | 'POST';
@@ -346,6 +353,7 @@ async function callGooglePlacesJson(
 ): Promise<{ ok: boolean; status: number; data: Record<string, unknown>; errorText: string }> {
   const headers: Record<string, string> = {
     'X-Goog-Api-Key': options.apiKey,
+    'X-Goog-Maps-Solution-ID': GMP_SOLUTION_ATTRIBUTION_ID,
   };
   if (options.method === 'POST') {
     headers['Content-Type'] = 'application/json';
@@ -850,7 +858,10 @@ export function registerPlacesDiscoveryRoutes(
     const width = Math.min(1200, Math.max(200, Number(req.query.w) || 900));
     try {
       const target = `https://places.googleapis.com/v1/${photoName}/media?maxWidthPx=${width}&key=${encodeURIComponent(apiKey)}`;
-      const upstream = await fetch(target, { redirect: 'follow' });
+      const upstream = await fetch(target, {
+        redirect: 'follow',
+        headers: { 'X-Goog-Maps-Solution-ID': GMP_SOLUTION_ATTRIBUTION_ID },
+      });
       if (!upstream.ok) {
         res.status(upstream.status).send('Photo unavailable');
         return;
@@ -934,22 +945,59 @@ export function registerPlacesDiscoveryRoutes(
   const ALLOWED_ISSUE_TYPES = new Set<string>(CORRECTION_ISSUE_TYPES.map((i) => i.id));
 
   app.post('/api/corrections', (req: Request, res: Response) => {
-    const cafeKey = cleanStr(req.body?.cafeKey, 160);
-    const cafeName = cleanStr(req.body?.cafeName, 160);
-    const issueType = cleanStr(req.body?.issueType, 40);
-    const details = cleanStr(req.body?.details, 800);
-    const suggestedValue = cleanStr(req.body?.suggestedValue, 300);
-    const reporterName = cleanStr(req.body?.reporterName, 80);
-    const reporterEmail = cleanStr(req.body?.reporterEmail, 120);
+    const ip = getClientIp(req);
+    const rate = checkRateLimit(`correction:${ip}`, 8, 15 * 60 * 1000);
+    if (!rate.allowed) {
+      res.status(429).json({ error: 'Too many correction reports. Please wait a few minutes.' });
+      return;
+    }
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const rawPlaceId = cleanStr(body.place_id, 140);
+    const cafeKey =
+      cleanStr(body.cafeKey, 160) ||
+      cleanStr(body.cafe_id, 160) ||
+      (rawPlaceId ? `google:${rawPlaceId}` : '');
+    const cafeName = cleanStr(body.cafeName, 160) || cleanStr(body.cafe_name, 160);
+    const issueType = cleanStr(body.issueType, 40) || cleanStr(body.issue_type, 40);
+    const details = cleanStr(body.details, 800) || cleanStr(body.notes, 800);
+    const suggestedValue =
+      cleanStr(body.suggestedValue, 300) || cleanStr(body.proposed_value, 300);
+    const reporterName =
+      cleanStr(body.reporterName, 80) || cleanStr(body.reporter_name, 80);
+    const reporterEmail =
+      cleanStr(body.reporterEmail, 120) || cleanStr(body.reporter_email, 120);
 
     if (!cafeName || !ALLOWED_ISSUE_TYPES.has(issueType)) {
       res.status(400).json({ error: 'Please select a valid issue type and provide place details.' });
       return;
     }
+    if (!details && !suggestedValue) {
+      res.status(400).json({ error: 'Please enter the updated detail or correction note.' });
+      return;
+    }
 
     const user = resolveUserFromRequest(req, res);
+    const resolvedKey = cafeKey || cafeName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+
+    const db = getDb();
+    const recentDuplicate = db
+      .prepare(
+        `SELECT id FROM community_corrections
+         WHERE cafe_key = ? AND issue_type = ? AND suggested_value = ? AND created_at > ?`
+      )
+      .get(resolvedKey, issueType, suggestedValue, Date.now() - 60 * 60 * 1000);
+    if (recentDuplicate) {
+      res.status(409).json({
+        error: 'A similar correction was already submitted recently for this cafe.',
+      });
+      return;
+    }
+
+    recordRateAttempt(`correction:${ip}`, 15 * 60 * 1000);
+
     const created = createCommunityCorrectionInDb({
-      cafeKey: cafeKey || cafeName.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+      cafeKey: resolvedKey,
       cafeName,
       issueType,
       details,
@@ -961,6 +1009,10 @@ export function registerPlacesDiscoveryRoutes(
 
     if (user) {
       getUserAchievementsFromDb(user.id);
+      db.prepare(
+        `INSERT INTO user_points_ledger (user_id, points, reason, reference_type, reference_id, created_at)
+         VALUES (?, ?, ?, 'correction', ?, ?)`
+      ).run(user.id, 10, `Reported info correction for ${cafeName}`, String(created.id), Date.now());
     }
 
     res.status(201).json({

@@ -6,15 +6,19 @@ import {
   ArrowUpRight,
   Armchair,
   Award,
+  Bell,
   BookOpen,
   Bookmark,
   Briefcase,
   CalendarCheck,
+  Camera,
   Check,
   CheckCircle2,
+  CheckSquare,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ClipboardList,
   Clock,
   Coffee,
   Copy,
@@ -38,10 +42,14 @@ import {
   Plug,
   RefreshCw,
   Share2,
+  ShieldCheck,
   Sparkles,
+  Square,
   Star,
   Sun,
   Tag,
+  ThumbsUp,
+  Upload,
   Utensils,
   Volume2,
   Wifi,
@@ -61,7 +69,13 @@ import {
   useDiscovery,
   type GoogleDiscoveryCafe,
 } from '../context/DiscoveryContext';
-import type { AccessSectionKey, AmenityState, LocationItem } from '../types/cms';
+import type {
+  AccessSectionKey,
+  AmenityState,
+  CafeReviewRecord,
+  CommunityContributionRecord,
+  LocationItem,
+} from '../types/cms';
 import {
   buildGoogleMapsDirectionsUrl,
   buildGoogleMapsViewUrl,
@@ -78,6 +92,12 @@ import {
   isOutdoorFriendly,
   recordRecentlyViewedSlug,
 } from '../utils/cafeRecommendations';
+import {
+  buildCafeMenuIntelligence,
+  computeInformationConfidenceScore,
+  computeWorkReadyScore,
+  type MenuIntelligenceBucket,
+} from '../utils/cafeScoring';
 import { getAreaSeoRoute } from '../config/seoPages';
 import { trackAnalyticsEvent } from '../utils/analytics';
 import { buildBreadcrumbSchema, buildCafeSchema } from '../utils/seoSchemas';
@@ -102,7 +122,7 @@ export function LocationDetailPage() {
     [isGoogleRoute, lookupKey]
   );
 
-  const { locations, settings } = useCms();
+  const { locations, settings, isFeatureEnabled } = useCms();
   const {
     loading: authLoading,
     authenticated,
@@ -225,12 +245,65 @@ export function LocationDetailPage() {
     };
   }, [lookupKey, isGoogleRoute, authLoading, authenticated, isSubscribed, isExpired, isSuspended, tier]);
 
+  const [isFollowingCafe, setIsFollowingCafe] = useState(false);
+  const [followBusy, setFollowBusy] = useState(false);
+
   useEffect(() => {
-    if (baseLocation && authenticated) {
-      recordRecentlyViewedSlug(baseLocation.slug);
+    if (!authenticated) {
+      setIsFollowingCafe(false);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const headers = await getUserAuthHeaders();
+        const [followRes, prefRes] = await Promise.all([
+          fetch(resolveApiUrl('/api/user/follows'), { credentials: 'include', headers }),
+          baseLocation
+            ? fetch(resolveApiUrl('/api/user/preferences'), { credentials: 'include', headers })
+            : Promise.resolve(null),
+        ]);
+
+        if (!cancelled && followRes.ok) {
+          const fd = (await followRes.json()) as {
+            follows?: Array<{ cafe_key: string }>;
+          };
+          const targetKey = baseLocation?.slug || lookupKey;
+          const matched = Boolean(
+            Array.isArray(fd.follows) &&
+              fd.follows.some((f) => f.cafe_key === targetKey || f.cafe_key === lookupKey)
+          );
+          setIsFollowingCafe(matched);
+        }
+
+        if (!cancelled && baseLocation) {
+          let allowHistory = true;
+          if (prefRes && prefRes.ok) {
+            const pd = (await prefRes.json()) as {
+              preferences?: { save_visit_history?: boolean };
+            };
+            if (pd.preferences?.save_visit_history === false) {
+              allowHistory = false;
+            }
+          }
+          if (allowHistory) {
+            recordRecentlyViewedSlug(baseLocation.slug);
+          }
+        }
+      } catch {
+        if (!cancelled && baseLocation) {
+          recordRecentlyViewedSlug(baseLocation.slug);
+        }
+      }
+    })();
+
+    if (baseLocation) {
       void enrichLocationFromPlaces(baseLocation);
     }
-  }, [baseLocation, authenticated, enrichLocationFromPlaces]);
+    return () => {
+      cancelled = true;
+    };
+  }, [baseLocation, authenticated, lookupKey, enrichLocationFromPlaces]);
 
   useEffect(() => {
     if (authLoading || !authenticated || !isGoogleRoute || !googlePlaceId) return;
@@ -289,6 +362,211 @@ export function LocationDetailPage() {
   const toggleSection = (key: keyof typeof openSections) =>
     setOpenSections((prev) => ({ ...prev, [key]: !prev[key] }));
 
+  const [showScoreBreakdown, setShowScoreBreakdown] = useState(false);
+  const [activeMenuBucket, setActiveMenuBucket] = useState<'All' | MenuIntelligenceBucket>('All');
+  const [visitChecklist, setVisitChecklist] = useState<{
+    hours: boolean;
+    budget: boolean;
+    workspace: boolean;
+    route: boolean;
+    note: string;
+  }>({ hours: false, budget: false, workspace: false, route: false, note: '' });
+  const [checklistSynced, setChecklistSynced] = useState(false);
+  const checklistSyncTimerRef = useRef<number | null>(null);
+
+  const [communityFeed, setCommunityFeed] = useState<{
+    reviewsEnabled: boolean;
+    photosEnabled: boolean;
+    pricingUnlocked: boolean;
+    summary: {
+      count: number;
+      avgRating: number | null;
+      wifiYes: number;
+      wifiNo: number;
+      socketsYes: number;
+      socketsNo: number;
+      avgNoise: number | null;
+    };
+    reviews: CafeReviewRecord[];
+    myPendingReviews: CafeReviewRecord[];
+    contributions: CommunityContributionRecord[];
+    myPendingContributions: CommunityContributionRecord[];
+  } | null>(null);
+  const [reviewRating, setReviewRating] = useState<number>(5);
+  const [reviewPurpose, setReviewPurpose] = useState<string>('coffee_food');
+  const [reviewWifi, setReviewWifi] = useState<AmenityState>('unknown');
+  const [reviewSockets, setReviewSockets] = useState<AmenityState>('unknown');
+  const [reviewNoise, setReviewNoise] = useState<string>('');
+  const [reviewText, setReviewText] = useState('');
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewError, setReviewError] = useState('');
+  const [reviewSuccess, setReviewSuccess] = useState('');
+  const [helpfulBusyId, setHelpfulBusyId] = useState<number | null>(null);
+
+  const [contribModalOpen, setContribModalOpen] = useState(false);
+  const [contribTab, setContribTab] = useState<'photo' | 'menu_price' | 'facility_update'>('photo');
+  const [contribPhotoDataUrl, setContribPhotoDataUrl] = useState('');
+  const [contribPhotoCaption, setContribPhotoCaption] = useState('');
+  const [contribPhotoCategory, setContribPhotoCategory] = useState('interior');
+  const [contribMenuItem, setContribMenuItem] = useState('');
+  const [contribMenuCategory, setContribMenuCategory] = useState('Coffee');
+  const [contribMenuPrice, setContribMenuPrice] = useState('');
+  const [contribMenuSource, setContribMenuSource] = useState('');
+  const [contribFacField, setContribFacField] = useState('wifi_mbps');
+  const [contribFacValue, setContribFacValue] = useState('');
+  const [contribFacNote, setContribFacNote] = useState('');
+  const [contribBusy, setContribBusy] = useState(false);
+  const [contribError, setContribError] = useState('');
+  const [contribSuccess, setContribSuccess] = useState('');
+
+  const refreshCommunityFeed = async () => {
+    if (!lookupKey) return;
+    try {
+      const res = await fetch(resolveApiUrl(`/api/cafes/${encodeURIComponent(lookupKey)}/community`), {
+        credentials: 'include',
+        headers: await getUserAuthHeaders(),
+      });
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        const data = await res.json();
+        setCommunityFeed(data);
+      }
+    } catch {
+      // Non-blocking
+    }
+  };
+
+  useEffect(() => {
+    if (!lookupKey) return;
+    let initial = { hours: false, budget: false, workspace: false, route: false, note: '' };
+    try {
+      const savedRaw = window.localStorage.getItem(`cafedesk_checklist_${lookupKey}`);
+      if (savedRaw) {
+        const parsed = JSON.parse(savedRaw) as Partial<typeof initial>;
+        initial = {
+          hours: Boolean(parsed.hours),
+          budget: Boolean(parsed.budget),
+          workspace: Boolean(parsed.workspace),
+          route: Boolean(parsed.route),
+          note: typeof parsed.note === 'string' ? parsed.note : '',
+        };
+      }
+    } catch {
+      // Ignore storage read errors
+    }
+    setVisitChecklist(initial);
+    setChecklistSynced(false);
+
+    if (!authenticated) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(
+          resolveApiUrl(`/api/user/checklist/${encodeURIComponent(lookupKey)}`),
+          {
+            credentials: 'include',
+            headers: await getUserAuthHeaders(),
+          }
+        );
+        const ct = res.headers.get('content-type') || '';
+        if (!cancelled && res.ok && ct.includes('application/json')) {
+          const data = (await res.json()) as {
+            checklist?: Partial<typeof initial> | null;
+          };
+          if (data.checklist) {
+            const merged = {
+              hours: Boolean(data.checklist.hours),
+              budget: Boolean(data.checklist.budget),
+              workspace: Boolean(data.checklist.workspace),
+              route: Boolean(data.checklist.route),
+              note: typeof data.checklist.note === 'string' ? data.checklist.note : '',
+            };
+            setVisitChecklist(merged);
+            setChecklistSynced(true);
+            try {
+              window.localStorage.setItem(`cafedesk_checklist_${lookupKey}`, JSON.stringify(merged));
+            } catch {
+              // ignore
+            }
+          }
+        }
+      } catch {
+        // Fallback to localStorage
+      }
+    })();
+
+    void refreshCommunityFeed();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [lookupKey, authenticated, isSubscribed]);
+
+  useEffect(() => {
+    return () => {
+      if (checklistSyncTimerRef.current) {
+        window.clearTimeout(checklistSyncTimerRef.current);
+      }
+    };
+  }, []);
+
+  const updateVisitChecklist = (
+    updater: (prev: typeof visitChecklist) => typeof visitChecklist
+  ) => {
+    setVisitChecklist((prev) => {
+      const next = updater(prev);
+      if (lookupKey) {
+        try {
+          window.localStorage.setItem(`cafedesk_checklist_${lookupKey}`, JSON.stringify(next));
+        } catch {
+          // Ignore storage quota errors
+        }
+        if (authenticated) {
+          if (checklistSyncTimerRef.current) {
+            window.clearTimeout(checklistSyncTimerRef.current);
+          }
+          checklistSyncTimerRef.current = window.setTimeout(() => {
+            void (async () => {
+              try {
+                const res = await fetch(
+                  resolveApiUrl(`/api/user/checklist/${encodeURIComponent(lookupKey)}`),
+                  {
+                    method: 'PUT',
+                    credentials: 'include',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      ...(await getUserAuthHeaders()),
+                    },
+                    body: JSON.stringify(next),
+                  }
+                );
+                if (res.ok) setChecklistSynced(true);
+              } catch {
+                // Keep localStorage copy
+              }
+            })();
+          }, 350);
+        }
+      }
+      return next;
+    });
+  };
+
+  const workReadyScore = useMemo(
+    () => (location ? computeWorkReadyScore(location, settings.scoring_config) : null),
+    [location, settings.scoring_config]
+  );
+
+  const confidenceScore = useMemo(
+    () => (location ? computeInformationConfidenceScore(location, settings.scoring_config) : null),
+    [location, settings.scoring_config]
+  );
+
+  const menuIntelligence = useMemo(
+    () => (location ? buildCafeMenuIntelligence(location) : null),
+    [location]
+  );
+
   const approvedPhotosList =
     location && location.photos_approved ? location.photos : [];
 
@@ -303,6 +581,8 @@ export function LocationDetailPage() {
     setCorrectionOpen(false);
     setCorrectionSuccess('');
     setCorrectionError('');
+    setActiveMenuBucket('All');
+    setShowScoreBreakdown(false);
   }, [lookupKey]);
 
   useEffect(() => {
@@ -525,6 +805,29 @@ export function LocationDetailPage() {
 
   const handleSaveToggle = async (favouriteMode: boolean) => {
     await toggleSaveCafe(cafeSnapshot, favouriteMode);
+  };
+
+  const handleFollowToggle = async () => {
+    if (!location) return;
+    setFollowBusy(true);
+    try {
+      const targetKey = location.slug || lookupKey;
+      const res = await fetch(
+        resolveApiUrl(`/api/cafes/${encodeURIComponent(targetKey)}/follow`),
+        {
+          method: isFollowingCafe ? 'DELETE' : 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json', ...(await getUserAuthHeaders()) },
+          body: isFollowingCafe ? undefined : JSON.stringify({ cafeName: location.name }),
+        }
+      );
+      if (res.ok) {
+        const data = (await res.json()) as { following?: boolean };
+        setIsFollowingCafe(Boolean(data.following));
+      }
+    } finally {
+      setFollowBusy(false);
+    }
   };
 
   const handleShareCafe = async () => {
@@ -1030,6 +1333,20 @@ export function LocationDetailPage() {
 
             <button
               type="button"
+              disabled={followBusy}
+              onClick={() => void handleFollowToggle()}
+              className={`inline-flex items-center gap-1.5 min-h-[42px] px-3.5 py-2 rounded-xl border text-xs font-semibold transition-colors ${
+                isFollowingCafe
+                  ? 'bg-[#ecfdf5] border-[#a7f3d0] text-[#1b4d3e]'
+                  : 'bg-white border-[#e6ddd0] text-[#1c1613] hover:border-[#b45309]'
+              }`}
+            >
+              <Bell className={`w-4 h-4 ${isFollowingCafe ? 'text-[#1b4d3e]' : 'text-[#b45309]'}`} aria-hidden="true" />
+              <span>{followBusy ? 'Updating...' : isFollowingCafe ? 'Following Cafe' : 'Follow Cafe'}</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => void handleShareCafe()}
               className="inline-flex items-center gap-1.5 min-h-[42px] px-3.5 py-2 rounded-xl bg-white border border-[#e6ddd0] hover:border-[#b45309] text-[#1c1613] text-xs font-semibold transition-colors"
             >
@@ -1171,6 +1488,141 @@ export function LocationDetailPage() {
           )}
         </div>
       </header>
+
+      {/* Two Independent Quality Scores (Work-Ready Score & Information Confidence Score) */}
+      {isFeatureEnabled('quality_scores') && workReadyScore && confidenceScore && (
+        <section aria-labelledby="quality-scores-heading" className="space-y-4">
+          <div className="flex flex-wrap items-end justify-between gap-2">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#b45309]">
+                Independent Cafe Quality Evaluation
+              </p>
+              <h2
+                id="quality-scores-heading"
+                className="font-serif-display text-2xl sm:text-3xl font-bold text-[#1c1613]"
+              >
+                Work-Ready &amp; Information Confidence Scores
+              </h2>
+              <p className="text-xs text-[#5c4e45] mt-0.5">
+                Kept strictly separate from customer star ratings (
+                {location.rating !== null ? `${location.rating.toFixed(1)}/5` : 'Not rated yet'}).
+                Missing fields are never fabricated.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowScoreBreakdown((v) => !v)}
+              className="inline-flex items-center gap-1.5 min-h-[38px] px-3.5 py-1.5 rounded-xl bg-white border border-[#e6ddd0] hover:border-[#b45309] text-xs font-semibold text-[#1c1613] transition-colors"
+            >
+              <span>{showScoreBreakdown ? 'Hide Score Breakdown' : 'Inspect Score Breakdown'}</span>
+              <ChevronDown
+                className={`w-4 h-4 transition-transform ${showScoreBreakdown ? 'rotate-180' : ''}`}
+                aria-hidden="true"
+              />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* A. Work-Ready Score Card */}
+            <div className="bg-white rounded-2xl border border-[#e6ddd0] p-5 sm:p-6 space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-[#1b4d3e]">
+                    A · Work-Ready Score
+                  </p>
+                  <p className="text-base font-bold text-[#1c1613]">{workReadyScore.label}</p>
+                </div>
+                <div className="text-right shrink-0">
+                  {workReadyScore.score !== null ? (
+                    <p className="font-mono-data tabular-nums text-2xl sm:text-3xl font-bold text-[#1b4d3e]">
+                      {workReadyScore.score}
+                      <span className="text-xs font-medium text-[#5c4e45]">/100</span>
+                    </p>
+                  ) : (
+                    <p className="text-xs font-semibold text-[#5c4e45]">Not verified yet</p>
+                  )}
+                </div>
+              </div>
+              <p className="text-xs text-[#5c4e45] leading-relaxed">
+                Evaluates Wi-Fi, charging points, desk seating, acoustics, session affordability,
+                and study/work fit ({workReadyScore.verifiedFactorCount} verified signals recorded).
+              </p>
+              {showScoreBreakdown && (
+                <ul className="pt-3 border-t border-[#e6ddd0] space-y-2 text-xs">
+                  {workReadyScore.breakdown.map((factor) => {
+                    const maskedDetail =
+                      factor.key === 'affordability' && !unlocked.menu_pricing
+                        ? 'Unlock menu & budget pricing (from ₹79/mo) to inspect cost score detail'
+                        : factor.detail;
+                    return (
+                      <li key={factor.key} className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <span className="font-semibold text-[#1c1613]">{factor.label}:</span>{' '}
+                          <span className="text-[#5c4e45]">{maskedDetail}</span>
+                        </div>
+                        <span className="font-mono-data tabular-nums font-semibold text-[#1c1613] shrink-0">
+                          {factor.key === 'affordability' && !unlocked.menu_pricing
+                            ? 'Locked'
+                            : `${factor.points}/${factor.maxPoints}`}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+
+            {/* B. Information Confidence Score Card */}
+            <div className="bg-white rounded-2xl border border-[#e6ddd0] p-5 sm:p-6 space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-[#b45309]">
+                    B · Information Confidence Score
+                  </p>
+                  <p className="text-base font-bold text-[#1c1613]">
+                    {confidenceScore.tier} Verification Confidence
+                  </p>
+                </div>
+                <div className="text-right shrink-0">
+                  <p className="font-mono-data tabular-nums text-2xl sm:text-3xl font-bold text-[#b45309]">
+                    {confidenceScore.score}
+                    <span className="text-xs font-medium text-[#5c4e45]">/100</span>
+                  </p>
+                </div>
+              </div>
+              <div className="text-xs text-[#5c4e45] space-y-1">
+                <p>
+                  Provenance:{' '}
+                  <span className="font-semibold text-[#1c1613]">
+                    {confidenceScore.provenanceTags.map((t) => t.label).join(' · ')}
+                  </span>
+                </p>
+                <p>
+                  Last verified:{' '}
+                  <span className="font-semibold text-[#1c1613]">
+                    {confidenceScore.lastVerifiedLabel}
+                  </span>
+                </p>
+              </div>
+              {showScoreBreakdown && (
+                <ul className="pt-3 border-t border-[#e6ddd0] space-y-2 text-xs">
+                  {confidenceScore.breakdown.map((factor) => (
+                    <li key={factor.key} className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <span className="font-semibold text-[#1c1613]">{factor.label}:</span>{' '}
+                        <span className="text-[#5c4e45]">{factor.detail}</span>
+                      </div>
+                      <span className="font-mono-data tabular-nums font-semibold text-[#1c1613] shrink-0">
+                        {factor.points}/{factor.maxPoints}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* Workspace, Study & Budget Specs */}
       <section aria-labelledby="specs-heading" className="space-y-4">
@@ -1581,6 +2033,103 @@ export function LocationDetailPage() {
                       </dl>
                     )}
 
+                  {isFeatureEnabled('menu_intelligence') && menuIntelligence && menuIntelligence.buckets.length > 0 && (
+                    <div className="rounded-xl bg-[#faf7f2] border border-[#e6ddd0] p-4 space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wider text-[#b45309]">
+                            Menu Intelligence &amp; Category Comparison
+                          </p>
+                          <p className="text-xs text-[#5c4e45]">
+                            Source: <strong className="text-[#1c1613]">{menuIntelligence.sourceLabel}</strong> · Updated{' '}
+                            <strong className="text-[#1c1613]">{menuIntelligence.updatedLabel}</strong>
+                          </p>
+                        </div>
+                        <div className="text-[11px] font-mono-data text-[#5c4e45]">
+                          {menuIntelligence.totalItems} items · {menuIntelligence.confirmedPricedCount} confirmed · {menuIntelligence.missingPriceCount} unpriced
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setActiveMenuBucket('All')}
+                          className={`min-h-[32px] px-3 py-1 rounded-full text-xs font-semibold border transition-colors ${
+                            activeMenuBucket === 'All'
+                              ? 'bg-[#1c1613] text-white border-[#1c1613]'
+                              : 'bg-white text-[#5c4e45] border-[#e6ddd0] hover:border-[#b45309]'
+                          }`}
+                        >
+                          All Categories
+                        </button>
+                        {menuIntelligence.buckets.map((b) => (
+                          <button
+                            key={b.bucket}
+                            type="button"
+                            onClick={() => setActiveMenuBucket(b.bucket)}
+                            className={`min-h-[32px] px-3 py-1 rounded-full text-xs font-semibold border transition-colors ${
+                              activeMenuBucket === b.bucket
+                                ? 'bg-[#1c1613] text-white border-[#1c1613]'
+                                : 'bg-white text-[#5c4e45] border-[#e6ddd0] hover:border-[#b45309]'
+                            }`}
+                          >
+                            {b.bucket} ({b.entries.length})
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        {menuIntelligence.buckets
+                          .filter((b) => activeMenuBucket === 'All' || b.bucket === activeMenuBucket)
+                          .map((b) => (
+                            <div
+                              key={`intel-${b.bucket}`}
+                              className="p-3 rounded-xl bg-white border border-[#e6ddd0] flex items-center justify-between gap-2"
+                            >
+                              <div className="min-w-0">
+                                <p className="text-xs font-bold text-[#1c1613]">{b.bucket}</p>
+                                <p className="text-[11px] text-[#5c4e45] truncate">
+                                  {b.confirmedCount > 0
+                                    ? `${b.confirmedCount} confirmed item price${b.confirmedCount === 1 ? '' : 's'}`
+                                    : b.estimateCount > 0
+                                    ? 'Category estimate range'
+                                    : 'Listed items · pricing unverified'}
+                                </p>
+                              </div>
+                              <div className="text-right shrink-0 font-mono-data">
+                                {!unlocked.menu_pricing ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => openCheckout(renewPlanId)}
+                                    className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-[#fef3c7] border border-[#f59e0b]/40 text-[11px] font-semibold text-[#92400e]"
+                                  >
+                                    <Lock className="w-3 h-3" aria-hidden="true" />
+                                    <span>₹79+ Plan</span>
+                                  </button>
+                                ) : b.confirmedLowestInr !== null ? (
+                                  <div>
+                                    <p className="text-xs font-bold text-[#1b4d3e]">
+                                      From ₹{b.confirmedLowestInr}
+                                    </p>
+                                    <p className="text-[10px] text-[#5c4e45]">
+                                      {b.confirmedAvgInr !== null ? `Avg ₹${b.confirmedAvgInr}` : 'Confirmed'}
+                                    </p>
+                                  </div>
+                                ) : b.bandText ? (
+                                  <div>
+                                    <p className="text-xs font-bold text-[#b45309]">{b.bandText}</p>
+                                    <p className="text-[10px] text-[#5c4e45]">Estimate band</p>
+                                  </div>
+                                ) : (
+                                  <span className="text-[11px] text-[#5c4e45]">Price N/A</span>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+                  )}
+
                   {location.popular_items.length > 0 && (
                     <div className="space-y-2">
                       <p className="text-xs font-semibold uppercase tracking-wider text-[#5c4e45]">
@@ -1808,8 +2357,96 @@ export function LocationDetailPage() {
             </div>
           )}
 
+          {/* Cafe Visit Companion: Personal Checklist & Post-Visit Feedback */}
+          {isFeatureEnabled('visit_companion') && (
+            <section
+              aria-labelledby="visit-companion-heading"
+              className="bg-white rounded-2xl border border-[#e6ddd0] p-5 sm:p-8 space-y-4"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="space-y-0.5">
+                  <div className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-[#1b4d3e]">
+                    <ClipboardList className="w-4 h-4" aria-hidden="true" />
+                    <span>Cafe Visit Companion</span>
+                  </div>
+                  <h2
+                    id="visit-companion-heading"
+                    className="font-serif-display text-xl font-bold text-[#1c1613]"
+                  >
+                    Personal Visit Checklist for {location.name}
+                  </h2>
+                </div>
+                <span className="font-mono-data text-xs font-semibold text-[#5c4e45]">
+                  {[visitChecklist.hours, visitChecklist.budget, visitChecklist.workspace, visitChecklist.route].filter(Boolean).length}/4 ready
+                  {checklistSynced ? ' · Synced' : ''}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
+                {[
+                  { key: 'hours' as const, label: 'Checked opening hours & best visit window' },
+                  { key: 'budget' as const, label: 'Reviewed beverage & food budget fit' },
+                  { key: 'workspace' as const, label: 'Confirmed seating, Wi-Fi & noise suitability' },
+                  { key: 'route' as const, label: 'Saved route, distance & parking notes' },
+                ].map((item) => {
+                  const checked = visitChecklist[item.key];
+                  return (
+                    <button
+                      key={item.key}
+                      type="button"
+                      onClick={() =>
+                        updateVisitChecklist((prev) => ({ ...prev, [item.key]: !prev[item.key] }))
+                      }
+                      className={`min-h-[42px] px-3.5 py-2 rounded-xl border text-left flex items-center gap-2.5 transition-colors ${
+                        checked
+                          ? 'bg-[#ecfdf5] border-[#a7f3d0] text-[#1b4d3e] font-semibold'
+                          : 'bg-[#faf7f2] border-[#e6ddd0] text-[#1c1613] hover:border-[#b45309]'
+                      }`}
+                    >
+                      {checked ? (
+                        <CheckSquare className="w-4 h-4 shrink-0 text-[#1b4d3e]" aria-hidden="true" />
+                      ) : (
+                        <Square className="w-4 h-4 shrink-0 text-[#8c7a6b]" aria-hidden="true" />
+                      )}
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="flex flex-col sm:flex-row gap-2.5 pt-1">
+                <input
+                  type="text"
+                  value={visitChecklist.note}
+                  onChange={(e) =>
+                    updateVisitChecklist((prev) => ({ ...prev, note: e.target.value }))
+                  }
+                  placeholder="Optional personal visit note (e.g. sit by window sockets)..."
+                  aria-label="Personal visit note"
+                  className="flex-1 h-11 px-3.5 rounded-xl bg-[#faf7f2] border border-[#d6cbba] text-xs text-[#1c1613]"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpenSections((prev) => ({ ...prev, reviews: true }));
+                    document
+                      .getElementById('reviews-community-section')
+                      ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  }}
+                  className="min-h-[44px] px-4 py-2 rounded-xl bg-[#1c1613] hover:bg-[#b45309] text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 shrink-0 transition-colors"
+                >
+                  <ShieldCheck className="w-4 h-4" aria-hidden="true" />
+                  <span>Post-Visit Review &amp; Check</span>
+                </button>
+              </div>
+            </section>
+          )}
+
           {/* Reviews, Ratings & Community Verdict */}
-          <section className="bg-white rounded-2xl border border-[#e6ddd0] p-5 sm:p-8 space-y-4">
+          <section
+            id="reviews-community-section"
+            className="bg-white rounded-2xl border border-[#e6ddd0] p-5 sm:p-8 space-y-5"
+          >
             <button
               type="button"
               onClick={() => toggleSection('reviews')}
@@ -1818,7 +2455,7 @@ export function LocationDetailPage() {
             >
               <span className="inline-flex items-center gap-2 font-serif-display text-xl font-bold text-[#1c1613]">
                 <Star className="w-5 h-5 text-[#d97706] fill-[#d97706] shrink-0" aria-hidden="true" />
-                <span>Reviews &amp; Verdict</span>
+                <span>Reviews &amp; Community Updates</span>
               </span>
               <ChevronDown
                 className={`w-5 h-5 text-[#5c4e45] shrink-0 transition-transform ${
@@ -1835,17 +2472,50 @@ export function LocationDetailPage() {
                   Reviews &amp; Community Verdict
                 </h2>
               </div>
-              {location.rating !== null ? (
-                <span className="font-mono-data text-sm font-semibold text-[#1c1613]">
-                  {location.rating.toFixed(1)} / 5
-                  {location.rating_count !== null ? ` (${location.rating_count} reviews)` : ''}
-                </span>
-              ) : (
-                <span className="text-xs font-medium text-[#5c4e45]">Community verified guide</span>
-              )}
+              <div className="flex items-center gap-3">
+                {location.rating !== null ? (
+                  <span className="font-mono-data text-sm font-semibold text-[#1c1613]">
+                    {location.rating.toFixed(1)} / 5
+                    {location.rating_count !== null ? ` (${location.rating_count} reviews)` : ''}
+                  </span>
+                ) : (
+                  <span className="text-xs font-medium text-[#5c4e45]">Community verified guide</span>
+                )}
+                {(isFeatureEnabled('community_photos') || isFeatureEnabled('community_reviews')) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setContribError('');
+                      setContribSuccess('');
+                      setContribModalOpen(true);
+                    }}
+                    className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[#faf7f2] border border-[#d6cbba] hover:border-[#b45309] text-xs font-semibold text-[#1c1613] inline-flex items-center gap-1.5 transition-colors"
+                  >
+                    <Camera className="w-3.5 h-3.5 text-[#b45309]" aria-hidden="true" />
+                    <span>Add Photo / Price / Facility Check</span>
+                  </button>
+                )}
+              </div>
             </div>
 
-            <div className={`${openSections.reviews ? 'block' : 'hidden'} md:block space-y-4`}>
+            <div className={`${openSections.reviews ? 'block' : 'hidden'} md:block space-y-5`}>
+              {(isFeatureEnabled('community_photos') || isFeatureEnabled('community_reviews')) && (
+                <div className="md:hidden">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setContribError('');
+                      setContribSuccess('');
+                      setContribModalOpen(true);
+                    }}
+                    className="w-full min-h-[44px] px-4 py-2 rounded-xl bg-[#faf7f2] border border-[#d6cbba] hover:border-[#b45309] text-xs font-semibold text-[#1c1613] inline-flex items-center justify-center gap-1.5"
+                  >
+                    <Camera className="w-4 h-4 text-[#b45309]" aria-hidden="true" />
+                    <span>Add Photo / Menu Price / Facility Check</span>
+                  </button>
+                </div>
+              )}
+
               {location.verdict && (
                 <p className="text-sm text-[#1c1613] leading-relaxed bg-[#faf7f2] p-4 rounded-xl border border-[#e6ddd0]">
                   {location.verdict}
@@ -1883,6 +2553,409 @@ export function LocationDetailPage() {
                   )}
                 </div>
               )}
+
+              {/* Community Facility Verification Strip + Member Reviews */}
+              {isFeatureEnabled('community_reviews') && (
+                <div className="pt-5 border-t border-[#e6ddd0] space-y-5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#1b4d3e]">
+                        Verified Community Reviews &amp; Field Checks
+                      </p>
+                      <p className="text-xs text-[#5c4e45]">
+                        Moderated visitor feedback · Earn +15 contributor points per verified review
+                      </p>
+                    </div>
+                    {communityFeed && communityFeed.summary.count > 0 && (
+                      <div className="text-xs font-mono-data tabular-nums text-[#1c1613]">
+                        {communityFeed.summary.count} CafeDesk{' '}
+                        {communityFeed.summary.count === 1 ? 'review' : 'reviews'} ·{' '}
+                        {communityFeed.summary.avgRating}/5 avg
+                        {communityFeed.summary.wifiYes > 0
+                          ? ` · ${communityFeed.summary.wifiYes} Wi-Fi confirmed`
+                          : ''}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Caller's pending moderation reviews */}
+                  {communityFeed && communityFeed.myPendingReviews.length > 0 && (
+                    <div className="space-y-2">
+                      {communityFeed.myPendingReviews.map((rev) => (
+                        <div
+                          key={rev.id}
+                          className="rounded-xl bg-[#fffbeb] border border-[#fde68a] p-3.5 text-xs space-y-1"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-semibold text-[#92400e]">
+                              Your review ({rev.rating}/5) ·{' '}
+                              {rev.moderation_status === 'rejected'
+                                ? 'Needs edit'
+                                : 'Pending moderation'}
+                            </span>
+                            <span className="font-mono-data text-[#92400e]">
+                              {new Date(rev.created_at).toLocaleDateString('en-IN')}
+                            </span>
+                          </div>
+                          <p className="text-[#5c4e45]">{rev.review_text}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Approved Reviews */}
+                  {communityFeed && communityFeed.reviews.length > 0 ? (
+                    <div className="space-y-3">
+                      {communityFeed.reviews.map((rev) => (
+                        <article
+                          key={rev.id}
+                          className="rounded-xl bg-[#faf7f2] border border-[#e6ddd0] p-4 space-y-2"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-semibold text-[#1c1613]">
+                                {rev.author_name}
+                              </span>
+                              <span className="font-mono-data font-bold text-[#b45309]">
+                                {rev.rating}.0 ★
+                              </span>
+                              <span className="text-[#5c4e45] capitalize">
+                                · {rev.visit_purpose.replace('_', ' & ')}
+                              </span>
+                            </div>
+                            <span className="font-mono-data text-[#5c4e45]">
+                              {new Date(rev.created_at).toLocaleDateString('en-IN')}
+                            </span>
+                          </div>
+                          <p className="text-sm text-[#1c1613] leading-relaxed">
+                            {rev.review_text}
+                          </p>
+                          <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-[11px] text-[#5c4e45]">
+                            <div className="flex flex-wrap items-center gap-2 font-mono-data">
+                              {rev.wifi_confirmed !== 'unknown' && (
+                                <span className="text-[#1b4d3e] font-semibold">
+                                  Wi-Fi: {rev.wifi_confirmed === 'yes' ? 'Confirmed' : 'No Wi-Fi'}
+                                </span>
+                              )}
+                              {rev.sockets_confirmed !== 'unknown' && (
+                                <span className="text-[#1b4d3e] font-semibold">
+                                  · Plugs: {rev.sockets_confirmed === 'yes' ? 'Yes' : 'Limited'}
+                                </span>
+                              )}
+                              {rev.noise_observed !== null && (
+                                <span>· Noise: {rev.noise_observed}/5</span>
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              disabled={helpfulBusyId === rev.id}
+                              onClick={async () => {
+                                setHelpfulBusyId(rev.id);
+                                try {
+                                  const res = await fetch(
+                                    resolveApiUrl(`/api/reviews/${rev.id}/helpful`),
+                                    {
+                                      method: 'POST',
+                                      credentials: 'include',
+                                      headers: await getUserAuthHeaders(),
+                                    }
+                                  );
+                                  if (res.ok) {
+                                    await refreshCommunityFeed();
+                                  }
+                                } finally {
+                                  setHelpfulBusyId(null);
+                                }
+                              }}
+                              className="inline-flex items-center gap-1 min-h-[32px] px-2.5 rounded-lg bg-white border border-[#e6ddd0] hover:border-[#b45309] text-xs font-semibold text-[#1c1613]"
+                            >
+                              <ThumbsUp className="w-3 h-3 text-[#b45309]" aria-hidden="true" />
+                              <span>Helpful ({rev.helpful_count})</span>
+                            </button>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-[#5c4e45]">
+                      No community reviews published yet for {location.name}. Be the first visitor to share verified notes!
+                    </p>
+                  )}
+
+                  {/* Submit a Review Form */}
+                  <form
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      setReviewBusy(true);
+                      setReviewError('');
+                      setReviewSuccess('');
+                      try {
+                        const res = await fetch(
+                          resolveApiUrl(
+                            `/api/cafes/${encodeURIComponent(lookupKey)}/reviews`
+                          ),
+                          {
+                            method: 'POST',
+                            credentials: 'include',
+                            headers: {
+                              'Content-Type': 'application/json',
+                              ...(await getUserAuthHeaders()),
+                            },
+                            body: JSON.stringify({
+                              cafeName: location.name,
+                              rating: reviewRating,
+                              visitPurpose: reviewPurpose,
+                              wifiConfirmed: reviewWifi,
+                              socketsConfirmed: reviewSockets,
+                              noiseObserved: reviewNoise ? Number(reviewNoise) : null,
+                              reviewText,
+                            }),
+                          }
+                        );
+                        const data = (await res.json().catch(() => ({}))) as {
+                          error?: string;
+                          message?: string;
+                        };
+                        if (!res.ok) {
+                          setReviewError(data.error || 'Could not submit review.');
+                          return;
+                        }
+                        setReviewSuccess(
+                          data.message ||
+                            'Review queued for moderation (+15 contributor points).'
+                        );
+                        setReviewText('');
+                        await refreshCommunityFeed();
+                      } catch {
+                        setReviewError('Network error submitting your review.');
+                      } finally {
+                        setReviewBusy(false);
+                      }
+                    }}
+                    className="rounded-xl border border-[#e6ddd0] bg-[#faf7f2] p-4 sm:p-5 space-y-3 text-xs"
+                  >
+                    <p className="text-sm font-semibold text-[#1c1613]">
+                      Share Your Visit Review
+                    </p>
+                    {reviewError && (
+                      <p role="alert" className="p-2.5 rounded-lg bg-[#fef2f2] border border-[#fecaca] text-[#991b1b] font-medium">
+                        {reviewError}
+                      </p>
+                    )}
+                    {reviewSuccess && (
+                      <p className="p-2.5 rounded-lg bg-[#ecfdf5] border border-[#a7f3d0] text-[#1b4d3e] font-medium">
+                        {reviewSuccess}
+                      </p>
+                    )}
+
+                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
+                      <div>
+                        <label htmlFor="rev-rating" className="block font-semibold text-[#5c4e45] mb-1">
+                          Rating
+                        </label>
+                        <select
+                          id="rev-rating"
+                          value={reviewRating}
+                          onChange={(e) => setReviewRating(Number(e.target.value))}
+                          className="w-full h-10 px-2.5 rounded-lg bg-white border border-[#d6cbba] text-xs text-[#1c1613]"
+                        >
+                          <option value={5}>5 ★ · Excellent</option>
+                          <option value={4}>4 ★ · Very Good</option>
+                          <option value={3}>3 ★ · Decent</option>
+                          <option value={2}>2 ★ · Fair</option>
+                          <option value={1}>1 ★ · Poor</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label htmlFor="rev-purpose" className="block font-semibold text-[#5c4e45] mb-1">
+                          Visit Purpose
+                        </label>
+                        <select
+                          id="rev-purpose"
+                          value={reviewPurpose}
+                          onChange={(e) => setReviewPurpose(e.target.value)}
+                          className="w-full h-10 px-2.5 rounded-lg bg-white border border-[#d6cbba] text-xs text-[#1c1613]"
+                        >
+                          <option value="coffee_food">Coffee / Tea &amp; Food</option>
+                          <option value="work">Remote Work</option>
+                          <option value="study">Quiet Study</option>
+                          <option value="family">Family Outing</option>
+                          <option value="meetup">Group Meetup</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label htmlFor="rev-wifi" className="block font-semibold text-[#5c4e45] mb-1">
+                          Wi-Fi Observed
+                        </label>
+                        <select
+                          id="rev-wifi"
+                          value={reviewWifi}
+                          onChange={(e) => setReviewWifi(e.target.value as AmenityState)}
+                          className="w-full h-10 px-2.5 rounded-lg bg-white border border-[#d6cbba] text-xs text-[#1c1613]"
+                        >
+                          <option value="unknown">Didn&apos;t check</option>
+                          <option value="yes">Confirmed working</option>
+                          <option value="no">No Wi-Fi</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label htmlFor="rev-sockets" className="block font-semibold text-[#5c4e45] mb-1">
+                          Power Plugs
+                        </label>
+                        <select
+                          id="rev-sockets"
+                          value={reviewSockets}
+                          onChange={(e) => setReviewSockets(e.target.value as AmenityState)}
+                          className="w-full h-10 px-2.5 rounded-lg bg-white border border-[#d6cbba] text-xs text-[#1c1613]"
+                        >
+                          <option value="unknown">Didn&apos;t check</option>
+                          <option value="yes">Sockets available</option>
+                          <option value="no">Few / None</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label htmlFor="rev-noise" className="block font-semibold text-[#5c4e45] mb-1">
+                        Noise Environment (Optional)
+                      </label>
+                      <select
+                        id="rev-noise"
+                        value={reviewNoise}
+                        onChange={(e) => setReviewNoise(e.target.value)}
+                        className="w-full sm:w-64 h-10 px-2.5 rounded-lg bg-white border border-[#d6cbba] text-xs text-[#1c1613]"
+                      >
+                        <option value="">Not rated</option>
+                        <option value="1">1 · Silent / Library quiet</option>
+                        <option value="2">2 · Quiet conversation</option>
+                        <option value="3">3 · Balanced cafe buzz</option>
+                        <option value="4">4 · Lively music / group chatter</option>
+                        <option value="5">5 · Very loud</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label htmlFor="rev-text" className="block font-semibold text-[#5c4e45] mb-1">
+                        Honest Experience (min 15 chars) *
+                      </label>
+                      <textarea
+                        id="rev-text"
+                        required
+                        minLength={15}
+                        maxLength={1200}
+                        rows={3}
+                        value={reviewText}
+                        onChange={(e) => setReviewText(e.target.value)}
+                        placeholder="How was the coffee, seating comfort, Wi-Fi reliability, or value for money?"
+                        className="w-full p-3 rounded-lg bg-white border border-[#d6cbba] text-xs text-[#1c1613]"
+                      />
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-[11px] text-[#5c4e45]">
+                        Genuine visits only · Duplicate &amp; spam checks active
+                      </span>
+                      <button
+                        type="submit"
+                        disabled={reviewBusy}
+                        className="min-h-[40px] px-4 py-2 rounded-xl bg-[#b45309] hover:bg-[#92400e] disabled:opacity-60 text-white text-xs font-semibold transition-colors"
+                      >
+                        {reviewBusy ? 'Submitting...' : 'Submit Verified Review (+15 pts)'}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              )}
+
+              {/* Community Approved Photos & Contributions */}
+              {communityFeed &&
+                (communityFeed.contributions.length > 0 ||
+                  communityFeed.myPendingContributions.length > 0) && (
+                  <div className="pt-5 border-t border-[#e6ddd0] space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#b45309]">
+                        Community Photos &amp; Verified Updates
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setContribModalOpen(true)}
+                        className="text-xs font-semibold text-[#b45309] hover:underline"
+                      >
+                        + Contribute Update
+                      </button>
+                    </div>
+
+                    {communityFeed.myPendingContributions.length > 0 && (
+                      <div className="space-y-1.5">
+                        {communityFeed.myPendingContributions.map((c) => (
+                          <div
+                            key={c.id}
+                            className="p-2.5 rounded-lg bg-[#fffbeb] border border-[#fde68a] text-xs text-[#92400e]"
+                          >
+                            Your {c.contribution_type.replace('_', ' ')} submission is{' '}
+                            {c.moderation_status === 'rejected'
+                              ? 'declined'
+                              : 'pending admin approval'}
+                            .
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {communityFeed.contributions.map((c) => (
+                        <div
+                          key={c.id}
+                          className="rounded-xl border border-[#e6ddd0] bg-[#faf7f2] p-3 text-xs space-y-1.5"
+                        >
+                          {c.contribution_type === 'photo' && c.photo_url && (
+                            <img
+                              src={c.photo_url}
+                              alt={String(c.payload.caption || `${location.name} community photo`)}
+                              className="w-full h-36 object-cover rounded-lg mb-1.5"
+                            />
+                          )}
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-semibold text-[#1c1613] capitalize">
+                              {c.contribution_type.replace('_', ' ')}
+                            </span>
+                            <span className="text-[11px] text-[#5c4e45]">
+                              by {c.contributor_name}
+                            </span>
+                          </div>
+                          {c.contribution_type === 'menu_price' && (
+                            <p className="text-[#1c1613]">
+                              {String(c.payload.itemName || 'Menu item')} (
+                              {String(c.payload.category || 'Item')}):{' '}
+                              {c.payload.priceMasked ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openCheckout(renewPlanId)}
+                                  className="font-semibold text-[#b45309] underline"
+                                >
+                                  Unlock ₹79+ Plan
+                                </button>
+                              ) : (
+                                <strong className="font-mono-data">
+                                  ₹{Number(c.payload.priceInr || 0)}
+                                </strong>
+                              )}
+                            </p>
+                          )}
+                          {c.contribution_type === 'facility_update' && (
+                            <p className="text-[#1c1613]">
+                              <span className="font-mono-data">{String(c.payload.field || '')}</span>{' '}
+                              &rarr; <strong>{String(c.payload.proposedValue || '')}</strong>
+                            </p>
+                          )}
+                          {c.contribution_type === 'photo' && Boolean(c.payload.caption) && (
+                            <p className="text-[#5c4e45]">{String(c.payload.caption)}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
             </div>
           </section>
 
@@ -2871,6 +3944,376 @@ export function LocationDetailPage() {
                 </div>
               </form>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Community Photo / Menu Price / Facility Contribution Modal */}
+      {contribModalOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Contribute verified info for ${location.name}`}
+          className="fixed inset-0 z-50 bg-[#1c1613]/65 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4"
+          onClick={() => setContribModalOpen(false)}
+        >
+          <div
+            className="w-full max-w-lg rounded-t-3xl sm:rounded-2xl bg-white border border-[#e6ddd0] p-5 sm:p-6 pb-[calc(1.25rem+env(safe-area-inset-bottom))] sm:pb-6 space-y-4 shadow-2xl animate-sheet-up max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-[#e6ddd0] pb-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-[#1b4d3e]">
+                  Community Contributions · +5 pts now, +20 pts approved
+                </p>
+                <h2 className="font-serif-display text-xl font-bold text-[#1c1613]">
+                  Contribute to {location.name}
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setContribModalOpen(false)}
+                aria-label="Close contribution modal"
+                className="w-10 h-10 rounded-xl border border-[#e6ddd0] bg-[#faf7f2] text-[#1c1613] flex items-center justify-center"
+              >
+                <X className="w-4 h-4" aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2 text-xs">
+              {[
+                { id: 'photo' as const, label: 'Cafe Photo', show: isFeatureEnabled('community_photos') },
+                { id: 'menu_price' as const, label: 'Menu Price', show: true },
+                { id: 'facility_update' as const, label: 'Facility Check', show: true },
+              ]
+                .filter((t) => t.show)
+                .map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => {
+                      setContribTab(tab.id);
+                      setContribError('');
+                      setContribSuccess('');
+                    }}
+                    className={`min-h-[40px] px-2.5 py-2 rounded-xl font-semibold border transition-colors ${
+                      contribTab === tab.id
+                        ? 'bg-[#1c1613] border-[#1c1613] text-white'
+                        : 'bg-[#faf7f2] border-[#e6ddd0] text-[#1c1613] hover:border-[#b45309]'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+            </div>
+
+            {contribError && (
+              <p role="alert" className="p-2.5 rounded-xl bg-[#fef2f2] border border-[#fecaca] text-[#991b1b] text-xs font-medium">
+                {contribError}
+              </p>
+            )}
+            {contribSuccess && (
+              <div className="p-3.5 rounded-xl bg-[#ecfdf5] border border-[#a7f3d0] text-[#1b4d3e] text-xs space-y-2">
+                <p className="font-semibold">{contribSuccess}</p>
+                <button
+                  type="button"
+                  onClick={() => setContribModalOpen(false)}
+                  className="font-semibold underline"
+                >
+                  Close
+                </button>
+              </div>
+            )}
+
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                setContribBusy(true);
+                setContribError('');
+                setContribSuccess('');
+                try {
+                  const bodyPayload =
+                    contribTab === 'photo'
+                      ? {
+                          contributionType: 'photo',
+                          cafeName: location.name,
+                          photoDataUrl: contribPhotoDataUrl,
+                          caption: contribPhotoCaption,
+                          category: contribPhotoCategory,
+                        }
+                      : contribTab === 'menu_price'
+                      ? {
+                          contributionType: 'menu_price',
+                          cafeName: location.name,
+                          itemName: contribMenuItem,
+                          category: contribMenuCategory,
+                          priceInr: Number(contribMenuPrice),
+                          sourceNote: contribMenuSource,
+                        }
+                      : {
+                          contributionType: 'facility_update',
+                          cafeName: location.name,
+                          field: contribFacField,
+                          proposedValue: contribFacValue,
+                          note: contribFacNote,
+                        };
+
+                  const res = await fetch(
+                    resolveApiUrl(`/api/cafes/${encodeURIComponent(lookupKey)}/contributions`),
+                    {
+                      method: 'POST',
+                      credentials: 'include',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        ...(await getUserAuthHeaders()),
+                      },
+                      body: JSON.stringify(bodyPayload),
+                    }
+                  );
+                  const data = (await res.json().catch(() => ({}))) as {
+                    error?: string;
+                    message?: string;
+                  };
+                  if (!res.ok) {
+                    setContribError(data.error || 'Could not submit contribution.');
+                    return;
+                  }
+                  setContribSuccess(
+                    data.message || 'Submitted for moderation (+5 points added).'
+                  );
+                  setContribPhotoDataUrl('');
+                  setContribPhotoCaption('');
+                  setContribMenuItem('');
+                  setContribMenuPrice('');
+                  setContribFacValue('');
+                  setContribFacNote('');
+                  await refreshCommunityFeed();
+                } catch {
+                  setContribError('Network error submitting update.');
+                } finally {
+                  setContribBusy(false);
+                }
+              }}
+              className="space-y-3 text-xs"
+            >
+              {contribTab === 'photo' && (
+                <>
+                  <div>
+                    <label className="block font-semibold text-[#5c4e45] mb-1">
+                      Select Real Cafe Photo (PNG / JPEG / WebP, max 4 MB) *
+                    </label>
+                    <label className="min-h-[44px] px-4 py-2.5 rounded-xl border border-dashed border-[#b45309] bg-[#faf7f2] hover:bg-[#fef3c7]/50 text-[#1c1613] font-semibold flex items-center justify-center gap-2 cursor-pointer">
+                      <Upload className="w-4 h-4 text-[#b45309]" aria-hidden="true" />
+                      <span>
+                        {contribPhotoDataUrl ? 'Change Selected Photo' : 'Choose Image File'}
+                      </span>
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        className="sr-only"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          const reader = new FileReader();
+                          reader.onload = () => {
+                            const img = new Image();
+                            img.onload = () => {
+                              const maxDim = 1400;
+                              const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+                              const canvas = document.createElement('canvas');
+                              canvas.width = Math.max(1, Math.round(img.width * scale));
+                              canvas.height = Math.max(1, Math.round(img.height * scale));
+                              const ctx = canvas.getContext('2d');
+                              if (ctx) {
+                                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                                setContribPhotoDataUrl(canvas.toDataURL('image/jpeg', 0.84));
+                              }
+                            };
+                            img.src = String(reader.result || '');
+                          };
+                          reader.readAsDataURL(file);
+                        }}
+                      />
+                    </label>
+                    {contribPhotoDataUrl && (
+                      <img
+                        src={contribPhotoDataUrl}
+                        alt="Selected cafe upload preview"
+                        className="mt-2 w-full h-40 object-cover rounded-xl border border-[#e6ddd0]"
+                      />
+                    )}
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div>
+                      <label htmlFor="contrib-photo-cat" className="block font-semibold text-[#5c4e45] mb-1">
+                        Area Shown
+                      </label>
+                      <select
+                        id="contrib-photo-cat"
+                        value={contribPhotoCategory}
+                        onChange={(e) => setContribPhotoCategory(e.target.value)}
+                        className="w-full h-11 px-3 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-xs text-[#1c1613]"
+                      >
+                        <option value="interior">Interior &amp; Seating</option>
+                        <option value="exterior">Exterior / Entrance</option>
+                        <option value="menu">Menu Board</option>
+                        <option value="seating">Work Desks &amp; Sockets</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label htmlFor="contrib-photo-cap" className="block font-semibold text-[#5c4e45] mb-1">
+                        Short Caption (Optional)
+                      </label>
+                      <input
+                        id="contrib-photo-cap"
+                        type="text"
+                        maxLength={140}
+                        value={contribPhotoCaption}
+                        onChange={(e) => setContribPhotoCaption(e.target.value)}
+                        placeholder="e.g. Window bar seating with plugs"
+                        className="w-full h-11 px-3 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-xs text-[#1c1613]"
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {contribTab === 'menu_price' && (
+                <>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div>
+                      <label htmlFor="contrib-menu-item" className="block font-semibold text-[#5c4e45] mb-1">
+                        Item Name *
+                      </label>
+                      <input
+                        id="contrib-menu-item"
+                        type="text"
+                        required
+                        maxLength={80}
+                        value={contribMenuItem}
+                        onChange={(e) => setContribMenuItem(e.target.value)}
+                        placeholder="e.g. Filter Coffee / Masala Chai"
+                        className="w-full h-11 px-3 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-xs text-[#1c1613]"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="contrib-menu-cat" className="block font-semibold text-[#5c4e45] mb-1">
+                        Category
+                      </label>
+                      <select
+                        id="contrib-menu-cat"
+                        value={contribMenuCategory}
+                        onChange={(e) => setContribMenuCategory(e.target.value)}
+                        className="w-full h-11 px-3 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-xs text-[#1c1613]"
+                      >
+                        <option value="Tea">Tea &amp; Chai</option>
+                        <option value="Coffee">Coffee</option>
+                        <option value="Breakfast">Breakfast</option>
+                        <option value="Snacks">Snacks</option>
+                        <option value="Desserts">Desserts</option>
+                        <option value="Meals">Meals</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div>
+                      <label htmlFor="contrib-menu-price" className="block font-semibold text-[#5c4e45] mb-1">
+                        Price Paid (INR ₹) *
+                      </label>
+                      <input
+                        id="contrib-menu-price"
+                        type="number"
+                        required
+                        min={5}
+                        max={15000}
+                        value={contribMenuPrice}
+                        onChange={(e) => setContribMenuPrice(e.target.value)}
+                        placeholder="e.g. 120"
+                        className="w-full h-11 px-3 rounded-xl border border-[#d6cbba] bg-[#faf7f2] font-mono-data text-xs text-[#1c1613]"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="contrib-menu-src" className="block font-semibold text-[#5c4e45] mb-1">
+                        Source (Bill / Menu Board)
+                      </label>
+                      <input
+                        id="contrib-menu-src"
+                        type="text"
+                        maxLength={120}
+                        value={contribMenuSource}
+                        onChange={(e) => setContribMenuSource(e.target.value)}
+                        placeholder="e.g. Menu board photo, Nov 2026"
+                        className="w-full h-11 px-3 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-xs text-[#1c1613]"
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {contribTab === 'facility_update' && (
+                <>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div>
+                      <label htmlFor="contrib-fac-field" className="block font-semibold text-[#5c4e45] mb-1">
+                        Facility Detail *
+                      </label>
+                      <select
+                        id="contrib-fac-field"
+                        value={contribFacField}
+                        onChange={(e) => setContribFacField(e.target.value)}
+                        className="w-full h-11 px-3 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-xs text-[#1c1613]"
+                      >
+                        <option value="wifi_mbps">Measured Wi-Fi Speed (Mbps)</option>
+                        <option value="wifi_available">Wi-Fi Available (yes / no)</option>
+                        <option value="charging_sockets">Power Sockets Available (yes / no)</option>
+                        <option value="sockets_count">Number of Charging Points</option>
+                        <option value="noise_level">Noise Level (1 quiet – 5 loud)</option>
+                        <option value="family_friendly">Family-Friendly (yes / no)</option>
+                        <option value="timings">Updated Opening Hours</option>
+                        <option value="seating_info">Seating Setup Details</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label htmlFor="contrib-fac-val" className="block font-semibold text-[#5c4e45] mb-1">
+                        Verified Observation *
+                      </label>
+                      <input
+                        id="contrib-fac-val"
+                        type="text"
+                        required
+                        maxLength={140}
+                        value={contribFacValue}
+                        onChange={(e) => setContribFacValue(e.target.value)}
+                        placeholder="e.g. 65 Mbps, or yes"
+                        className="w-full h-11 px-3 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-xs text-[#1c1613]"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label htmlFor="contrib-fac-note" className="block font-semibold text-[#5c4e45] mb-1">
+                      Verification Context (Optional)
+                    </label>
+                    <input
+                      id="contrib-fac-note"
+                      type="text"
+                      maxLength={220}
+                      value={contribFacNote}
+                      onChange={(e) => setContribFacNote(e.target.value)}
+                      placeholder="e.g. Tested on ground floor corner desk"
+                      className="w-full h-11 px-3 rounded-xl border border-[#d6cbba] bg-[#faf7f2] text-xs text-[#1c1613]"
+                    />
+                  </div>
+                </>
+              )}
+
+              <button
+                type="submit"
+                disabled={contribBusy || (contribTab === 'photo' && !contribPhotoDataUrl)}
+                className="w-full min-h-[44px] py-2.5 rounded-xl bg-[#b45309] hover:bg-[#92400e] disabled:opacity-60 text-white text-xs font-semibold transition-colors"
+              >
+                {contribBusy ? 'Submitting...' : 'Submit for CafeDesk Moderation (+5 pts)'}
+              </button>
+            </form>
           </div>
         </div>
       )}

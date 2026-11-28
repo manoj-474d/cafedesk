@@ -1,4 +1,5 @@
 import type { LocationItem } from '../types/cms';
+import { isFamilyFriendlyCafe } from '../utils/cafeRecommendations';
 
 export interface SeoPageFaq {
   question: string;
@@ -31,6 +32,8 @@ export interface SeoLandingPageDef {
   requiresWifi?: boolean;
   requiresStudy?: boolean;
   requiresWork?: boolean;
+  requiresFamilyFriendly?: boolean;
+  requiresSockets?: boolean;
   liveSearchQuery: string;
   liveSearchArea?: string;
   relatedSlugs: string[];
@@ -490,6 +493,80 @@ export const LOCAL_SEO_PAGES: SeoLandingPageDef[] = [
         question: 'Why do some cafes show "Speed not verified" even when Wi-Fi is available?',
         answer:
           'Cafe Desk follows strict data integrity: we confirm Wi-Fi availability when verified, and only display an exact Mbps speed after a real on-site speed test has been logged.',
+      },
+    ],
+  },
+  {
+    slug: 'cafes-with-charging-points-in-bengaluru',
+    path: '/cafes-with-charging-points-in-bengaluru',
+    group: 'category',
+    title: 'Cafes with Charging Points & Power Sockets in Bengaluru | Cafe Desk',
+    metaDescription:
+      'Find laptop-friendly Bengaluru cafes with verified charging points & wall power sockets across Indiranagar, Koramangala, HSR Layout, Jayanagar & Whitefield.',
+    h1: 'Cafes with Verified Charging Points & Power Sockets in Bengaluru',
+    kicker: 'Power Sockets & Laptop Desks',
+    intro:
+      'Running low on battery during a 3-hour work sprint or exam study block? Browse Bengaluru cafes where power outlets and table charging points are confirmed, with transparent socket availability before you commute.',
+    highlights: [
+      'Filters exclusively for Bengaluru cafes with confirmed wall charging sockets or measured plug counts.',
+      'Highlights exact socket counts whenever field-verified, and displays honest "Unknown" labels where unmeasured.',
+      'Covers Indiranagar, Koramangala, Jayanagar, HSR Layout, BTM Layout & Whitefield.',
+    ],
+    requiresSockets: true,
+    liveSearchQuery: 'cafes with power sockets charging points bengaluru',
+    relatedSlugs: [
+      'work-friendly-cafes-in-bengaluru',
+      'cafes-with-wifi-in-bengaluru',
+      'study-cafes-in-bengaluru',
+      'cafes-in-koramangala',
+    ],
+    faqs: [
+      {
+        question: 'How does Cafe Desk verify power sockets at Bengaluru cafes?',
+        answer:
+          'Socket availability and exact plug counts are recorded through curated field checks, verified owner updates, and member community facility verifications.',
+      },
+      {
+        question: 'Are budget cafes with charging points included?',
+        answer:
+          'Yes. Results are ordered to spotlight affordable budget-friendly spots with charging sockets alongside specialty work cafes.',
+      },
+    ],
+  },
+  {
+    slug: 'family-friendly-cafes-in-bengaluru',
+    path: '/family-friendly-cafes-in-bengaluru',
+    group: 'category',
+    title: 'Best Family-Friendly & Weekend Brunch Cafes in Bengaluru | Cafe Desk',
+    metaDescription:
+      'Discover spacious, welcoming family-friendly cafes, bakeries & all-day breakfast spots in Bengaluru across Koramangala, Indiranagar, Jayanagar & Rajajinagar.',
+    h1: 'Best Family-Friendly Cafes & Bakery Hangouts in Bengaluru',
+    kicker: 'Families, Brunch & Desserts',
+    intro:
+      'Looking for comfortable seating, fresh bakery treats, desserts, and welcoming daytime spaces for parents, kids, or multi-generational weekend catch-ups? Compare Bengaluru’s family-friendly cafes and all-day breakfast spots.',
+    highlights: [
+      'Curated for spacious group seating, bakery pastries, pancakes/waffles, and calm daytime comfort.',
+      'Includes both budget neighbourhood bakeries and full all-day brunch cafes.',
+      'Easy Google Maps directions and live opening hours before your family outing.',
+    ],
+    requiresFamilyFriendly: true,
+    liveSearchQuery: 'family friendly bakery brunch dessert cafes bengaluru',
+    relatedSlugs: [
+      'snacks-and-bakeries-in-bengaluru',
+      'budget-breakfast-cafes-in-bengaluru',
+      'best-cafes-in-bengaluru',
+      'cafes-in-jayanagar',
+    ],
+    faqs: [
+      {
+        question: 'What makes a Bengaluru cafe good for families on Cafe Desk?',
+        answer:
+          'Cafes listed here either have confirmed family-friendly status, spacious group seating, or welcoming bakery/all-day breakfast menus suited to relaxed weekend visits.',
+      },
+      {
+        question: 'Can I compare snacks and dessert prices before going?',
+        answer:
+          'Yes. Average spend estimates and menu categories appear upfront, and Cafe Desk Plus members can unlock item-by-item ₹ prices across bakeries and brunch cafes.',
       },
     ],
   },
@@ -1205,6 +1282,19 @@ export function filterCafesForSeoPage(
     }
 
     if (page.requiresWork && loc.suitable_for_working !== 'yes' && !loc.laptop_friendly) {
+      return false;
+    }
+
+    if (page.requiresFamilyFriendly && !isFamilyFriendlyCafe(loc)) {
+      return false;
+    }
+
+    if (
+      page.requiresSockets &&
+      loc.charging_sockets !== 'yes' &&
+      !loc.sockets_claimed &&
+      !(loc.sockets_count !== null && loc.sockets_count > 0)
+    ) {
       return false;
     }
 

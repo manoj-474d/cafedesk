@@ -3,21 +3,43 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { CAFES } from '../src/data/cafes.ts';
-import { EXPLORER_BADGES, SITE_CONFIG } from '../src/config/constants.ts';
+import {
+  DEFAULT_FEATURE_FLAGS,
+  DEFAULT_SCORING_CONFIG,
+  EXPLORER_BADGES,
+  SITE_CONFIG,
+} from '../src/config/constants.ts';
+import {
+  BENGALURU_REGIONS,
+  DEFAULT_BENGALURU_LOCALITIES,
+  slugifyLocalityName,
+} from '../src/config/localities.ts';
 import type {
   AccessControlSettings,
   AccessSectionKey,
   AmenityState,
+  BengaluruRegionName,
   CafeAccessRule,
+  CafeReviewSummary,
   CafeSourceType,
   CommunityCorrectionRecord,
   DietaryType,
+  DiscoveryJobLogRecord,
+  DiscoveryJobRecord,
+  DiscoveryLocalityStatus,
+  DiscoveryPlaceRefRecord,
+  DiscoverySettingsRecord,
   ExplorerAchievementStatus,
+  FeatureFlags,
+  LocalityRecord,
+  LocalitySubzoneDef,
+  LocalitySuggestionRecord,
   LocationItem,
   MediaAsset,
   MenuItemRecord,
   NavigationItem,
   PlacesApiUsageSummary,
+  ScoringConfig,
   SectionOverrideMode,
   SiteSettings,
   TestimonialItem,
@@ -343,6 +365,11 @@ export const DEFAULT_SITE_SETTINGS: SiteSettings = {
   seo_allow_indexing: true,
   google_site_verification: '',
   access_control: DEFAULT_ACCESS_CONTROL,
+  feature_flags: { ...DEFAULT_FEATURE_FLAGS },
+  scoring_config: {
+    work_ready_weights: { ...DEFAULT_SCORING_CONFIG.work_ready_weights },
+    confidence_weights: { ...DEFAULT_SCORING_CONFIG.confidence_weights },
+  },
 };
 
 let dbInstance: DatabaseSync | null = null;
@@ -802,6 +829,270 @@ export function getDb(): DatabaseSync {
       error_message TEXT NOT NULL DEFAULT '',
       created_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS cafe_reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cafe_id TEXT NOT NULL DEFAULT '',
+      cafe_key TEXT NOT NULL,
+      cafe_name TEXT NOT NULL,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      author_name TEXT NOT NULL,
+      rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+      visit_purpose TEXT NOT NULL DEFAULT 'coffee_food',
+      wifi_confirmed TEXT NOT NULL DEFAULT 'unknown',
+      sockets_confirmed TEXT NOT NULL DEFAULT 'unknown',
+      noise_observed INTEGER,
+      review_text TEXT NOT NULL,
+      helpful_count INTEGER NOT NULL DEFAULT 0,
+      moderation_status TEXT NOT NULL DEFAULT 'approved',
+      content_hash TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS community_contributions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cafe_id TEXT NOT NULL DEFAULT '',
+      cafe_key TEXT NOT NULL,
+      cafe_name TEXT NOT NULL,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      contributor_name TEXT NOT NULL,
+      contribution_type TEXT NOT NULL,
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      photo_url TEXT NOT NULL DEFAULT '',
+      points_awarded INTEGER NOT NULL DEFAULT 0,
+      moderation_status TEXT NOT NULL DEFAULT 'pending',
+      reviewer_note TEXT NOT NULL DEFAULT '',
+      content_hash TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS user_points_ledger (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      points INTEGER NOT NULL,
+      reason TEXT NOT NULL,
+      reference_type TEXT NOT NULL DEFAULT '',
+      reference_id TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS cafe_follows (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      cafe_key TEXT NOT NULL,
+      cafe_name TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      UNIQUE(user_id, cafe_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS user_notifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      cafe_key TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL,
+      message TEXT NOT NULL,
+      link TEXT NOT NULL DEFAULT '',
+      is_read INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS user_preferences (
+      user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      favourite_areas_json TEXT NOT NULL DEFAULT '[]',
+      favourite_categories_json TEXT NOT NULL DEFAULT '[]',
+      preferred_max_budget INTEGER,
+      personalisation_enabled INTEGER NOT NULL DEFAULT 1,
+      public_profile_enabled INTEGER NOT NULL DEFAULT 0,
+      save_visit_history INTEGER NOT NULL DEFAULT 1,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS user_visit_checklists (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      cafe_key TEXT NOT NULL,
+      checklist_json TEXT NOT NULL DEFAULT '{}',
+      feedback_submitted INTEGER NOT NULL DEFAULT 0,
+      visited_at INTEGER,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(user_id, cafe_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS cafe_owners (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+      business_name TEXT NOT NULL DEFAULT '',
+      owner_name TEXT NOT NULL DEFAULT '',
+      phone TEXT NOT NULL DEFAULT '',
+      email TEXT NOT NULL DEFAULT '',
+      plan_tier TEXT NOT NULL DEFAULT 'free',
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS cafe_claim_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cafe_id TEXT NOT NULL REFERENCES cafes(id) ON DELETE CASCADE,
+      cafe_name TEXT NOT NULL,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      owner_name TEXT NOT NULL,
+      phone TEXT NOT NULL DEFAULT '',
+      email TEXT NOT NULL DEFAULT '',
+      verification_proof TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending',
+      admin_note TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL,
+      reviewed_at INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS owner_change_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cafe_id TEXT NOT NULL REFERENCES cafes(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      change_type TEXT NOT NULL,
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      summary TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending',
+      admin_note TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL,
+      reviewed_at INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS cafe_promotions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cafe_id TEXT NOT NULL REFERENCES cafes(id) ON DELETE CASCADE,
+      cafe_name TEXT NOT NULL,
+      owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      badge_label TEXT NOT NULL DEFAULT 'Sponsored',
+      placement TEXT NOT NULL DEFAULT 'homepage',
+      area TEXT NOT NULL DEFAULT '',
+      budget_inr INTEGER NOT NULL DEFAULT 0,
+      starts_at INTEGER NOT NULL,
+      ends_at INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS localities (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      slug TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      region TEXT NOT NULL,
+      city TEXT NOT NULL DEFAULT 'Bengaluru',
+      alt_spellings_json TEXT NOT NULL DEFAULT '[]',
+      local_names_json TEXT NOT NULL DEFAULT '[]',
+      keywords_json TEXT NOT NULL DEFAULT '[]',
+      lat REAL NOT NULL,
+      lng REAL NOT NULL,
+      radius_meters INTEGER NOT NULL DEFAULT 2800,
+      subzones_json TEXT NOT NULL DEFAULT '[]',
+      active INTEGER NOT NULL DEFAULT 1,
+      admin_approved INTEGER NOT NULL DEFAULT 1,
+      discovery_status TEXT NOT NULL DEFAULT 'pending',
+      last_discovery_at INTEGER,
+      discovery_progress INTEGER NOT NULL DEFAULT 0,
+      categories_completed_json TEXT NOT NULL DEFAULT '[]',
+      categories_failed_json TEXT NOT NULL DEFAULT '[]',
+      discovered_count INTEGER NOT NULL DEFAULT 0,
+      unique_place_count INTEGER NOT NULL DEFAULT 0,
+      duplicate_count INTEGER NOT NULL DEFAULT 0,
+      coverage_notes TEXT NOT NULL DEFAULT '',
+      last_error TEXT NOT NULL DEFAULT '',
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      next_retry_at INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS locality_suggestions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      region TEXT NOT NULL DEFAULT 'Outer Bengaluru',
+      alt_spellings_json TEXT NOT NULL DEFAULT '[]',
+      notes TEXT NOT NULL DEFAULT '',
+      suggested_by_email TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at INTEGER NOT NULL,
+      reviewed_at INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS discovery_place_refs (
+      place_id TEXT PRIMARY KEY,
+      primary_locality_id INTEGER REFERENCES localities(id) ON DELETE SET NULL,
+      secondary_locality_ids_json TEXT NOT NULL DEFAULT '[]',
+      cafedesk_category TEXT NOT NULL DEFAULT 'Cafe',
+      primary_type TEXT NOT NULL DEFAULT '',
+      types_json TEXT NOT NULL DEFAULT '[]',
+      source_query_tags_json TEXT NOT NULL DEFAULT '[]',
+      discovered_categories_json TEXT NOT NULL DEFAULT '[]',
+      match_confidence REAL NOT NULL DEFAULT 1.0,
+      duplicate_review_status TEXT NOT NULL DEFAULT 'clean',
+      possible_duplicate_of_cafe_id TEXT NOT NULL DEFAULT '',
+      possible_duplicate_of_place_id TEXT NOT NULL DEFAULT '',
+      promoted_cafe_id TEXT NOT NULL DEFAULT '',
+      discovery_count INTEGER NOT NULL DEFAULT 1,
+      first_discovered_at INTEGER NOT NULL,
+      last_seen_at INTEGER NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS places_transient_cache (
+      place_id TEXT PRIMARY KEY,
+      payload_json TEXT NOT NULL,
+      lat REAL,
+      lng REAL,
+      fetched_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS discovery_settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      scheduler_enabled INTEGER NOT NULL DEFAULT 1,
+      paused INTEGER NOT NULL DEFAULT 0,
+      interval_minutes INTEGER NOT NULL DEFAULT 180,
+      daily_call_cap INTEGER NOT NULL DEFAULT 180,
+      max_calls_per_run INTEGER NOT NULL DEFAULT 25,
+      pages_per_query_cap INTEGER NOT NULL DEFAULT 2,
+      stale_after_days INTEGER NOT NULL DEFAULT 14,
+      include_nearby_distance_sweep INTEGER NOT NULL DEFAULT 1,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS discovery_jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      scope TEXT NOT NULL,
+      target_key TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'running',
+      calls_made INTEGER NOT NULL DEFAULT 0,
+      cache_hits INTEGER NOT NULL DEFAULT 0,
+      places_seen INTEGER NOT NULL DEFAULT 0,
+      new_places INTEGER NOT NULL DEFAULT 0,
+      duplicates_flagged INTEGER NOT NULL DEFAULT 0,
+      failed_queries INTEGER NOT NULL DEFAULT 0,
+      estimated_cost_usd REAL NOT NULL DEFAULT 0,
+      error_summary TEXT NOT NULL DEFAULT '',
+      started_at INTEGER NOT NULL,
+      finished_at INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS discovery_job_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id INTEGER NOT NULL REFERENCES discovery_jobs(id) ON DELETE CASCADE,
+      locality_slug TEXT NOT NULL,
+      query_label TEXT NOT NULL,
+      endpoint TEXT NOT NULL,
+      page_num INTEGER NOT NULL DEFAULT 1,
+      results_count INTEGER NOT NULL DEFAULT 0,
+      new_count INTEGER NOT NULL DEFAULT 0,
+      status_code INTEGER NOT NULL DEFAULT 200,
+      error_message TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL
+    );
   `);
 
   // Non-destructive column migrations for pre-existing database files
@@ -875,9 +1166,40 @@ export function getDb(): DatabaseSync {
   ensureColumn(db, 'cafes', 'locked_sections_override_json', "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn(db, 'cafes', 'source_type', "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'cafes', 'merged_into_id', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'cafes', 'family_friendly', "TEXT NOT NULL DEFAULT 'unknown'");
+  ensureColumn(db, 'cafes', 'desserts_price', 'TEXT');
+  ensureColumn(db, 'cafes', 'owner_verified', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'cafes', 'claimed_by_owner_id', 'INTEGER');
+  ensureColumn(db, 'cafes', 'data_source_notes', "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'cafes', 'created_at', 'INTEGER');
   ensureColumn(db, 'media_assets', 'description', "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'media_assets', 'category', "TEXT NOT NULL DEFAULT 'General'");
+  ensureColumn(db, 'user_collections', 'share_slug', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'user_collections', 'is_public', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'user_collections', 'updated_at', 'INTEGER NOT NULL DEFAULT 0');
+
+  // Performance & foreign-key indexes for CafeDesk 2.0
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_cafes_slug ON cafes(slug);
+    CREATE INDEX IF NOT EXISTS idx_cafes_area_published ON cafes(area, published);
+    CREATE INDEX IF NOT EXISTS idx_menu_items_cafe_id ON menu_items(cafe_id);
+    CREATE INDEX IF NOT EXISTS idx_cafe_reviews_key_status ON cafe_reviews(cafe_key, moderation_status);
+    CREATE INDEX IF NOT EXISTS idx_cafe_reviews_user ON cafe_reviews(user_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_contrib_key_status ON community_contributions(cafe_key, moderation_status);
+    CREATE INDEX IF NOT EXISTS idx_contrib_user ON community_contributions(user_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_points_ledger_user ON user_points_ledger(user_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_cafe_follows_key ON cafe_follows(cafe_key);
+    CREATE INDEX IF NOT EXISTS idx_user_notifications_user ON user_notifications(user_id, is_read, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_collections_share_slug ON user_collections(share_slug);
+    CREATE INDEX IF NOT EXISTS idx_claims_status ON cafe_claim_requests(status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_owner_changes_status ON owner_change_requests(status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_promotions_status ON cafe_promotions(status, starts_at, ends_at);
+    CREATE INDEX IF NOT EXISTS idx_localities_region_active ON localities(region, active, admin_approved);
+    CREATE INDEX IF NOT EXISTS idx_discovery_refs_locality ON discovery_place_refs(primary_locality_id, cafedesk_category, active);
+    CREATE INDEX IF NOT EXISTS idx_discovery_refs_dup ON discovery_place_refs(duplicate_review_status);
+    CREATE INDEX IF NOT EXISTS idx_places_transient_exp ON places_transient_cache(expires_at);
+    CREATE INDEX IF NOT EXISTS idx_discovery_logs_job ON discovery_job_logs(job_id, id DESC);
+  `);
 
   // Migrate pre-existing cafes table if nullable metrics still have legacy NOT NULL constraints
   const cafesSchemaCols = db.prepare('PRAGMA table_info(cafes)').all() as Array<{
@@ -1643,6 +1965,42 @@ export function getDb(): DatabaseSync {
     }
   }
 
+  // Seed Bengaluru Locality Master Database & Discovery Settings
+  const insertLocality = db.prepare(
+    `INSERT OR IGNORE INTO localities (
+      slug, name, region, city, alt_spellings_json, local_names_json, keywords_json,
+      lat, lng, radius_meters, subzones_json, active, admin_approved,
+      discovery_status, discovery_progress, created_at, updated_at
+    ) VALUES (?, ?, ?, 'Bengaluru', ?, ?, ?, ?, ?, ?, ?, 1, 1, 'pending', 0, ?, ?)`
+  );
+  for (const loc of DEFAULT_BENGALURU_LOCALITIES) {
+    insertLocality.run(
+      loc.slug,
+      loc.name,
+      loc.region,
+      JSON.stringify(loc.altSpellings),
+      JSON.stringify(loc.localNames),
+      JSON.stringify(loc.keywords),
+      loc.lat,
+      loc.lng,
+      loc.radiusMeters,
+      JSON.stringify(loc.subzones),
+      now,
+      now
+    );
+  }
+
+  db.prepare(
+    `INSERT OR IGNORE INTO discovery_settings (
+      id, scheduler_enabled, paused, interval_minutes, daily_call_cap,
+      max_calls_per_run, pages_per_query_cap, stale_after_days,
+      include_nearby_distance_sweep, updated_at
+    ) VALUES (1, 1, 0, 180, 180, 25, 2, 14, 1, ?)`
+  ).run(now);
+
+  // Purge any transient Places cache entries past 24h TTL on startup
+  db.prepare('DELETE FROM places_transient_cache WHERE expires_at <= ?').run(now);
+
   dbInstance = db;
   return db;
 }
@@ -1755,6 +2113,35 @@ export function listLocationsFromDb(includeUnpublished = false): LocationItem[] 
     menuByCafe.set(item.cafe_id, arr);
   }
 
+  // Batch review & facility confirmation aggregates (avoids N+1 queries)
+  const reviewAggRows = db
+    .prepare(
+      `SELECT cafe_key,
+              COUNT(*) as review_count,
+              AVG(rating) as avg_rating,
+              SUM(CASE WHEN wifi_confirmed = 'yes' THEN 1 ELSE 0 END) as wifi_reports,
+              SUM(CASE WHEN sockets_confirmed = 'yes' THEN 1 ELSE 0 END) as socket_reports
+       FROM cafe_reviews
+       WHERE moderation_status = 'approved'
+       GROUP BY cafe_key`
+    )
+    .all() as Array<{
+    cafe_key: string;
+    review_count: number;
+    avg_rating: number | null;
+    wifi_reports: number;
+    socket_reports: number;
+  }>;
+  const reviewSummaryMap = new Map<string, CafeReviewSummary>();
+  for (const r of reviewAggRows) {
+    reviewSummaryMap.set(String(r.cafe_key), {
+      average_rating: r.avg_rating !== null ? Math.round(Number(r.avg_rating) * 10) / 10 : null,
+      review_count: Number(r.review_count || 0),
+      verified_wifi_reports: Number(r.wifi_reports || 0),
+      verified_socket_reports: Number(r.socket_reports || 0),
+    });
+  }
+
   return rows.map((row) => {
     const photosApproved = Boolean(row.photos_approved);
     const rawPhotos = safeParseJson<string[]>(row.photos_json, []);
@@ -1848,6 +2235,7 @@ export function listLocationsFromDb(includeUnpublished = false): LocationItem[] 
       seating_info: String(row.seating_info || ''),
       ambience: String(row.ambience || ''),
       outdoor_seating: parseAmenityState(row.outdoor_seating),
+      family_friendly: parseAmenityState(row.family_friendly),
       suitable_for_studying: suitableForStudying,
       suitable_for_working: suitableForWorking,
       noise_level:
@@ -1859,6 +2247,7 @@ export function listLocationsFromDb(includeUnpublished = false): LocationItem[] 
       coffee_price: toNullableStr(row.coffee_price),
       tea_price: toNullableStr(row.tea_price),
       snacks_price: toNullableStr(row.snacks_price),
+      desserts_price: toNullableStr(row.desserts_price),
       meals_price: toNullableStr(row.meals_price),
       popular_items: safeParseJson<string[]>(row.popular_items_json, []),
       rating: toNullableFloat(row.rating),
@@ -1898,6 +2287,17 @@ export function listLocationsFromDb(includeUnpublished = false): LocationItem[] 
         }
         return 'cafedesk_verified';
       })(),
+      owner_verified: Boolean(row.owner_verified),
+      claimed_by_owner_id: toNullableInt(row.claimed_by_owner_id),
+      data_source_notes: String(row.data_source_notes || ''),
+      review_summary:
+        reviewSummaryMap.get(String(row.id)) ??
+        reviewSummaryMap.get(String(row.slug || row.id)) ?? {
+          average_rating: null,
+          review_count: 0,
+          verified_wifi_reports: 0,
+          verified_socket_reports: 0,
+        },
       merged_into_id: String(row.merged_into_id || '').trim() || null,
       sample: Boolean(row.sample),
       access_rule: (['inherit', 'free_public', 'subscription_required', 'specific_plans'].includes(
@@ -1942,6 +2342,26 @@ export function getSiteSettingsFromDb(): SiteSettings {
       out[k] = raw;
     }
   }
+
+  const parsedFlags = (out.feature_flags && typeof out.feature_flags === 'object'
+    ? out.feature_flags
+    : {}) as Partial<FeatureFlags>;
+  out.feature_flags = { ...DEFAULT_FEATURE_FLAGS, ...parsedFlags };
+
+  const parsedScoring = (out.scoring_config && typeof out.scoring_config === 'object'
+    ? out.scoring_config
+    : {}) as Partial<ScoringConfig>;
+  out.scoring_config = {
+    work_ready_weights: {
+      ...DEFAULT_SCORING_CONFIG.work_ready_weights,
+      ...(parsedScoring.work_ready_weights || {}),
+    },
+    confidence_weights: {
+      ...DEFAULT_SCORING_CONFIG.confidence_weights,
+      ...(parsedScoring.confidence_weights || {}),
+    },
+  };
+
   return out as unknown as SiteSettings;
 }
 
@@ -2412,5 +2832,408 @@ export function recordExplorerEventInDb(
   ).run(userId, eventType, cleanTarget, Date.now());
   return getUserAchievementsFromDb(userId);
 }
+
+// ============================================================================
+// Bengaluru Locality Master Database & ToS-Compliant Discovery Helpers
+// ============================================================================
+
+export const TRANSIENT_PLACES_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // Strict < 30 day ToS window
+
+function mapLocalityRow(r: Record<string, unknown>): LocalityRecord {
+  const validRegions = new Set<string>(BENGALURU_REGIONS);
+  const rawRegion = String(r.region || 'Outer Bengaluru');
+  const region: BengaluruRegionName = (
+    validRegions.has(rawRegion) ? rawRegion : 'Outer Bengaluru'
+  ) as BengaluruRegionName;
+  const rawStatus = String(r.discovery_status || 'pending');
+  const discoveryStatus: DiscoveryLocalityStatus = (
+    ['pending', 'running', 'completed', 'partial', 'failed'].includes(rawStatus)
+      ? rawStatus
+      : 'pending'
+  ) as DiscoveryLocalityStatus;
+
+  return {
+    id: Number(r.id),
+    slug: String(r.slug),
+    name: String(r.name),
+    region,
+    city: String(r.city || 'Bengaluru'),
+    alt_spellings: safeParseJson<string[]>(r.alt_spellings_json, []),
+    local_names: safeParseJson<string[]>(r.local_names_json, []),
+    keywords: safeParseJson<string[]>(r.keywords_json, []),
+    lat: Number(r.lat ?? 12.9716),
+    lng: Number(r.lng ?? 77.5946),
+    radius_meters: Number(r.radius_meters ?? 2800),
+    subzones: safeParseJson<LocalitySubzoneDef[]>(r.subzones_json, []),
+    active: Boolean(r.active ?? 1),
+    admin_approved: Boolean(r.admin_approved ?? 1),
+    discovery_status: discoveryStatus,
+    last_discovery_at:
+      r.last_discovery_at !== null && r.last_discovery_at !== undefined
+        ? Number(r.last_discovery_at)
+        : null,
+    discovery_progress: Number(r.discovery_progress ?? 0),
+    categories_completed: safeParseJson<string[]>(r.categories_completed_json, []),
+    categories_failed: safeParseJson<string[]>(r.categories_failed_json, []),
+    discovered_count: Number(r.discovered_count ?? 0),
+    unique_place_count: Number(r.unique_place_count ?? 0),
+    duplicate_count: Number(r.duplicate_count ?? 0),
+    coverage_notes: String(r.coverage_notes || ''),
+    last_error: String(r.last_error || ''),
+    retry_count: Number(r.retry_count ?? 0),
+    next_retry_at:
+      r.next_retry_at !== null && r.next_retry_at !== undefined
+        ? Number(r.next_retry_at)
+        : null,
+    created_at: Number(r.created_at ?? 0),
+    updated_at: Number(r.updated_at ?? 0),
+  };
+}
+
+export function listLocalitiesFromDb(options?: {
+  activeOnly?: boolean;
+  approvedOnly?: boolean;
+  region?: string;
+}): LocalityRecord[] {
+  const db = getDb();
+  const clauses: string[] = [];
+  const params: Array<string | number> = [];
+  if (options?.activeOnly) clauses.push('active = 1');
+  if (options?.approvedOnly) clauses.push('admin_approved = 1');
+  if (options?.region && options.region !== 'all') {
+    clauses.push('region = ?');
+    params.push(options.region);
+  }
+  const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+  const rows = db
+    .prepare(`SELECT * FROM localities ${where} ORDER BY region ASC, name ASC`)
+    .all(...params) as Array<Record<string, unknown>>;
+  return rows.map(mapLocalityRow);
+}
+
+export function getLocalityByIdOrSlugFromDb(idOrSlug: string | number): LocalityRecord | null {
+  const db = getDb();
+  const row =
+    typeof idOrSlug === 'number' || /^\d+$/.test(String(idOrSlug))
+      ? (db.prepare('SELECT * FROM localities WHERE id = ?').get(Number(idOrSlug)) as
+          | Record<string, unknown>
+          | undefined)
+      : (db
+          .prepare('SELECT * FROM localities WHERE slug = ? OR lower(name) = lower(?)')
+          .get(String(idOrSlug).trim(), String(idOrSlug).trim()) as
+          | Record<string, unknown>
+          | undefined);
+  return row ? mapLocalityRow(row) : null;
+}
+
+export function findLocalityByQueryText(text: string): LocalityRecord | null {
+  const clean = String(text || '').toLowerCase().trim();
+  if (!clean) return null;
+  const all = listLocalitiesFromDb({ activeOnly: false, approvedOnly: false });
+  // Exact match on slug, name, alt spellings, local names
+  for (const loc of all) {
+    if (loc.slug === clean || loc.name.toLowerCase() === clean) return loc;
+    if (loc.alt_spellings.some((a) => a.toLowerCase() === clean)) return loc;
+    if (loc.local_names.some((n) => n.toLowerCase() === clean)) return loc;
+  }
+  // Substring match favoring longest phrase
+  let bestMatch: { loc: LocalityRecord; len: number } | null = null;
+  for (const loc of all) {
+    const terms = [loc.name, ...loc.alt_spellings, ...loc.local_names];
+    for (const term of terms) {
+      const t = term.toLowerCase().trim();
+      if (t.length >= 3 && clean.includes(t)) {
+        if (!bestMatch || t.length > bestMatch.len) {
+          bestMatch = { loc, len: t.length };
+        }
+      }
+    }
+  }
+  return bestMatch?.loc ?? null;
+}
+
+export function createOrUpdateLocalityInDb(input: {
+  id?: number;
+  name: string;
+  region: BengaluruRegionName;
+  city?: string;
+  alt_spellings?: string[];
+  local_names?: string[];
+  keywords?: string[];
+  lat: number;
+  lng: number;
+  radius_meters?: number;
+  subzones?: LocalitySubzoneDef[];
+  active?: boolean;
+  admin_approved?: boolean;
+  coverage_notes?: string;
+}): LocalityRecord {
+  const db = getDb();
+  const now = Date.now();
+  const slug = slugifyLocalityName(input.name) || `locality-${now}`;
+  const altJson = JSON.stringify((input.alt_spellings ?? []).filter(Boolean));
+  const localJson = JSON.stringify((input.local_names ?? []).filter(Boolean));
+  const kwJson = JSON.stringify((input.keywords ?? []).filter(Boolean));
+  const subJson = JSON.stringify(input.subzones ?? []);
+  const radius = Math.min(12000, Math.max(800, Math.round(input.radius_meters ?? 2800)));
+
+  if (input.id) {
+    db.prepare(
+      `UPDATE localities SET
+        name = ?, region = ?, city = ?, alt_spellings_json = ?, local_names_json = ?,
+        keywords_json = ?, lat = ?, lng = ?, radius_meters = ?, subzones_json = ?,
+        active = COALESCE(?, active), admin_approved = COALESCE(?, admin_approved),
+        coverage_notes = COALESCE(?, coverage_notes), updated_at = ?
+       WHERE id = ?`
+    ).run(
+      input.name.trim(),
+      input.region,
+      input.city || 'Bengaluru',
+      altJson,
+      localJson,
+      kwJson,
+      input.lat,
+      input.lng,
+      radius,
+      subJson,
+      input.active === undefined ? null : input.active ? 1 : 0,
+      input.admin_approved === undefined ? null : input.admin_approved ? 1 : 0,
+      input.coverage_notes ?? null,
+      now,
+      input.id
+    );
+    return getLocalityByIdOrSlugFromDb(input.id)!;
+  }
+
+  const existing = getLocalityByIdOrSlugFromDb(slug);
+  if (existing) {
+    return createOrUpdateLocalityInDb({ ...input, id: existing.id });
+  }
+
+  const res = db
+    .prepare(
+      `INSERT INTO localities (
+        slug, name, region, city, alt_spellings_json, local_names_json, keywords_json,
+        lat, lng, radius_meters, subzones_json, active, admin_approved,
+        discovery_status, discovery_progress, coverage_notes, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)`
+    )
+    .run(
+      slug,
+      input.name.trim(),
+      input.region,
+      input.city || 'Bengaluru',
+      altJson,
+      localJson,
+      kwJson,
+      input.lat,
+      input.lng,
+      radius,
+      subJson,
+      input.active === undefined ? 1 : input.active ? 1 : 0,
+      input.admin_approved === undefined ? 1 : input.admin_approved ? 1 : 0,
+      input.coverage_notes || '',
+      now,
+      now
+    );
+
+  return getLocalityByIdOrSlugFromDb(Number(res.lastInsertRowid))!;
+}
+
+export function listLocalitySuggestionsFromDb(): LocalitySuggestionRecord[] {
+  const db = getDb();
+  const rows = db
+    .prepare('SELECT * FROM locality_suggestions ORDER BY status = \'pending\' DESC, id DESC LIMIT 120')
+    .all() as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    id: Number(r.id),
+    name: String(r.name),
+    region: String(r.region || 'Outer Bengaluru') as BengaluruRegionName,
+    alt_spellings: safeParseJson<string[]>(r.alt_spellings_json, []),
+    notes: String(r.notes || ''),
+    suggested_by_email: String(r.suggested_by_email || ''),
+    status: (['pending', 'approved', 'rejected'].includes(String(r.status))
+      ? String(r.status)
+      : 'pending') as LocalitySuggestionRecord['status'],
+    created_at: Number(r.created_at ?? 0),
+    reviewed_at:
+      r.reviewed_at !== null && r.reviewed_at !== undefined ? Number(r.reviewed_at) : null,
+  }));
+}
+
+export function getDiscoverySettingsFromDb(): DiscoverySettingsRecord {
+  const db = getDb();
+  const row = db.prepare('SELECT * FROM discovery_settings WHERE id = 1').get() as
+    | Record<string, unknown>
+    | undefined;
+  if (!row) {
+    return {
+      scheduler_enabled: true,
+      paused: false,
+      interval_minutes: 180,
+      daily_call_cap: 180,
+      max_calls_per_run: 25,
+      pages_per_query_cap: 2,
+      stale_after_days: 14,
+      include_nearby_distance_sweep: true,
+      updated_at: Date.now(),
+    };
+  }
+  return {
+    scheduler_enabled: Boolean(row.scheduler_enabled),
+    paused: Boolean(row.paused),
+    interval_minutes: Number(row.interval_minutes ?? 180),
+    daily_call_cap: Number(row.daily_call_cap ?? 180),
+    max_calls_per_run: Number(row.max_calls_per_run ?? 25),
+    pages_per_query_cap: Number(row.pages_per_query_cap ?? 2),
+    stale_after_days: Number(row.stale_after_days ?? 14),
+    include_nearby_distance_sweep: Boolean(row.include_nearby_distance_sweep ?? 1),
+    updated_at: Number(row.updated_at ?? Date.now()),
+  };
+}
+
+export function updateDiscoverySettingsInDb(
+  patch: Partial<DiscoverySettingsRecord>
+): DiscoverySettingsRecord {
+  const db = getDb();
+  const current = getDiscoverySettingsFromDb();
+  const next: DiscoverySettingsRecord = {
+    scheduler_enabled:
+      patch.scheduler_enabled !== undefined ? Boolean(patch.scheduler_enabled) : current.scheduler_enabled,
+    paused: patch.paused !== undefined ? Boolean(patch.paused) : current.paused,
+    interval_minutes:
+      patch.interval_minutes !== undefined
+        ? Math.min(1440, Math.max(15, Math.round(Number(patch.interval_minutes))))
+        : current.interval_minutes,
+    daily_call_cap:
+      patch.daily_call_cap !== undefined
+        ? Math.min(2000, Math.max(10, Math.round(Number(patch.daily_call_cap))))
+        : current.daily_call_cap,
+    max_calls_per_run:
+      patch.max_calls_per_run !== undefined
+        ? Math.min(200, Math.max(5, Math.round(Number(patch.max_calls_per_run))))
+        : current.max_calls_per_run,
+    pages_per_query_cap:
+      patch.pages_per_query_cap !== undefined
+        ? Math.min(3, Math.max(1, Math.round(Number(patch.pages_per_query_cap))))
+        : current.pages_per_query_cap,
+    stale_after_days:
+      patch.stale_after_days !== undefined
+        ? Math.min(60, Math.max(1, Math.round(Number(patch.stale_after_days))))
+        : current.stale_after_days,
+    include_nearby_distance_sweep:
+      patch.include_nearby_distance_sweep !== undefined
+        ? Boolean(patch.include_nearby_distance_sweep)
+        : current.include_nearby_distance_sweep,
+    updated_at: Date.now(),
+  };
+  db.prepare(
+    `UPDATE discovery_settings SET
+      scheduler_enabled = ?, paused = ?, interval_minutes = ?, daily_call_cap = ?,
+      max_calls_per_run = ?, pages_per_query_cap = ?, stale_after_days = ?,
+      include_nearby_distance_sweep = ?, updated_at = ?
+     WHERE id = 1`
+  ).run(
+    next.scheduler_enabled ? 1 : 0,
+    next.paused ? 1 : 0,
+    next.interval_minutes,
+    next.daily_call_cap,
+    next.max_calls_per_run,
+    next.pages_per_query_cap,
+    next.stale_after_days,
+    next.include_nearby_distance_sweep ? 1 : 0,
+    next.updated_at
+  );
+  return next;
+}
+
+export function purgeExpiredPlacesTransientCache(): number {
+  const db = getDb();
+  const res = db.prepare('DELETE FROM places_transient_cache WHERE expires_at <= ?').run(Date.now());
+  return Number(res.changes ?? 0);
+}
+
+export function saveTransientPlaceSnapshot(
+  placeId: string,
+  payload: Record<string, unknown>,
+  lat: number | null,
+  lng: number | null
+): void {
+  if (!placeId) return;
+  const db = getDb();
+  const now = Date.now();
+  const expiresAt = now + TRANSIENT_PLACES_CACHE_TTL_MS;
+  db.prepare(
+    `INSERT INTO places_transient_cache (place_id, payload_json, lat, lng, fetched_at, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(place_id) DO UPDATE SET
+       payload_json = excluded.payload_json,
+       lat = excluded.lat,
+       lng = excluded.lng,
+       fetched_at = excluded.fetched_at,
+       expires_at = excluded.expires_at`
+  ).run(placeId, JSON.stringify(payload), lat, lng, now, expiresAt);
+}
+
+export function getTransientPlaceSnapshot(
+  placeId: string
+): DiscoveryPlaceRefRecord['cached_display'] | null {
+  if (!placeId) return null;
+  const db = getDb();
+  const now = Date.now();
+  const row = db
+    .prepare('SELECT payload_json, expires_at FROM places_transient_cache WHERE place_id = ?')
+    .get(placeId) as { payload_json?: string; expires_at?: number } | undefined;
+  if (!row || !row.payload_json) return null;
+  if (Number(row.expires_at ?? 0) <= now) {
+    db.prepare('DELETE FROM places_transient_cache WHERE place_id = ?').run(placeId);
+    return null;
+  }
+  return safeParseJson<DiscoveryPlaceRefRecord['cached_display']>(row.payload_json, null);
+}
+
+export function listDiscoveryJobsFromDb(limit = 15): DiscoveryJobRecord[] {
+  const db = getDb();
+  const rows = db
+    .prepare('SELECT * FROM discovery_jobs ORDER BY id DESC LIMIT ?')
+    .all(limit) as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    id: Number(r.id),
+    scope: String(r.scope || 'locality') as DiscoveryJobRecord['scope'],
+    target_key: String(r.target_key || ''),
+    status: String(r.status || 'completed') as DiscoveryJobRecord['status'],
+    calls_made: Number(r.calls_made ?? 0),
+    cache_hits: Number(r.cache_hits ?? 0),
+    places_seen: Number(r.places_seen ?? 0),
+    new_places: Number(r.new_places ?? 0),
+    duplicates_flagged: Number(r.duplicates_flagged ?? 0),
+    failed_queries: Number(r.failed_queries ?? 0),
+    estimated_cost_usd: Number(r.estimated_cost_usd ?? 0),
+    error_summary: String(r.error_summary || ''),
+    started_at: Number(r.started_at ?? 0),
+    finished_at: r.finished_at !== null && r.finished_at !== undefined ? Number(r.finished_at) : null,
+  }));
+}
+
+export function listDiscoveryJobLogsFromDb(limit = 40): DiscoveryJobLogRecord[] {
+  const db = getDb();
+  const rows = db
+    .prepare('SELECT * FROM discovery_job_logs ORDER BY id DESC LIMIT ?')
+    .all(limit) as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    id: Number(r.id),
+    job_id: Number(r.job_id),
+    locality_slug: String(r.locality_slug || ''),
+    query_label: String(r.query_label || ''),
+    endpoint: String(r.endpoint || ''),
+    page_num: Number(r.page_num ?? 1),
+    results_count: Number(r.results_count ?? 0),
+    new_count: Number(r.new_count ?? 0),
+    status_code: Number(r.status_code ?? 200),
+    error_message: String(r.error_message || ''),
+    created_at: Number(r.created_at ?? 0),
+  }));
+}
+
 
 

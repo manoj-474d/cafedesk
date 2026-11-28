@@ -22,10 +22,14 @@ import {
   Wifi,
   X,
 } from 'lucide-react';
-import { BENGALURU_AREAS, BENGALURU_CENTER } from '../config/constants';
+import { BENGALURU_AREAS, BENGALURU_CENTER, BENGALURU_REGIONS } from '../config/constants';
 import { useAuth } from '../context/AuthContext';
 import type { LocationItem } from '../types/cms';
-import type { GoogleDiscoveryCafe, LatLngPoint } from '../context/DiscoveryContext';
+import {
+  useDiscovery,
+  type GoogleDiscoveryCafe,
+  type LatLngPoint,
+} from '../context/DiscoveryContext';
 import {
   buildGoogleMapsDirectionsUrl,
   formatDistanceKm,
@@ -204,6 +208,7 @@ export function InteractiveCafeMap({
   onSearchThisArea,
 }: InteractiveCafeMapProps) {
   const { authenticated, hasPermission } = useAuth();
+  const { localitiesByRegion } = useDiscovery();
   const canViewPricing = hasPermission('menu_pricing');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isExpanded, setIsExpanded] = useState(false);
@@ -330,7 +335,7 @@ export function InteractiveCafeMap({
           )}
         </div>
         <div className="flex flex-wrap gap-2">
-          {BENGALURU_AREAS.slice(0, 10).map((areaName) => (
+          {BENGALURU_AREAS.slice(0, 16).map((areaName) => (
             <a
               key={areaName}
               href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
@@ -379,22 +384,33 @@ export function InteractiveCafeMap({
             <span className="w-2.5 h-2.5 rounded-full bg-[#2563eb] inline-block" />
             Google Places
           </span>
+          {googleCafes.length > 0 && (
+            <span className="text-[11px] font-medium text-[#5c4e45]">· Powered by Google</span>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           {onSelectArea && (
             <select
-              aria-label="Jump map to Bengaluru area"
+              aria-label="Jump map to Bengaluru locality"
               value={selectedArea}
               onChange={(e) => onSelectArea(e.target.value)}
-              className="h-10 px-3 rounded-xl bg-white border border-[#d6cbba] text-xs font-medium text-[#1c1613]"
+              className="h-10 max-w-[220px] px-3 rounded-xl bg-white border border-[#d6cbba] text-xs font-medium text-[#1c1613]"
             >
-              <option value="">All Bengaluru</option>
-              {BENGALURU_AREAS.slice(0, 10).map((a) => (
-                <option key={a} value={a}>
-                  {a}
-                </option>
-              ))}
+              <option value="">All Bengaluru Localities</option>
+              {BENGALURU_REGIONS.map((region) => {
+                const group = localitiesByRegion[region] ?? [];
+                if (group.length === 0) return null;
+                return (
+                  <optgroup key={region} label={region}>
+                    {group.map((loc) => (
+                      <option key={loc.slug} value={loc.name}>
+                        {loc.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                );
+              })}
             </select>
           )}
           {onRequestNearMe && (

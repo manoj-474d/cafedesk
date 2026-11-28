@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   ArrowRight,
@@ -18,19 +18,23 @@ import {
   Search,
   SlidersHorizontal,
   Sparkles,
+  Users,
+  Utensils,
   VolumeX,
   Wifi,
 } from 'lucide-react';
 import {
   BENGALURU_AREAS,
   BENGALURU_CENTER,
+  BENGALURU_REGIONS,
   BROWSING_MODES,
   BUDGET_BRACKETS,
   DISCOVERY_CATEGORY_TABS,
   HOME_QUICK_FILTERS,
 } from '../config/constants';
+import type { BengaluruRegionName } from '../types/cms';
 import { useCms } from '../context/CmsContext';
-import { useAuth } from '../context/AuthContext';
+import { getUserAuthHeaders, resolveApiUrl, useAuth } from '../context/AuthContext';
 import { googleDiscoveryToLocationItem, useDiscovery } from '../context/DiscoveryContext';
 import {
   buildWhatsAppUrl,
@@ -41,6 +45,8 @@ import {
 } from '../utils/cafeHelpers';
 import {
   CURATED_COLLECTIONS,
+  getRecentlyViewedSlugs,
+  isFamilyFriendlyCafe,
   isGoodForDates,
   isHiddenGem,
   isRecentlyAddedCafe,
@@ -65,7 +71,7 @@ import { ResilientPhoto } from '../components/ResilientPhoto';
 import type { HomepageSectionKey, LocationItem } from '../types/cms';
 
 export function HomePage() {
-  const { locations, settings, testimonials } = useCms();
+  const { locations, settings, testimonials, activePromotions, isFeatureEnabled } = useCms();
   const { authenticated, hasPlus, hasPermission, openUpgradeModal, user } = useAuth();
   const menuPricingUnlocked =
     settings.access_control?.sections?.menu_pricing === 'public' ||
@@ -78,6 +84,8 @@ export function HomePage() {
     nearbyLoading,
     discoverCafesNear,
     discoverCafesByAreaText,
+    localities,
+    localitiesByRegion,
   } = useDiscovery();
   const navigate = useNavigate();
 
@@ -97,9 +105,10 @@ export function HomePage() {
   const [searchArea, setSearchArea] = useState('');
   const [searchMode, setSearchMode] = useState('');
   const [customMaxBudget, setCustomMaxBudget] = useState('');
+  const [activeRegionTab, setActiveRegionTab] = useState<'All' | BengaluruRegionName>('All');
   const [activeAreaTab, setActiveAreaTab] = useState('All');
   const [spotlightTab, setSpotlightTab] = useState<
-    'budget' | 'coffee' | 'trending' | 'hidden-gems' | 'laptop' | 'study' | 'dates' | 'recent'
+    'budget' | 'coffee' | 'family' | 'hidden-gems' | 'trending' | 'laptop' | 'study' | 'dates' | 'recent'
   >('budget');
   const [mapFocusCenter, setMapFocusCenter] = useState<{ lat: number; lng: number } | null>(null);
 
@@ -110,6 +119,56 @@ export function HomePage() {
     'idle'
   );
   const [newsletterMsg, setNewsletterMsg] = useState('');
+
+  const [userPrefs, setUserPrefs] = useState<{
+    favourite_areas: string[];
+    favourite_categories: string[];
+    preferred_max_budget: number | null;
+    personalisation_enabled: boolean;
+    save_visit_history: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!authenticated || !isFeatureEnabled('personalisation')) {
+      setUserPrefs(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(resolveApiUrl('/api/user/preferences'), {
+          credentials: 'include',
+          headers: await getUserAuthHeaders(),
+        });
+        const ct = res.headers.get('content-type') || '';
+        if (!cancelled && res.ok && ct.includes('application/json')) {
+          const data = await res.json();
+          if (data?.preferences) {
+            setUserPrefs({
+              favourite_areas: Array.isArray(data.preferences.favourite_areas)
+                ? data.preferences.favourite_areas
+                : [],
+              favourite_categories: Array.isArray(data.preferences.favourite_categories)
+                ? data.preferences.favourite_categories
+                : [],
+              preferred_max_budget:
+                data.preferences.preferred_max_budget !== null &&
+                data.preferences.preferred_max_budget !== undefined
+                  ? Number(data.preferences.preferred_max_budget)
+                  : null,
+              personalisation_enabled: data.preferences.personalisation_enabled !== false,
+              save_visit_history: data.preferences.save_visit_history !== false,
+            });
+          }
+        }
+      } catch {
+        // Non-blocking
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [authenticated, isFeatureEnabled]);
 
   const effectiveLocations = useMemo(
     () => locations.map((loc) => getEffectiveLocation(loc)),
@@ -267,7 +326,24 @@ export function HomePage() {
       3
     );
 
-    // 5. Burgers, Fries & Casual Hangouts
+    // 5. Desserts, Pastries & Sweet Corners
+    const dessertCards = takeUnique(
+      sortedCurated
+        .map((loc) => ({ loc, match: matchCafeToFoodSearch(loc, 'dessert') }))
+        .filter(
+          (x) =>
+            (!menuPricingUnlocked || (x.loc.avg_cost_per_person ?? 999) <= 280) &&
+            (x.match.matched ||
+              Boolean(x.loc.desserts_price) ||
+              /dessert|pastry|cake|brownie|waffle|cheesecake|ice cream|gelato/i.test(
+                `${x.loc.name} ${x.loc.category || ''} ${x.loc.popular_items.join(' ')} ${x.loc.verdict}`
+              ))
+        )
+        .map((x) => ({ loc: x.loc, matchedItems: x.match.matchedItems })),
+      3
+    );
+
+    // 6. Burgers, Fries & Casual Hangouts
     const hangoutCards = takeUnique(
       sortedCurated
         .filter(
@@ -286,7 +362,7 @@ export function HomePage() {
       3
     );
 
-    // 6. Breakfast & Neighbourhood Bites
+    // 7. Breakfast & Neighbourhood Bites
     const breakfastCards = takeUnique(
       sortedCurated
         .filter((loc) => !menuPricingUnlocked || (loc.avg_cost_per_person ?? 999) <= 255)
@@ -301,7 +377,15 @@ export function HomePage() {
       3
     );
 
-    // 7. Everyday Neighbourhood Cafes & Bakeries
+    // 8. Family-Friendly & All-Day Neighbourhood Cafes
+    const familyFriendlyCards = takeUnique(
+      sortedCurated
+        .filter((loc) => isFamilyFriendlyCafe(loc))
+        .map((loc) => ({ loc })),
+      3
+    );
+
+    // 9. Everyday Neighbourhood Cafes & Bakeries
     const everydayWorkCafes = takeUnique(
       sortedCurated
         .filter((loc) => !menuPricingUnlocked || (loc.avg_cost_per_person ?? 999) <= 275)
@@ -309,7 +393,7 @@ export function HomePage() {
       3
     );
 
-    // 8. Everyday Coffee & Study Hangouts
+    // 10. Everyday Coffee & Study Hangouts
     const midBudgetCafes = takeUnique(
       sortedCurated
         .filter((loc) => !menuPricingUnlocked || (loc.avg_cost_per_person ?? 999) <= 310)
@@ -317,7 +401,7 @@ export function HomePage() {
       3
     );
 
-    // 9. Specialty Roasters & Quiet Study Lounges
+    // 11. Specialty Roasters & Quiet Study Lounges
     const specialtyRoasters = takeUnique(
       sortedCurated
         .filter((loc) => !menuPricingUnlocked || (loc.avg_cost_per_person ?? 999) <= 360)
@@ -325,7 +409,15 @@ export function HomePage() {
       3
     );
 
-    // 10. All Remaining Unique Bengaluru Cafes (preserving lowest-to-upper budget order)
+    // 12. New & Recently Verified Bengaluru Cafes
+    const recentVerifiedCards = takeUnique(
+      sortedCurated
+        .filter((loc) => isRecentlyAddedCafe(loc))
+        .map((loc) => ({ loc })),
+      3
+    );
+
+    // 13. All Remaining Unique Bengaluru Cafes (preserving lowest-to-upper budget order)
     const remainingUpperCafes = takeUnique(
       sortedCurated.map((loc) => ({ loc })),
       sortedCurated.length
@@ -404,6 +496,15 @@ export function HomePage() {
         cards: coffeeKaapiCards,
       },
       {
+        id: 'desserts-pastries',
+        eyebrow: 'Patisseries, Cakes & Sweet Corners',
+        title: 'Desserts, Cheesecakes & Bakery Treats',
+        subtitle:
+          'Cheesecakes, tiramisu, brownies, and warm bakery counters across Bengaluru neighbourhoods.',
+        to: '/discover?category=desserts',
+        cards: dessertCards,
+      },
+      {
         id: 'budget-burgers-hangouts',
         eyebrow: menuPricingUnlocked
           ? 'Pocket-Friendly Eats · ₹180–₹200 Avg'
@@ -428,6 +529,15 @@ export function HomePage() {
           'Breakfast plates, Osmania biscuits, local snacks, and casual bites across Bengaluru.',
         to: menuPricingUnlocked ? '/discover?budget=under-300' : '/discover',
         cards: breakfastCards,
+      },
+      {
+        id: 'family-friendly-places',
+        eyebrow: 'Families, Groups & All-Day Brunch',
+        title: 'Family-Friendly & All-Day Neighbourhood Cafes',
+        subtitle:
+          'Spacious seating, breakfast plates, desserts, and welcoming tables for friends and families.',
+        to: '/discover?family=1',
+        cards: familyFriendlyCards,
       },
       {
         id: 'coffee-under-50-bakeries',
@@ -464,6 +574,15 @@ export function HomePage() {
           'Pour-overs, measured high-speed Wi-Fi, and dedicated desk seating across Bengaluru.',
         to: '/discover?category=workspaces',
         cards: specialtyRoasters,
+      },
+      {
+        id: 'new-recently-verified',
+        eyebrow: 'Recently Added & Field Audited',
+        title: 'New & Recently Verified Cafes in Bengaluru',
+        subtitle:
+          'Freshly audited menus, hours, Wi-Fi checks, and community-confirmed neighbourhood favourites.',
+        to: '/discover?sort=recent',
+        cards: recentVerifiedCards,
       },
       {
         id: 'upper-budget-roasteries',
@@ -510,20 +629,36 @@ export function HomePage() {
   );
 
   const areaSummaryTiles = useMemo(() => {
-    return BENGALURU_AREAS.map((areaName) => {
-      const matches = effectiveLocations.filter((l) =>
-        `${l.area} ${l.address}`.toLowerCase().includes(areaName.toLowerCase())
-      );
-      const prices = matches
-        .map((l) => l.avg_cost_per_person ?? getCafeLowestVerifiedMenuPrice(l))
-        .filter((p): p is number => p !== null && p > 0);
-      return {
-        areaName,
-        count: matches.length,
-        minAvg: prices.length > 0 ? Math.min(...prices) : null,
-      };
-    }).filter((t) => t.count > 0);
-  }, [effectiveLocations]);
+    const sourceList =
+      activeRegionTab === 'All'
+        ? localities
+        : localitiesByRegion[activeRegionTab] || [];
+    return sourceList
+      .map((locRecord) => {
+        const terms = [
+          locRecord.name.toLowerCase(),
+          ...locRecord.alt_spellings.map((a) => a.toLowerCase()),
+          ...locRecord.local_names.map((n) => n.toLowerCase()),
+        ].filter((t) => t.length >= 3);
+        const matches = effectiveLocations.filter((l) => {
+          const hay = `${l.area} ${l.address}`.toLowerCase();
+          return terms.some((t) => hay.includes(t));
+        });
+        const prices = matches
+          .map((l) => l.avg_cost_per_person ?? getCafeLowestVerifiedMenuPrice(l))
+          .filter((p): p is number => p !== null && p > 0);
+        return {
+          areaName: locRecord.name,
+          slug: locRecord.slug,
+          region: locRecord.region,
+          count: matches.length,
+          indexedCount: locRecord.unique_place_count,
+          minAvg: prices.length > 0 ? Math.min(...prices) : null,
+        };
+      })
+      .filter((t) => activeRegionTab !== 'All' || t.count > 0 || t.indexedCount > 0 || BENGALURU_AREAS.includes(t.areaName))
+      .slice(0, activeRegionTab === 'All' ? 24 : 40);
+  }, [effectiveLocations, localities, localitiesByRegion, activeRegionTab]);
 
   const discoveryModeSummaries = useMemo(() => {
     const modeDefs = [
@@ -547,6 +682,13 @@ export function HomePage() {
               l.tea_price ||
               /coffee|espresso|latte|kaapi|tea|chai/i.test(`${l.verdict} ${l.popular_items.join(' ')}`)
           ),
+      },
+      {
+        id: 'family' as const,
+        label: 'Family-Friendly Places',
+        subtitle: 'All-day brunch rooms, bakeries & spacious tables for everyone',
+        to: '/discover?family=1',
+        match: isFamilyFriendlyCafe,
       },
       {
         id: 'hidden-gems' as const,
@@ -599,19 +741,78 @@ export function HomePage() {
 
   const spotlightModeMeta = discoveryModeSummaries.find((m) => m.id === spotlightTab) ?? discoveryModeSummaries[0];
 
-  const sponsoredCafes = useMemo(
-    () =>
-      [...effectiveLocations]
-        .filter(
-          (l) =>
-            l.featured &&
-            !usedHomeCafeIds.has(l.id) &&
-            !usedHomeBrandKeys.has(getCafeBrandKey(l.name))
+  const recentlyViewedCafes = useMemo(() => {
+    if (userPrefs && userPrefs.save_visit_history === false) return [];
+    const slugs = getRecentlyViewedSlugs();
+    if (slugs.length === 0) return [];
+    const bySlug = new Map(effectiveLocations.map((l) => [l.slug, l]));
+    return slugs
+      .map((slug) => bySlug.get(slug))
+      .filter((loc): loc is NonNullable<typeof loc> => Boolean(loc))
+      .slice(0, 3);
+  }, [effectiveLocations, userPrefs]);
+
+  const personalisedPicks = useMemo(() => {
+    if (!isFeatureEnabled('personalisation')) return [];
+    if (userPrefs && userPrefs.personalisation_enabled === false) return [];
+
+    const favAreas = new Set((userPrefs?.favourite_areas || []).map((a) => a.toLowerCase()));
+    const favCats = (userPrefs?.favourite_categories || []).map((c) => c.toLowerCase());
+    const maxBudget = userPrefs?.preferred_max_budget ?? null;
+
+    if (favAreas.size > 0 || favCats.length > 0 || maxBudget !== null) {
+      const scored = effectiveLocations
+        .filter((l) =>
+          maxBudget !== null && l.avg_cost_per_person !== null
+            ? l.avg_cost_per_person <= maxBudget
+            : true
         )
+        .map((loc) => {
+          let score = 0;
+          if (favAreas.has(loc.area.toLowerCase())) score += 4;
+          const hay = `${loc.category || ''} ${loc.verdict} ${loc.best_for.join(' ')}`.toLowerCase();
+          if (favCats.some((c) => hay.includes(c.split(' ')[0]))) score += 3;
+          if (recentlyViewedCafes.some((r) => r.id === loc.id)) score += 1;
+          return { loc, score };
+        })
+        .sort((a, b) => b.score - a.score || compareCafesBudgetFirst(a.loc, b.loc))
+        .map((x) => x.loc);
+
+      return interleaveDifferentBrands(scored).slice(0, 3);
+    }
+
+    if (recentlyViewedCafes.length > 0) {
+      const seen = new Set(recentlyViewedCafes.map((c) => c.id));
+      const areaHints = new Set(recentlyViewedCafes.map((c) => c.area.toLowerCase()));
+      const related = effectiveLocations
+        .filter((l) => !seen.has(l.id) && areaHints.has(l.area.toLowerCase()))
         .sort(compareCafesBudgetFirst)
-        .slice(0, 3),
-    [effectiveLocations, usedHomeCafeIds, usedHomeBrandKeys]
-  );
+        .slice(0, 3 - Math.min(2, recentlyViewedCafes.length));
+      return interleaveDifferentBrands([...recentlyViewedCafes.slice(0, 2), ...related]).slice(0, 3);
+    }
+    if (!authenticated) return [];
+    return interleaveDifferentBrands(
+      effectiveLocations.filter((l) => l.verified && l.photos_approved).sort(compareCafesBudgetFirst)
+    ).slice(0, 3);
+  }, [isFeatureEnabled, userPrefs, recentlyViewedCafes, effectiveLocations, authenticated]);
+
+  const sponsoredCafes = useMemo(() => {
+    if (!isFeatureEnabled('promotions')) return [];
+    const promotedFromRecords = activePromotions
+      .map((promo) => effectiveLocations.find((l) => l.id === promo.cafe_id))
+      .filter((loc): loc is NonNullable<typeof loc> => Boolean(loc));
+    const seen = new Set(promotedFromRecords.map((l) => l.id));
+    const fallbackFeatured = [...effectiveLocations]
+      .filter(
+        (l) =>
+          l.featured &&
+          !seen.has(l.id) &&
+          !usedHomeCafeIds.has(l.id) &&
+          !usedHomeBrandKeys.has(getCafeBrandKey(l.name))
+      )
+      .sort(compareCafesBudgetFirst);
+    return [...promotedFromRecords, ...fallbackFeatured].slice(0, 3);
+  }, [isFeatureEnabled, activePromotions, effectiveLocations, usedHomeCafeIds, usedHomeBrandKeys]);
 
   const activeAnnouncements = settings.announcements.filter((a) => a.active);
 
@@ -712,15 +913,15 @@ export function HomePage() {
           !settings.hero_tagline ||
           settings.hero_tagline === 'Find Your Perfect Cafe in Bengaluru.' ||
           settings.hero_tagline === 'Find Your Perfect Workspace.'
-            ? 'Affordable Cafes, Tea Shops & Workspaces.'
+            ? 'Every Bengaluru Cafe, Chai Spot & Work Table.'
             : settings.hero_tagline;
         const heroSub =
           !settings.hero_subtitle ||
           settings.hero_subtitle.startsWith("Discover Bengaluru's cafes for affordable coffee") ||
           settings.hero_subtitle === 'Discover cafes to work, study, meet and relax.'
             ? menuPricingUnlocked
-              ? 'Find budget-friendly chai under ₹30, filter coffee, local bakeries, snacks, and laptop-ready cafes across Bengaluru.'
-              : 'Find local chai corners, filter coffee, bakeries, snacks, and laptop-ready cafes across Bengaluru. Unlock item prices starting at ₹79/mo.'
+              ? 'From ₹15 chai stalls, family brunch bakeries, and dessert rooms to quiet study & laptop-ready workspaces across Bengaluru.'
+              : 'From neighbourhood chai spots, bakeries, family dining, and dessert rooms to laptop-friendly workspaces. Unlock item prices from ₹79/mo.'
             : settings.hero_subtitle;
 
         return (
@@ -744,7 +945,7 @@ export function HomePage() {
                 <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#f59e0b]">
                   {settings.hero_kicker && settings.hero_kicker !== 'Bengaluru Work & Study Cafes'
                     ? settings.hero_kicker
-                    : 'Bengaluru Budget Cafes, Food & Workspaces'}
+                    : 'Bengaluru All-in-One Cafe & Food Discovery'}
                 </p>
 
                 <h1 className="font-serif-display text-3xl sm:text-5xl lg:text-[3.5rem] font-bold leading-[1.08] tracking-tight text-white">
@@ -835,12 +1036,20 @@ export function HomePage() {
                         onChange={(e) => setSearchArea(e.target.value)}
                         className="w-full h-12 px-3 rounded-xl bg-[#faf7f2] border border-[#d6cbba] text-xs sm:text-sm font-medium text-[#1c1613]"
                       >
-                        <option value="">All Bengaluru</option>
-                        {BENGALURU_AREAS.map((areaName) => (
-                          <option key={areaName} value={areaName}>
-                            {areaName}
-                          </option>
-                        ))}
+                        <option value="">All Bengaluru ({localities.length}+ areas)</option>
+                        {BENGALURU_REGIONS.map((reg) => {
+                          const regLocs = localitiesByRegion[reg] || [];
+                          if (regLocs.length === 0) return null;
+                          return (
+                            <optgroup key={reg} label={reg}>
+                              {regLocs.map((loc) => (
+                                <option key={loc.slug} value={loc.name}>
+                                  {loc.name}
+                                </option>
+                              ))}
+                            </optgroup>
+                          );
+                        })}
                       </select>
                     </div>
 
@@ -940,6 +1149,20 @@ export function HomePage() {
                       </Link>
                     );
                   })}
+                  <Link
+                    to="/discover?family=1"
+                    className="inline-flex items-center gap-1.5 min-h-[38px] px-3 py-1.5 rounded-full bg-[#faf7f2] hover:bg-[#fef3c7] border border-[#e6ddd0] text-xs font-medium text-[#1c1613] transition-colors"
+                  >
+                    <Users className="w-3.5 h-3.5 text-[#1b4d3e] shrink-0" aria-hidden="true" />
+                    <span>Family-Friendly</span>
+                  </Link>
+                  <Link
+                    to="/discover?category=desserts"
+                    className="inline-flex items-center gap-1.5 min-h-[38px] px-3 py-1.5 rounded-full bg-[#faf7f2] hover:bg-[#fef3c7] border border-[#e6ddd0] text-xs font-medium text-[#1c1613] transition-colors"
+                  >
+                    <Utensils className="w-3.5 h-3.5 text-[#b45309] shrink-0" aria-hidden="true" />
+                    <span>Desserts &amp; Cakes</span>
+                  </Link>
                 </div>
               </div>
             </div>
@@ -1246,7 +1469,40 @@ export function HomePage() {
                 )}
               </div>
 
-              {/* Curated Bengaluru Collections — Vertical Responsive Grid */}
+              {/* Personalised & Recently Viewed Strip */}
+              {isFeatureEnabled('personalisation') && personalisedPicks.length > 0 && (
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-end justify-between gap-2 border-b border-[#e6ddd0] pb-3">
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#1b4d3e] mb-0.5">
+                        {recentlyViewedCafes.length > 0
+                          ? 'Recently Viewed & Nearby Matches'
+                          : 'Personalised For Your Bengaluru Exploring'}
+                      </p>
+                      <h2 className="font-serif-display text-2xl sm:text-[1.75rem] font-bold text-[#1c1613]">
+                        {user
+                          ? `Picked for ${user.name.split(' ')[0]}`
+                          : 'Continue exploring where you left off'}
+                      </h2>
+                    </div>
+                    <Link
+                      to="/account"
+                      className="text-xs font-semibold text-[#b45309] hover:underline underline-offset-4"
+                    >
+                      Manage taste &amp; privacy settings &rarr;
+                    </Link>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 sm:gap-6">
+                    {personalisedPicks.map((loc) => (
+                      <div key={`pers-${loc.id}`} className="flex flex-col">
+                        <LocationCard location={loc} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Curated Bengaluru Collections — Balanced 3x2 Responsive Grid */}
               <div className="space-y-5">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#b45309] mb-1">
@@ -1256,7 +1512,7 @@ export function HomePage() {
                     Editorial Bengaluru cafe trails
                   </h2>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                   {CURATED_COLLECTIONS.map((col) => {
                     const count = effectiveLocations.filter(col.match).length;
                     return (
@@ -1286,23 +1542,23 @@ export function HomePage() {
                 </div>
               </div>
 
-              {/* Sponsored Partner Spotlight — Vertical Grid */}
-              {sponsoredCafes.length > 0 && (
+              {/* Sponsored Partner Spotlight — Transparent Paid Placement */}
+              {isFeatureEnabled('promotions') && sponsoredCafes.length > 0 && (
                 <div className="p-5 sm:p-7 rounded-2xl bg-[#f3ede3] border border-[#e6ddd0] space-y-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
                       <p className="text-[11px] font-semibold uppercase tracking-wider text-[#b45309] mb-1">
-                        Sponsored · Partner Placement
+                        Sponsored · Paid Placement Never Affects Quality Scores
                       </p>
                       <h2 className="font-serif-display text-xl sm:text-2xl font-bold text-[#1c1613]">
                         Featured partner cafes in Bengaluru
                       </h2>
                     </div>
                     <Link
-                      to="/owners"
+                      to="/partner-portal"
                       className="text-xs font-semibold text-[#b45309] hover:underline underline-offset-4"
                     >
-                      Feature your cafe on Cafe Desk &rarr;
+                      Claim or promote your cafe &rarr;
                     </Link>
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -1367,27 +1623,88 @@ export function HomePage() {
                   </div>
                 </div>
 
-                {/* Neighbourhood Quick-Jump Bar — Wrapped Cleanly */}
-                <div className="flex flex-wrap gap-2">
-                  {['All', ...BENGALURU_AREAS].map((areaName) => (
+                {/* 6-Region Filter Bar + Quick-Jump Neighbourhoods */}
+                <div className="space-y-3">
+                  <div className="flex flex-wrap gap-2">
+                    {(['All', ...BENGALURU_REGIONS] as const).map((regName) => (
+                      <button
+                        key={regName}
+                        type="button"
+                        onClick={() => {
+                          setActiveRegionTab(regName);
+                          setActiveAreaTab('All');
+                        }}
+                        className={`min-h-[40px] px-4 py-2 rounded-full text-xs font-semibold border transition-colors ${
+                          activeRegionTab === regName && activeAreaTab === 'All'
+                            ? 'bg-[#1b4d3e] text-white border-[#1b4d3e]'
+                            : 'bg-white text-[#5c4e45] border-[#e6ddd0] hover:border-[#1b4d3e] hover:text-[#1c1613]'
+                        }`}
+                      >
+                        {regName === 'All'
+                          ? `All Regions (${localities.length}+)`
+                          : `${regName} (${(localitiesByRegion[regName] || []).length})`}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex flex-wrap gap-1.5">
                     <button
-                      key={areaName}
                       type="button"
-                      onClick={() => handleAreaSelect(areaName)}
-                      className={`min-h-[40px] px-4 py-2 rounded-full text-xs font-semibold border transition-colors ${
-                        activeAreaTab === areaName
+                      onClick={() => handleAreaSelect('All')}
+                      className={`min-h-[34px] px-3 py-1 rounded-full text-xs font-semibold border transition-colors ${
+                        activeAreaTab === 'All'
                           ? 'bg-[#1c1613] text-white border-[#1c1613]'
                           : 'bg-white text-[#5c4e45] border-[#e6ddd0] hover:border-[#b45309] hover:text-[#1c1613]'
                       }`}
                     >
-                      {areaName === 'All' ? 'All Bengaluru' : areaName}
+                      All {activeRegionTab === 'All' ? 'Bengaluru' : activeRegionTab}
                     </button>
-                  ))}
+                    {(activeRegionTab === 'All'
+                      ? localities.filter((l) =>
+                          [
+                            'Jalahalli',
+                            'Hesaraghatta',
+                            'Peenya',
+                            'Yelahanka',
+                            'BEL Road',
+                            'RR Nagar',
+                            'Kengeri',
+                            'Rajajinagar',
+                            'Jayanagar',
+                            'JP Nagar',
+                            'Banashankari',
+                            'HSR Layout',
+                            'Koramangala',
+                            'Indiranagar',
+                            'Whitefield',
+                            'Marathahalli',
+                            'KR Puram',
+                            'Electronic City',
+                            'Sarjapur Road',
+                            'Church Street',
+                          ].includes(l.name)
+                        )
+                      : localitiesByRegion[activeRegionTab] || []
+                    ).map((loc) => (
+                      <button
+                        key={loc.slug}
+                        type="button"
+                        onClick={() => handleAreaSelect(loc.name)}
+                        className={`min-h-[34px] px-3 py-1 rounded-full text-xs font-semibold border transition-colors ${
+                          activeAreaTab === loc.name
+                            ? 'bg-[#1c1613] text-white border-[#1c1613]'
+                            : 'bg-white text-[#5c4e45] border-[#e6ddd0] hover:border-[#b45309] hover:text-[#1c1613]'
+                        }`}
+                      >
+                        {loc.name}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
                 <p className="text-xs sm:text-sm text-[#5c4e45]">
                   {activeAreaTab === 'All'
-                    ? 'Every curated Bengaluru cafe is listed once above from lowest price to upper budget. Select any neighbourhood below to filter cafes in that area.'
+                    ? `Browse ${localities.length}+ neighbourhoods across North, South, East, West, Central, and Outer Bengaluru — including residential and outer hubs. Select any neighbourhood to explore verified listings and live Google Places.`
                     : `Showing ${areaSortedLocations.length} cafes in ${activeAreaTab}, ordered from lowest price to upper budget.`}
                 </p>
 
@@ -1395,20 +1712,32 @@ export function HomePage() {
                   <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3.5">
                     {areaSummaryTiles.map((tile) => (
                       <button
-                        key={tile.areaName}
+                        key={tile.slug}
                         type="button"
-                        onClick={() => handleAreaSelect(tile.areaName)}
+                        onClick={() => navigate(`/discover?area=${encodeURIComponent(tile.areaName)}`)}
                         className="p-4 rounded-2xl bg-white border border-[#e6ddd0] hover:border-[#b45309] text-left flex flex-col justify-between gap-2 transition-colors"
                       >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-serif-display text-base font-bold text-[#1c1613]">
-                            {tile.areaName}
-                          </span>
-                          <ArrowRight className="w-4 h-4 text-[#b45309] shrink-0" aria-hidden="true" />
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <span className="text-[10px] font-semibold uppercase tracking-wider text-[#1b4d3e] block">
+                              {tile.region.replace(' Bengaluru', '')}
+                            </span>
+                            <span className="font-serif-display text-base font-bold text-[#1c1613]">
+                              {tile.areaName}
+                            </span>
+                          </div>
+                          <ArrowRight className="w-4 h-4 text-[#b45309] shrink-0 mt-1" aria-hidden="true" />
                         </div>
                         <p className="text-xs text-[#5c4e45]">
-                          {tile.count} {tile.count === 1 ? 'cafe' : 'cafes'}
-                          {menuPricingUnlocked && tile.minAvg !== null ? ` · From ₹${tile.minAvg} avg` : ''}
+                          {tile.count > 0
+                            ? `${tile.count} verified`
+                            : tile.indexedCount > 0
+                            ? `${tile.indexedCount} indexed`
+                            : 'Explore via Google Maps'}
+                          {tile.count > 0 && tile.indexedCount > 0
+                            ? ` · ${tile.indexedCount} live`
+                            : ''}
+                          {menuPricingUnlocked && tile.minAvg !== null ? ` · ₹${tile.minAvg} avg` : ''}
                         </p>
                       </button>
                     ))}

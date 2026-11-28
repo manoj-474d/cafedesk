@@ -138,8 +138,11 @@ export interface UserCollection {
   user_id: number;
   name: string;
   description: string;
+  share_slug?: string;
+  is_public?: boolean;
   items: CollectionCafeItem[];
   created_at: number;
+  updated_at?: number;
 }
 
 export interface UpgradePromptState {

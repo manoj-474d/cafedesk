@@ -41,11 +41,11 @@ import {
 const RECENT_SEARCHES_KEY = 'cafedesk_recent_searches_v1';
 const POPULAR_SEARCHES = [
   'Tea under ₹30 near me',
-  'Coffee under ₹50 in Koramangala',
-  'Burger under ₹100',
+  'Tea shops in Hesaraghatta',
+  'Bakeries in Peenya',
+  'Coffee under ₹50 in Jalahalli',
   'Sandwich under ₹80 in HSR Layout',
-  'Affordable breakfast near me',
-  'Cheap snacks in Indiranagar',
+  'Cafes in Yelahanka',
 ];
 
 interface UnifiedSuggestion {
@@ -104,7 +104,7 @@ export function CafeAutocompleteSearch({
   const { authenticated, hasPermission } = useAuth();
   const menuPricingUnlocked = hasPermission('menu_pricing');
   const { locations } = useCms();
-  const { userLocation, getEffectiveLocation, resolvePredictionToPlace } = useDiscovery();
+  const { userLocation, getEffectiveLocation, resolvePredictionToPlace, localities } = useDiscovery();
 
   const [open, setOpen] = useState(false);
   const [recentSearches, setRecentSearches] = useState<string[]>(() => readRecentSearches());
@@ -136,6 +136,20 @@ export function CafeAutocompleteSearch({
   );
 
   const parsedQuery = useMemo(() => parseSmartFoodQuery(value), [value]);
+
+  const matchingLocalities = useMemo(() => {
+    const q = value.trim().toLowerCase();
+    if (q.length < 2) return [];
+    const tokens = q.split(/\s+/).filter((t) => t.length >= 2 && !['in', 'at', 'near', 'cafes', 'cafe', 'tea', 'coffee', 'bakery', 'shops'].includes(t));
+    return localities
+      .filter((loc) => {
+        const hay = [loc.name, ...loc.alt_spellings, ...loc.local_names, loc.region].join(' ').toLowerCase();
+        if (hay.includes(q)) return true;
+        if (parsedQuery.detectedLocality && loc.name.toLowerCase() === parsedQuery.detectedLocality.toLowerCase()) return true;
+        return tokens.some((tok) => tok.length >= 3 && hay.includes(tok));
+      })
+      .slice(0, 4);
+  }, [value, localities, parsedQuery.detectedLocality]);
 
   const { menuItemMatches, curatedMatches, hasSmartIntent } = useMemo(() => {
     const q = value.trim();
@@ -501,6 +515,39 @@ export function CafeAutocompleteSearch({
               </span>
               <span className="font-semibold text-[#b45309] shrink-0">Apply &rarr;</span>
             </button>
+          )}
+
+          {/* Matching Bengaluru Neighbourhoods */}
+          {matchingLocalities.length > 0 && (
+            <div className="border-b border-[#e6ddd0]">
+              <p className="px-3.5 py-2 bg-[#faf7f2] text-[10px] font-semibold uppercase tracking-wider text-[#b45309]">
+                Bengaluru Neighbourhoods
+              </p>
+              {matchingLocalities.map((loc) => (
+                <button
+                  key={loc.slug}
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    saveTerm(loc.name);
+                    navigate(`/discover?area=${encodeURIComponent(loc.name)}&live=1`);
+                  }}
+                  className="w-full text-left px-3.5 py-2.5 min-h-[46px] hover:bg-[#faf7f2] flex items-center justify-between gap-3 transition-colors border-t border-[#f3ede3] first:border-t-0"
+                >
+                  <div className="min-w-0 flex-1 flex items-center gap-2.5">
+                    <MapPin className="w-4 h-4 text-[#b45309] shrink-0" aria-hidden="true" />
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-[#1c1613] truncate">{loc.name}</p>
+                      <p className="text-[11px] text-[#5c4e45] truncate">
+                        {loc.region}
+                        {loc.unique_place_count > 0 ? ` · ${loc.unique_place_count} places indexed` : ''}
+                      </p>
+                    </div>
+                  </div>
+                  <span className="text-xs font-semibold text-[#b45309] shrink-0">Explore &rarr;</span>
+                </button>
+              ))}
+            </div>
           )}
 
           {/* Menu & Food Item Matches (Prioritized) */}

@@ -52,26 +52,24 @@ export const BROWSING_MODES: ModeMeta[] = [
   },
 ];
 
-export const BENGALURU_AREAS = [
-  'Indiranagar',
-  'Koramangala',
-  'HSR Layout',
-  'Whitefield',
-  'Jayanagar',
-  'Marathahalli',
-  'Electronic City',
-  'MG Road',
-  'Rajajinagar',
-  'Malleshwaram',
-  'Church Street',
-  'BTM Layout',
-  'JP Nagar',
-  'Banashankari',
-  'Basavanagudi',
-  'Vijayanagar',
-  'Yelahanka',
-  'Hennur',
-] as const;
+import {
+  BENGALURU_REGIONS,
+  DEFAULT_BENGALURU_LOCALITIES,
+  STANDARD_BUSINESS_CATEGORIES,
+  type BengaluruRegion,
+  type StandardBusinessCategory,
+} from './localities';
+
+export {
+  BENGALURU_REGIONS,
+  DEFAULT_BENGALURU_LOCALITIES,
+  STANDARD_BUSINESS_CATEGORIES,
+  type BengaluruRegion,
+  type StandardBusinessCategory,
+};
+
+export const BENGALURU_AREAS = DEFAULT_BENGALURU_LOCALITIES.map((l) => l.name);
+
 
 export const SUPPORTED_CITIES = [
   'Bengaluru',
@@ -472,3 +470,38 @@ export function getNoiseSummary(noise: 1 | 2 | 3 | 4 | 5 | null): 'Quiet' | 'Mod
   if (noise === 3) return 'Moderate';
   return 'Busy';
 }
+
+export const DEFAULT_FEATURE_FLAGS = {
+  smart_nl_search: true,
+  quality_scores: true,
+  visit_companion: true,
+  menu_intelligence: true,
+  community_reviews: true,
+  community_photos: true,
+  public_collections: true,
+  personalisation: true,
+  cafe_following: true,
+  notifications: true,
+  owner_portal: true,
+  promotions: true,
+  bookings: true,
+  live_google_places: true,
+} as const;
+
+export const DEFAULT_SCORING_CONFIG = {
+  work_ready_weights: {
+    wifi: 26,
+    sockets: 22,
+    seating: 16,
+    noise: 14,
+    affordability: 10,
+    workspace_fit: 12,
+  },
+  confidence_weights: {
+    verified_badge: 28,
+    recency: 24,
+    completeness: 24,
+    photos_verified: 12,
+    source_attribution: 12,
+  },
+} as const;

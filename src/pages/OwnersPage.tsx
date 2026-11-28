@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Check, CheckCircle2, MessageCircle } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { ArrowUpRight, Building2, Check, CheckCircle2, MessageCircle } from 'lucide-react';
 import { BENGALURU_AREAS } from '../config/constants';
 import { useCms } from '../context/CmsContext';
 import { buildWhatsAppUrl, useDocumentMeta } from '../utils/cafeHelpers';
@@ -141,6 +142,22 @@ export function OwnersPage() {
           accessible wall outlets, and honest minimum-spend policies. Every featured listing carries
           a clear disclosure so guests trust every cafe listing before they visit.
         </p>
+        <div className="pt-2 flex flex-wrap items-center gap-3">
+          <Link
+            to="/partner-portal"
+            className="inline-flex items-center gap-2 min-h-[44px] px-5 py-2.5 rounded-xl bg-[#b45309] hover:bg-[#92400e] text-white text-xs font-semibold transition-colors"
+          >
+            <Building2 className="w-4 h-4" aria-hidden="true" />
+            <span>Open Cafe Owner Partner Portal</span>
+            <ArrowUpRight className="w-4 h-4" aria-hidden="true" />
+          </Link>
+          <a
+            href="#owner-enquiry-form"
+            className="inline-flex items-center gap-2 min-h-[44px] px-4 py-2.5 rounded-xl bg-white border border-[#e6ddd0] hover:border-[#b45309] text-[#1c1613] text-xs font-semibold transition-colors"
+          >
+            Submit Partnership Enquiry
+          </a>
+        </div>
       </div>
 
       {/* Pricing Plans */}

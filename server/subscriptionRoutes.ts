@@ -168,7 +168,10 @@ function getUserLibraryPayload(userId: number): {
       user_id: Number(c.user_id),
       name: String(c.name),
       description: String(c.description || ''),
+      share_slug: String(c.share_slug || ''),
+      is_public: Boolean(c.is_public),
       created_at: Number(c.created_at),
+      updated_at: Number(c.updated_at || c.created_at),
       items: itemRows.map((ir) => ({
         cafe_key: String(ir.cafe_key),
         added_at: Number(ir.added_at),

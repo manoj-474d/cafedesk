@@ -192,6 +192,10 @@ interface AuthContextValue {
   deleteCollection: (id: number) => Promise<void>;
   addCafeToCollection: (collectionId: number, snapshot: CafeLibrarySnapshot) => Promise<void>;
   removeCafeFromCollection: (collectionId: number, cafeKey: string) => Promise<void>;
+  toggleCollectionShare: (
+    collectionId: number,
+    isPublic: boolean
+  ) => Promise<{ ok: boolean; shareSlug?: string; error?: string }>;
 }
 
 const AuthContext = createContext<AuthContextValue>({
@@ -239,6 +243,7 @@ const AuthContext = createContext<AuthContextValue>({
   deleteCollection: async () => {},
   addCafeToCollection: async () => {},
   removeCafeFromCollection: async () => {},
+  toggleCollectionShare: async () => ({ ok: false }),
 });
 
 export function locationToLibrarySnapshot(
@@ -982,6 +987,49 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     []
   );
 
+  const toggleCollectionShare = useCallback(
+    async (
+      collectionId: number,
+      isPublic: boolean
+    ): Promise<{ ok: boolean; shareSlug?: string; error?: string }> => {
+      if (!hasPermission('collections')) {
+        openUpgradeModal({
+          featureName: 'Shareable Cafe Collections',
+          requiredPlan: 'plus',
+        });
+        return { ok: false, error: 'Subscription required' };
+      }
+      try {
+        const res = await fetch(resolveApiUrl(`/api/user/collections/${collectionId}/share`), {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', ...(await getUserAuthHeaders()) },
+          credentials: 'include',
+          body: JSON.stringify({ isPublic }),
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          ok?: boolean;
+          collection?: UserCollection;
+          collections?: UserCollection[];
+          error?: string;
+        };
+        if (!res.ok) {
+          return { ok: false, error: data.error || 'Could not update collection sharing.' };
+        }
+        if (Array.isArray(data.collections)) {
+          setCollections(data.collections);
+        } else if (data.collection) {
+          setCollections((prev) =>
+            prev.map((c) => (c.id === data.collection!.id ? data.collection! : c))
+          );
+        }
+        return { ok: true, shareSlug: data.collection?.share_slug || '' };
+      } catch {
+        return { ok: false, error: 'Network error while updating sharing setting.' };
+      }
+    },
+    [hasPermission, openUpgradeModal]
+  );
+
   const toggleCompareCafe = useCallback(
     (cafe: LocationItem) => {
       if (!hasPermission('compare')) {
@@ -1071,6 +1119,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         deleteCollection,
         addCafeToCollection,
         removeCafeFromCollection,
+        toggleCollectionShare,
       }}
     >
       {children}

@@ -1,5 +1,5 @@
-import { BENGALURU_AREAS, BUDGET_BRACKETS, SUPPORTED_CITIES } from '../config/constants';
-import type { LocationItem } from '../types/cms';
+import { BENGALURU_AREAS, BUDGET_BRACKETS, DEFAULT_BENGALURU_LOCALITIES, SUPPORTED_CITIES } from '../config/constants';
+import type { LocalityRecord, LocationItem } from '../types/cms';
 
 export interface ParsedMenuEntry {
   name: string;
@@ -21,7 +21,13 @@ export interface ParsedSmartQuery {
   detectedCity: string;
   nearMe: boolean;
   openNow: boolean;
-  intentTags: Array<'budget' | 'student' | 'breakfast' | 'study' | 'work' | 'snacks' | 'hidden_gem'>;
+  wifiRequired: boolean;
+  socketsRequired: boolean;
+  familyFriendly: boolean;
+  outdoorRequired: boolean;
+  quietStudyRequired: boolean;
+  workFriendlyRequired: boolean;
+  intentTags: Array<'budget' | 'student' | 'breakfast' | 'study' | 'work' | 'snacks' | 'hidden_gem' | 'family' | 'dessert'>;
 }
 
 export interface SmartSearchMatchResult {
@@ -197,6 +203,18 @@ const FOOD_CONCEPT_SYNONYMS: Record<string, string[]> = {
     'pastries',
     'cheesecake',
     'tiramisu',
+    'brownie',
+    'brownies',
+    'plum cake',
+    'chocolate cake',
+    'muffin',
+    'muffins',
+    'cookie',
+    'cookies',
+    'pancake',
+    'pancakes',
+    'crepe',
+    'churros',
     'donut',
     'donuts',
     'waffle',
@@ -232,6 +250,15 @@ const SPELLING_VARIANTS: Array<[RegExp, string]> = [
   [/\bmaska bun\b/g, 'bun maska'],
   [/\bkhara bun\b/g, 'kara bun'],
   [/\bidly\b/g, 'idli'],
+  [/\bcheescake\b/g, 'cheesecake'],
+  [/\bbrownee(s)?\b/g, 'brownie'],
+  [/\bwafle(s)?\b/g, 'waffle'],
+  [/\bcroisant(s)?\b/g, 'croissant'],
+  [/\btiramissu\b/g, 'tiramisu'],
+  [/\bpanir\b/g, 'paneer'],
+  [/\bmasla\b/g, 'masala'],
+  [/\bkapi\b/g, 'kaapi'],
+  [/\bdeserts?\b/g, 'dessert'],
 ];
 
 export function normalizeFoodText(raw: string): string {
@@ -292,6 +319,10 @@ function fuzzyWordMatch(token: string, targetWord: string): boolean {
   return false;
 }
 
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 const LOCALITY_ALIASES: Array<{ match: RegExp; area: string }> = [
   { match: /\bhsr(\s+layout)?\b/i, area: 'HSR Layout' },
   { match: /\bbtm(\s+layout)?\b/i, area: 'BTM Layout' },
@@ -300,13 +331,47 @@ const LOCALITY_ALIASES: Array<{ match: RegExp; area: string }> = [
   { match: /\bjp\s*nagar\b/i, area: 'JP Nagar' },
   { match: /\bchurch\s*street\b/i, area: 'Church Street' },
   { match: /\bvijay\s*nagar\b/i, area: 'Vijayanagar' },
+  { match: /\bkoramang[ae]?la\b/i, area: 'Koramangala' },
+  { match: /\bind[iy]?ranagar\b/i, area: 'Indiranagar' },
+  { match: /\bjay[ae]?nagar\b/i, area: 'Jayanagar' },
+  { match: /\bbanashank[ae]?ri\b/i, area: 'Banashankari' },
+  { match: /\bwhitef[ie]+ld\b/i, area: 'Whitefield' },
+  { match: /\bmalles[hw]*aram\b/i, area: 'Malleshwaram' },
+  { match: /\bmarath[ah]*alli\b/i, area: 'Marathahalli' },
+  { match: /\bhess?[ae]?r[ae]?g[ha]*tt?a\b/i, area: 'Hesaraghatta' },
+  { match: /\bjalahalli(\s+(east|west|cross))?\b/i, area: 'Jalahalli' },
+  { match: /\bnagasandra\b/i, area: 'Nagasandra' },
+  { match: /\bpeenya(\s+(industrial|1st|2nd))?\b/i, area: 'Peenya' },
+  { match: /\b(t\.?\s*)?dasarahalli\b/i, area: 'Dasarahalli' },
+  { match: /\bbagal[au]gunte\b/i, area: 'Bagalagunte' },
+  { match: /\bchikk?aban[ae]?[vw]ara\b/i, area: 'Chikkabanavara' },
+  { match: /\babbigere?\b/i, area: 'Abbigere' },
+  { match: /\bvidyaranya\s*pura\b/i, area: 'Vidyaranyapura' },
+  { match: /\b(new\s+)?bel\s*(road|rd)\b/i, area: 'BEL Road' },
+  { match: /\bsahakara?\s*nagar\b/i, area: 'Sahakara Nagar' },
+  { match: /\b(rajarajeshwari|r\.?\s*r\.?)\s*nagar\b/i, area: 'RR Nagar' },
+  { match: /\bnagar[ae]?bhavi\b/i, area: 'Nagarbhavi' },
+  { match: /\bk\.?\s*r\.?\s*puram\b/i, area: 'KR Puram' },
+  { match: /\bkrishnarajapura\b/i, area: 'KR Puram' },
+  { match: /\bsarjapur(\s+road)?\b/i, area: 'Sarjapur Road' },
+  ...DEFAULT_BENGALURU_LOCALITIES.flatMap((loc) =>
+    [loc.name, ...loc.altSpellings, ...loc.localNames]
+      .filter((t) => t.trim().length >= 3)
+      .map((term) => ({
+        match: new RegExp(`\\b${escapeRe(term)}\\b`, 'i'),
+        area: loc.name,
+      }))
+  ),
   ...BENGALURU_AREAS.map((area) => ({
-    match: new RegExp(`\\b${area.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'),
+    match: new RegExp(`\\b${escapeRe(area)}\\b`, 'i'),
     area,
   })),
 ];
 
-export function parseSmartFoodQuery(rawQuery: string): ParsedSmartQuery {
+export function parseSmartFoodQuery(
+  rawQuery: string,
+  extraLocalities?: LocalityRecord[]
+): ParsedSmartQuery {
   const raw = String(rawQuery || '').trim();
   let working = raw;
   const intentTags = new Set<ParsedSmartQuery['intentTags'][number]>();
@@ -355,20 +420,70 @@ export function parseSmartFoodQuery(rawQuery: string): ParsedSmartQuery {
     working = working.replace(openNowPattern, ' ');
   }
 
-  // 3. Locality & City detection
+  // 3. Locality & City detection (static aliases -> dynamic DB localities -> fuzzy typo match)
   let detectedLocality = '';
   for (const alias of LOCALITY_ALIASES) {
     const m = working.match(alias.match);
     if (m) {
       detectedLocality = alias.area;
-      working = working.replace(new RegExp(`\\b(?:in|at|near|around)?\\s*${m[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i'), ' ');
+      working = working.replace(
+        new RegExp(`\\b(?:in|at|near|around)?\\s*${escapeRe(m[0])}`, 'i'),
+        ' '
+      );
       break;
+    }
+  }
+
+  if (!detectedLocality && extraLocalities && extraLocalities.length > 0) {
+    for (const loc of extraLocalities) {
+      const terms = [loc.name, ...loc.alt_spellings, ...loc.local_names].filter((t) => t.length >= 3);
+      for (const t of terms) {
+        const re = new RegExp(`\\b${escapeRe(t)}\\b`, 'i');
+        const m = working.match(re);
+        if (m) {
+          detectedLocality = loc.name;
+          working = working.replace(
+            new RegExp(`\\b(?:in|at|near|around)?\\s*${escapeRe(m[0])}`, 'i'),
+            ' '
+          );
+          break;
+        }
+      }
+      if (detectedLocality) break;
+    }
+  }
+
+  if (!detectedLocality) {
+    const words = working
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length >= 6);
+    const candidateNames = Array.from(
+      new Set([
+        ...BENGALURU_AREAS,
+        ...(extraLocalities ? extraLocalities.map((l) => l.name) : []),
+      ])
+    );
+    for (const w of words) {
+      for (const areaName of candidateNames) {
+        const lowerArea = areaName.toLowerCase();
+        if (lowerArea.length >= 6 && !lowerArea.includes(' ') && levenshteinDistance(w, lowerArea) <= 2) {
+          detectedLocality = areaName;
+          working = working.replace(new RegExp(`\\b(?:in|at|near|around)?\\s*${escapeRe(w)}`, 'i'), ' ');
+          break;
+        }
+      }
+      if (detectedLocality) break;
     }
   }
 
   let detectedCity = '';
   for (const city of SUPPORTED_CITIES) {
-    const cityRe = new RegExp(`\\b(?:in|at|around)?\\s*${city === 'Bengaluru' ? '(?:bengaluru|bangalore)' : city}\\b`, 'i');
+    const cityRe = new RegExp(
+      `\\b(?:in|at|around)?\\s*${city === 'Bengaluru' ? '(?:bengaluru|bangalore)' : city}\\b`,
+      'i'
+    );
     if (cityRe.test(working)) {
       detectedCity = city;
       working = working.replace(cityRe, ' ');
@@ -376,7 +491,52 @@ export function parseSmartFoodQuery(rawQuery: string): ParsedSmartQuery {
     }
   }
 
-  // 4. Budget / Intent adjectives
+  // 4. Natural-language facility & intent extraction
+  let wifiRequired = false;
+  let socketsRequired = false;
+  let familyFriendly = false;
+  let outdoorRequired = false;
+  let quietStudyRequired = false;
+  let workFriendlyRequired = false;
+
+  if (/\b(with\s+)?(good\s+|fast\s+)?(wi[\s-]?fi|internet)\b/i.test(working)) {
+    wifiRequired = true;
+    intentTags.add('work');
+    working = working.replace(/\b(with\s+)?(good\s+|fast\s+)?(wi[\s-]?fi|internet)\b/gi, ' ');
+  }
+
+  if (/\b(with\s+)?(charging\s*(?:points?|ports?|sockets?|plugs?)|power\s*(?:sockets?|outlets?|plugs?)|plug\s*points?|sockets?|plugs?)\b/i.test(working)) {
+    socketsRequired = true;
+    intentTags.add('work');
+    working = working.replace(
+      /\b(with\s+)?(charging\s*(?:points?|ports?|sockets?|plugs?)|power\s*(?:sockets?|outlets?|plugs?)|plug\s*points?|sockets?|plugs?)\b/gi,
+      ' '
+    );
+  }
+
+  if (/\b(family[\s-]?friendly|for\s+famil(?:y|ies)|with\s+kids?|kid[\s-]?friendly|parents?)\b/i.test(working)) {
+    familyFriendly = true;
+    intentTags.add('family');
+    working = working.replace(/\b(family[\s-]?friendly|for\s+famil(?:y|ies)|with\s+kids?|kid[\s-]?friendly|parents?)\b/gi, ' ');
+  }
+
+  if (/\b(outdoor\s+seating|outdoor|garden\s+seating|garden|patio|terrace|rooftop)\b/i.test(working)) {
+    outdoorRequired = true;
+    working = working.replace(/\b(outdoor\s+seating|outdoor|garden\s+seating|garden|patio|terrace|rooftop)\b/gi, ' ');
+  }
+
+  if (/\b(quiet|calm|peaceful|studying|study|reading|exam\s*prep)\b/i.test(working)) {
+    quietStudyRequired = true;
+    intentTags.add('study');
+    working = working.replace(/\b(for\s+)?(quiet|calm|peaceful|studying|study|reading|exam\s*prep)\b/gi, ' ');
+  }
+
+  if (/\b(laptop[\s-]?friendly|for\s+working|work[\s-]?friendly|remote\s*work|work\s*cafe|coworking)\b/i.test(working)) {
+    workFriendlyRequired = true;
+    intentTags.add('work');
+    working = working.replace(/\b(laptop[\s-]?friendly|for\s+working|work[\s-]?friendly|remote\s*work|work\s*cafe|coworking)\b/gi, ' ');
+  }
+
   if (/\b(affordable|cheap|budget|budget-friendly|pocket-friendly|pocket\s+friendly|low\s+cost|economical|inexpensive)\b/i.test(working)) {
     intentTags.add('budget');
     working = working.replace(/\b(affordable|cheap|budget-friendly|budget|pocket-friendly|pocket\s+friendly|low\s+cost|economical|inexpensive)\b/gi, ' ');
@@ -385,32 +545,33 @@ export function parseSmartFoodQuery(rawQuery: string): ParsedSmartQuery {
     intentTags.add('student');
     working = working.replace(/\b(student-friendly|students?|college)\b/gi, ' ');
   }
-  if (/\b(study|studying|quiet|reading)\b/i.test(working)) {
-    intentTags.add('study');
-  }
-  if (/\b(work|working|laptop|remote|wifi|wi-fi)\b/i.test(working)) {
-    intentTags.add('work');
-  }
   if (/\bhidden\s*gems?\b/i.test(working)) {
     intentTags.add('hidden_gem');
+    working = working.replace(/\bhidden\s*gems?\b/gi, ' ');
   }
 
-  // Strip filler nouns like "shops", "cafes", "places", "stalls", "centres"
+  // Strip natural-language filler nouns and connectors
   const stripped = normalizeFoodText(
     working
-      .replace(/\b(cafes?|coffee\s*shops?|tea\s*shops?|tea\s*stalls?|shops?|stalls?|places?|spots?|centres?|centers?|eateries|restaurants?|best|good|for|in|at|with|near|from)\b/gi, ' ')
+      .replace(
+        /\b(find|show|give|search|looking|look|me|cafes?|coffee\s*shops?|tea\s*shops?|tea\s*stalls?|shops?|stalls?|places?|spots?|centres?|centers?|eateries|restaurants?|best|good|great|nice|top|for|in|at|with|and|or|near|from|to|the|a|an)\b/gi,
+        ' '
+      )
       .replace(/\s+/g, ' ')
       .trim()
   );
 
-  // Restore core term if stripping left empty (e.g. "coffee shops near me" -> coffee, "tea shops near me" -> tea)
+  // Restore core food concept if stripping left empty (e.g. "coffee shops under ₹100")
   let cleanFoodQuery = stripped;
   const rawNorm = normalizeFoodText(raw);
   if (!cleanFoodQuery) {
     if (/\b(coffee|kaapi)\b/i.test(rawNorm)) cleanFoodQuery = 'coffee';
     else if (/\b(tea|chai)\b/i.test(rawNorm)) cleanFoodQuery = 'tea';
     else if (/\b(bakery|bakes|pastry|pastries)\b/i.test(rawNorm)) cleanFoodQuery = 'bakery';
-    else if (/\b(snack|snacks)\b/i.test(rawNorm)) cleanFoodQuery = 'snacks';
+    else if (/\b(dessert|desserts|cake|brownie|waffle|ice cream)\b/i.test(rawNorm)) {
+      cleanFoodQuery = 'dessert';
+      intentTags.add('dessert');
+    } else if (/\b(snack|snacks)\b/i.test(rawNorm)) cleanFoodQuery = 'snacks';
   }
 
   if (/\b(breakfast|morning|tiffin)\b/i.test(rawNorm)) {
@@ -420,6 +581,9 @@ export function parseSmartFoodQuery(rawQuery: string): ParsedSmartQuery {
   if (/\bsnacks?\b/i.test(rawNorm)) {
     intentTags.add('snacks');
     if (!cleanFoodQuery) cleanFoodQuery = 'snacks';
+  }
+  if (/\b(dessert|desserts|cheesecake|brownie|waffle|pastry|gelato)\b/i.test(rawNorm)) {
+    intentTags.add('dessert');
   }
 
   const foodTerms = cleanFoodQuery
@@ -460,6 +624,12 @@ export function parseSmartFoodQuery(rawQuery: string): ParsedSmartQuery {
     detectedCity,
     nearMe,
     openNow,
+    wifiRequired,
+    socketsRequired,
+    familyFriendly,
+    outdoorRequired,
+    quietStudyRequired,
+    workFriendlyRequired,
     intentTags: Array.from(intentTags),
   };
 }
@@ -518,7 +688,8 @@ export function extractCafeMenuEntries(
     | 'coffee_price'
     | 'snacks_price'
     | 'meals_price'
-  >
+  > &
+    Partial<Pick<LocationItem, 'desserts_price'>>
 ): ParsedMenuEntry[] {
   const byKey = new Map<string, ParsedMenuEntry>();
 
@@ -583,6 +754,7 @@ export function extractCafeMenuEntries(
   for (const entry of parseBandLineItems(loc.tea_price, 'Tea')) upsert(entry);
   for (const entry of parseBandLineItems(loc.coffee_price, 'Coffee')) upsert(entry);
   for (const entry of parseBandLineItems(loc.snacks_price, 'Snacks')) upsert(entry);
+  for (const entry of parseBandLineItems(loc.desserts_price, 'Desserts')) upsert(entry);
   for (const entry of parseBandLineItems(loc.meals_price, 'Meals')) upsert(entry);
 
   return Array.from(byKey.values());
@@ -883,6 +1055,7 @@ export function getCafeLowestVerifiedMenuPrice(loc: LocationItem): number | null
     parseLowestPriceFromString(loc.tea_price),
     parseLowestPriceFromString(loc.coffee_price),
     parseLowestPriceFromString(loc.snacks_price),
+    parseLowestPriceFromString(loc.desserts_price),
     parseLowestPriceFromString(loc.meals_price),
   ].filter((p): p is number => p !== null && p > 0);
   if (bandMins.length > 0) return Math.min(...bandMins);
